@@ -1,4 +1,7 @@
-# Skopos
+<h1>
+  <img src="docs/assets/logo.png" alt="" width="64" />
+  &nbsp;Skopos
+</h1>
 
 **Declarative HTTP-pull integrations for Go.**
 
