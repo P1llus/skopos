@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command skopos is the CLI for the skopos spec runner.
 //
 // Usage:

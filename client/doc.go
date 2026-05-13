@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package client is the in-process Go interpreter for schema.Doc.
 //
 // It takes a *schema.Doc, executes the pull loop described by the document,

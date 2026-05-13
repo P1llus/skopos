@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package schema defines skopos's declarative spec: a description of
 // HTTP-pull integrations as data.
 //

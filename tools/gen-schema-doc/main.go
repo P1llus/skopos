@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command gen-schema-doc walks the Go source files in schema/ and emits a
 // Markdown per-field reference to docs/schema-reference.md.
 //
