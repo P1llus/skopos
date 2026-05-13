@@ -40,17 +40,36 @@ sidecar: the spec document *is* the program, the runner interprets it.
 
 ## Install
 
+**As a CLI** — `go install` fetches a prebuilt-from-source binary into `$GOBIN`:
+
 ```sh
 go install github.com/p1llus/skopos/cmd/skopos@latest
 ```
 
-Or build from source:
+**As a Go library** — add it to your module and import `client` / `schema`:
+
+```sh
+go get github.com/p1llus/skopos@latest
+```
+
+```go
+import (
+    "github.com/p1llus/skopos/client"
+    "github.com/p1llus/skopos/schema"
+)
+```
+
+**From source** — clone and build:
 
 ```sh
 git clone https://github.com/p1llus/skopos
 cd skopos
 go build ./cmd/skopos
 ```
+
+API reference is published on
+[pkg.go.dev/github.com/p1llus/skopos](https://pkg.go.dev/github.com/p1llus/skopos)
+once a release tag is fetched by any consumer.
 
 ## Quickstart
 
