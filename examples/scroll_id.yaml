@@ -1,0 +1,56 @@
+# scroll_id — scroll-and-keep-alive paginated API.
+#
+# Demonstrates: pagination.scroll_id. The first request opens a scroll
+# session; subsequent requests echo the scroll_id until the page is empty.
+
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  - method: GET
+    path: /api/v1/scroll
+    query:
+      since: {from_progress: latest_timestamp}
+      scroll: {from_pagination: scroll_id}
+
+response:
+  decode: json
+  events_at: events
+
+pagination:
+  scroll_id:
+    scroll_id_at: request_metadata.scroll
+    send_as: query.scroll
+    complete_when:
+      eq:
+        path: body.request_metadata.complete
+        equal: "true"
+
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: created_at
+
+error:
+  mode: standard

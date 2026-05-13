@@ -1,0 +1,56 @@
+# offset_pagination — offset/limit pagination.
+#
+# Demonstrates: pagination.offset. Each request bumps `offset` by `limit`;
+# termination when the page is short (events returned < limit).
+
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+# Classic ?offset=<n>&limit=<batch_size> pagination.
+# from_pagination: offset  → cursor.offset (page start, 0-indexed)
+# from_pagination: offset_end → cursor.offset + batch_size (exclusive end)
+# Used by APIs that take both a start and an exclusive-end index.
+requests:
+  - method: GET
+    path: /api/v1/items
+    expect_status: [200, 204]
+    query:
+      offset: {format: string, value: {from_pagination: offset}}
+      limit: {format: string, value: {ref: state.page_size}}
+      end: {format: string, value: {from_pagination: offset_end}}
+
+response:
+  decode: json
+  events_at: items
+
+pagination:
+  offset:
+    offset_param: offset
+    batch_size: {ref: state.page_size}
+
+progress:
+  stateless: {}
+
+error:
+  mode: standard

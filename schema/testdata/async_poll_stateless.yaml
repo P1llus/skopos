@@ -1,0 +1,71 @@
+ir_version: "1"
+
+# async_job sibling of async_poll.yaml that exercises
+# `on_complete.cursor_update.kind: stateless` — the cursor does NOT advance
+# at job-end. Appropriate for async pulls that are already idempotent at the
+# server layer (e.g. "always re-fetch the last 24h export"), where the
+# operator wants every drain to re-issue submit with the same parameters.
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  - id: submit
+    method: POST
+    path: /api/v1/exports
+    expect_status: [202]
+
+  - id: poll
+    method: GET
+    path:
+      concat:
+        - /api/v1/exports/
+        - {ref: cursor.export_id}
+        - /status
+
+  - id: fetch
+    method: GET
+    url: {ref: cursor.result_url}
+
+response:
+  decode: json
+  events_at: items
+
+pagination:
+  none: {}
+
+progress:
+  async_job:
+    submit:
+      step: submit
+      extract:
+        export_id: {path: export_id}
+    poll:
+      step: poll
+      complete_when:
+        eq:
+          path: body.status
+          equal: complete
+      extract:
+        result_url: {path: result_url}
+    fetch:
+      step: fetch
+    on_complete:
+      cursor_update:
+        kind: stateless
+
+error:
+  mode: standard

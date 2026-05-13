@@ -1,0 +1,46 @@
+ir_version: "1"
+
+# Exercises Value forms that no other fixture covers: base64, list,
+# now+offset, literal_int.
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+    raw_marker:
+      type: string
+      default: "fingerprint:abc123"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  - method: GET
+    path: /api/v1/events
+    headers:
+      X-Marker: {base64: {ref: state.raw_marker}}
+    query:
+      since:  {format: rfc3339, value: {now: true, offset: "-24h"}}
+      scopes: {list: ["audit", "security", "ingest"]}
+      limit:  100   # YAML scalar → Value.LiteralInt (no discriminator key form)
+
+response:
+  decode: json
+  events_at: events
+
+pagination:
+  none: {}
+
+progress:
+  stateless: {}
+
+error:
+  mode: standard

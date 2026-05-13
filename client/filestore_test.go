@@ -1,0 +1,88 @@
+package client
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// TestFileStore_RoundTrip pins the round-trip contract: Save then Load
+// returns a Snapshot semantically equal to the one written.
+func TestFileStore_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	fs := NewFileStore(filepath.Join(dir, "state.json"))
+
+	in := Snapshot{
+		State:  map[string]any{"oauth_token": "tok-abc"},
+		Cursor: map[string]any{"last_timestamp": "2026-05-12T08:00:00Z", "page": float64(3)},
+	}
+	if err := fs.Save(in); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	out, err := fs.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(out.State, in.State) {
+		t.Errorf("State round-trip mismatch: got %#v, want %#v", out.State, in.State)
+	}
+	if !reflect.DeepEqual(out.Cursor, in.Cursor) {
+		t.Errorf("Cursor round-trip mismatch: got %#v, want %#v", out.Cursor, in.Cursor)
+	}
+}
+
+// TestFileStore_LoadMissingIsZero pins the "absent file → zero
+// Snapshot" contract used to bootstrap a first run.
+func TestFileStore_LoadMissingIsZero(t *testing.T) {
+	dir := t.TempDir()
+	fs := NewFileStore(filepath.Join(dir, "never-written.json"))
+	got, err := fs.Load()
+	if err != nil {
+		t.Fatalf("Load on missing file: %v, want nil", err)
+	}
+	if got.State != nil || got.Cursor != nil {
+		t.Errorf("Load on missing returned %#v, want zero Snapshot", got)
+	}
+}
+
+// TestFileStore_AtomicWrite pins the atomic-rename contract: after Save
+// returns, the on-disk file is always a complete, valid Snapshot. We
+// also assert no temp file is left behind once Save succeeds — the
+// "temp + rename" sequence must clean up after itself.
+func TestFileStore_AtomicWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	fs := NewFileStore(path)
+
+	for i := 0; i < 5; i++ {
+		in := Snapshot{
+			State:  map[string]any{"i": float64(i)},
+			Cursor: map[string]any{"page": float64(i)},
+		}
+		if err := fs.Save(in); err != nil {
+			t.Fatalf("Save %d: %v", i, err)
+		}
+		// File must be valid JSON Snapshot at every observable moment.
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+		var got Snapshot
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("partial / invalid JSON observed after Save %d: %v; raw=%q", i, err, string(raw))
+		}
+	}
+	// No temp files left over.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Errorf("temp file leaked after Save: %s", e.Name())
+		}
+	}
+}

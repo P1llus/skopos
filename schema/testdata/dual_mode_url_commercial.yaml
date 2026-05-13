@@ -1,0 +1,67 @@
+# NOTE: shares the auth × pagination × progress × decode tuple with
+# dual_mode_url_gov.yaml. The two fixtures intentionally differ only in
+# state.gov_cloud (false vs true) so they exercise the select branches arm
+# (gov) vs the default arm (commercial); don't drop either one without
+# splitting that coverage somewhere else.
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+    gov_cloud:
+      type: bool
+      default: false
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+# URL branch: gov_cloud=false causes no branch to fire; default (commercial) applies.
+requests:
+  - method: GET
+    url:
+      select:
+        branches:
+          - when:
+              eq:
+                path: state.gov_cloud
+                equal: true
+            value:
+              concat:
+                - {ref: state.url}
+                - /api/v1/events-gov
+        default:
+          concat:
+            - {ref: state.url}
+            - /api/v1/events-commercial
+    query:
+      since: {from_progress: latest_timestamp}
+
+response:
+  decode: json
+  events_at: events
+
+pagination:
+  none: {}
+
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: created_at
+
+error:
+  mode: standard

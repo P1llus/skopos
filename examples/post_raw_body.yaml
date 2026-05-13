@@ -1,0 +1,52 @@
+ir_version: "1"
+
+# post_raw_body — `body.raw` for APIs whose request body isn't JSON or form-encoded.
+#
+# The runner sends the evaluated string verbatim with no Content-Type header
+# (the operator sets one via headers: if required). Typical uses: NDJSON
+# ingest endpoints, GraphQL-via-text/plain, hand-tuned XML payloads. This
+# fixture posts an NDJSON-shaped payload constructed via {concat: [...]}.
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+    tenant_id:
+      type: string
+      default: "tenant-42"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  - method: POST
+    path: /api/v1/ingest
+    headers:
+      Content-Type: application/x-ndjson
+    body:
+      raw:
+        concat:
+          - '{"tenant":"'
+          - {ref: state.tenant_id}
+          - '","event":"hello"}'
+
+response:
+  decode: json
+  events_at: events
+
+pagination:
+  none: {}
+
+progress:
+  stateless: {}
+
+error:
+  mode: standard

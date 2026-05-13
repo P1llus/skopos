@@ -1,0 +1,59 @@
+# post_json_body — POST with a JSON body carrying a time-window query.
+#
+# Demonstrates: requests[].body.json with from_date / to_date pulled from
+# progress, progress.time_window so the next drain picks up where this one
+# left off, JSON decode.
+
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+# POST search with JSON body. time_window progress provides window_start and
+# window_end; the body embeds them directly via from_progress semantic roles.
+# The offset pagination layer slides over the window on each page.
+requests:
+  - method: POST
+    path: /api/v2/alerts/search
+    body:
+      json:
+        from_date: {from_progress: window_start}
+        to_date: {from_progress: window_end}
+        search_from: {from_pagination: offset}
+        search_to: {from_pagination: offset_end}
+
+response:
+  decode: json
+  events_at: data.alerts
+
+pagination:
+  offset:
+    offset_param: search_from
+    batch_size: {ref: state.page_size}
+
+progress:
+  time_window:
+    initial_offset: "720h"
+    format: rfc3339nano
+
+error:
+  mode: standard

@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a new spec field, runner capability, or API surface.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: |
+        What can't you do today? Describe the API / source shape you're
+        trying to drive Skopos against, not the Skopos change you have
+        in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape
+      description: |
+        Sketch of the spec field or Go API. A YAML snippet is usually the
+        clearest format. Mark anything you're unsure about.
+      render: yaml
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Existing fields / patterns you tried, and why they don't fit. Helps
+        surface gaps in the current docs vs gaps in the runner.
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - Schema (new field or validation)
+        - Runner behaviour (new request / pagination / auth variant)
+        - Embedding API (client / store / sink / tracer surface)
+        - CLI
+        - Docs only
+    validations:
+      required: true

@@ -1,0 +1,55 @@
+# link_header — RFC 5988 Link-header pagination.
+#
+# Demonstrates: pagination.link_header. Each response carries a
+# `Link: <next-url>; rel="next"` header; the runner follows the rel="next"
+# link until it disappears.
+
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
+    api_key:
+      type: secret
+      default: "test-api-key-67890"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  api_key:
+    header: X-API-Key
+    value: {ref: state.api_key}
+
+requests:
+  - method: GET
+    path: /api/v2/incidents
+    query:
+      updated_after: {from_progress: latest_timestamp}
+      per_page: {format: string, value: {ref: state.page_size}}
+
+response:
+  decode: json
+  events_at: incidents
+
+# Follows the RFC 5988 Link: <url>; rel="next" response header. When a
+# next-link is absent the drain completes. The default regex pattern is
+# applied; override with pagination.link_header.pattern for non-standard forms.
+pagination:
+  link_header: {}
+
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: updated_at
+
+error:
+  mode: standard

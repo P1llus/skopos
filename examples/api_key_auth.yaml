@@ -1,0 +1,50 @@
+# api_key_auth — API key carried in a custom header (X-Api-Key).
+#
+# Demonstrates: auth.api_key with location=header, single GET request,
+# pagination.none, progress.latest_event_timestamp.
+
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
+    api_key:
+      type: secret
+      default: "test-api-key-67890"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  api_key:
+    header: X-API-Key
+    value: {ref: state.api_key}
+
+requests:
+  - method: GET
+    path: /v3/detections
+    query:
+      created_after: {from_progress: latest_timestamp}
+
+response:
+  decode: json
+  events_at: resources
+
+pagination:
+  none: {}
+
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: created_timestamp
+
+error:
+  mode: standard

@@ -1,0 +1,76 @@
+# multi_mode_auth — runtime auth selection via predicates.
+#
+# Branches are evaluated in declaration order; the first match wins and the
+# `default` arm fires when no branch matches (including when the dispatch
+# field is unset). Nested `multi_mode` is rejected at validation time, so
+# each branch must select a sibling auth variant.
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
+    api_key:
+      type: secret
+      default: "test-api-key-67890"
+    auth_mode:
+      type: enum
+      values: [bearer, api_key]
+      default: "api_key"
+
+defaults:
+  base_url: {ref: state.url}
+
+# Runtime auth dispatch: Bearer or API-Key based on state.auth_mode.
+# The default arm catches every value not matched by a branch, including unset.
+auth:
+  multi_mode:
+    branches:
+      - when:
+          eq:
+            path: state.auth_mode
+            equal: bearer
+        auth:
+          bearer:
+            token: {ref: state.api_key}
+      - when:
+          eq:
+            path: state.auth_mode
+            equal: api_key
+        auth:
+          api_key:
+            header: X-API-Key
+            value: {ref: state.api_key}
+    default:
+      auth:
+        custom:
+          header: X-Fallback-Auth
+          value: {ref: state.api_key}
+
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      since: {from_progress: latest_timestamp}
+
+response:
+  decode: json
+  events_at: events
+
+pagination:
+  none: {}
+
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: created_at
+
+error:
+  mode: standard

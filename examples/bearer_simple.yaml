@@ -1,0 +1,52 @@
+# bearer_simple — the canonical starting-point example.
+#
+# Demonstrates: auth.bearer, a single GET request, pagination.none,
+# progress.latest_event_timestamp, JSON decode with a leading object key.
+# The cursor advances to the maximum event timestamp on every drain.
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      since: {from_progress: latest_timestamp}
+      limit: {format: string, value: {ref: state.page_size}}
+
+response:
+  decode: json
+  events_at: events
+
+pagination:
+  none: {}
+
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: timestamp
+    initial:
+      lookback: "720h"
+
+error:
+  mode: standard

@@ -1,0 +1,51 @@
+# custom_auth — operator-defined auth headers.
+#
+# Demonstrates: auth.custom for APIs that don't fit one of the named auth
+# variants (signed requests, vendor-specific token schemes, etc.). Headers
+# are built from state and request metadata via Value expressions.
+
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
+    api_key:
+      type: secret
+      default: "custom-auth-value-99999"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  custom:
+    header: X-Custom-Auth
+    value: {ref: state.api_key}
+
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      since: {from_progress: latest_timestamp}
+
+response:
+  decode: json
+  events_at: events
+
+pagination:
+  none: {}
+
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: timestamp
+
+error:
+  mode: standard

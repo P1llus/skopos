@@ -1,0 +1,47 @@
+# ndjson_response — newline-delimited JSON response decode.
+#
+# Demonstrates: response.decode=ndjson. Each line is one event; extract[]
+# operates on the per-line object the same way it does on JSON-array items.
+
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  - method: GET
+    path: /api/v1/logs
+
+# NDJSON decode: each newline-delimited JSON line is a separate event.
+# events_at: "" means the body root is the events stream (each line IS an event).
+response:
+  decode: ndjson
+  events_at: ""
+
+pagination:
+  none: {}
+
+progress:
+  stateless: {}
+
+error:
+  mode: standard

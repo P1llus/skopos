@@ -1,0 +1,53 @@
+# cursor_token — opaque cursor token pagination.
+#
+# Demonstrates: pagination.cursor_token. The server returns a cursor in the
+# response body; the next request echoes it back via {from_pagination: ...}.
+# Termination is implicit when the cursor field is absent.
+
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  - method: GET
+    path: /api/v1/findings
+    query:
+      cursor: {from_pagination: token}
+      limit: {format: string, value: {ref: state.page_size}}
+
+response:
+  decode: json
+  events_at: findings
+
+pagination:
+  cursor_token:
+    token_at: next_cursor
+    send_as: query.cursor
+
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: created_at
+
+error:
+  mode: standard

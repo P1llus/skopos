@@ -1,0 +1,64 @@
+ir_version: "1"
+
+# Custom JSON login → cached token reused across iterations via the
+# step-level requests[].cache block. The non-OAuth2 counterpart of
+# auth.oauth2.<grant>.cache. Validator-surface coverage only — the runner
+# does not yet honour requests[].cache.
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    username:
+      type: string
+      default: "admin"
+    password:
+      type: secret
+      default: "test-password"
+
+defaults:
+  base_url: {ref: state.url}
+
+# Bearer auth re-uses the cached token slot (state.session_token), which is
+# auto-registered as a runtime field by the cache: block on the login step.
+auth:
+  bearer:
+    token: {ref: state.session_token}
+
+requests:
+  - id: login
+    method: POST
+    path: /api/v1/login
+    body:
+      json:
+        username: {ref: state.username}
+        password: {ref: state.password}
+    extract:
+      - name: access_token
+        path: access_token
+    cache:
+      store_in: session_token
+      expiry_field: expires_in
+      expiry_buffer: 60s
+      expiry_format: duration
+
+  - id: events
+    method: GET
+    path: /api/v1/events
+    produces_events: true
+
+response:
+  decode: json
+  events_at: events
+
+pagination:
+  none: {}
+
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: timestamp
+
+error:
+  mode: standard

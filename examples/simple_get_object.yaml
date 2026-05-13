@@ -1,0 +1,39 @@
+# simple_get_object — the smallest end-to-end spec.
+#
+# Demonstrates: one GET, no auth, no pagination, no cursor. The runner
+# decodes the JSON response and emits each item via extract[].
+
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  none: {}
+
+requests:
+  - method: GET
+    path: /api/v1/status
+
+# The entire decoded body is yielded as the event stream. When the body is a
+# single JSON object (not an array) the target wraps it in a list, so one
+# event is emitted per iteration. No wrap_single flag needed; the target
+# infers this from events_at: "" with a non-array body.
+response:
+  decode: json
+  events_at: ""
+
+pagination:
+  none: {}
+
+progress:
+  stateless: {}
+
+error:
+  mode: standard

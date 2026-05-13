@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test-go:
+    name: test-go
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go vet ./...
+        run: go vet ./...
+      - name: go test ./... -race
+        run: go test ./... -race -count=1
+
+  build-go:
+    name: build-go
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go build ./...
+        run: go build ./...
+
+  schema-doc-check:
+    name: schema-doc-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: docs/schema-reference.md is in lockstep with schema/
+        run: make schema-doc-check
+
+  lint-go:
+    name: lint-go
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
+  # release-snapshot disabled until first release; re-enable when going public.
+  # release-snapshot:
+  #   name: release-snapshot
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 15
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #       with:
+  #         fetch-depth: 0
+  #     - uses: actions/setup-go@v6
+  #       with:
+  #         go-version-file: go.mod
+  #         cache: true
+  #     - name: goreleaser check
+  #       uses: goreleaser/goreleaser-action@v6
+  #       with:
+  #         version: "~> v2"
+  #         args: check
+  #     - name: goreleaser release --snapshot
+  #       uses: goreleaser/goreleaser-action@v6
+  #       with:
+  #         version: "~> v2"
+  #         args: release --snapshot --clean --skip=publish

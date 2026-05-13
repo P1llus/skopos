@@ -1,0 +1,53 @@
+# page_number — page-number / per-page pagination.
+#
+# Demonstrates: pagination.page_number. Each request increments the
+# `page` index; termination when the page is short or empty.
+
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  - method: GET
+    path: /api/v2/logs
+    query:
+      since: {from_progress: latest_timestamp}
+      page: {format: string, value: {from_pagination: page}}
+      page_size: {format: string, value: {ref: state.page_size}}
+
+response:
+  decode: json
+  events_at: data
+
+pagination:
+  page_number:
+    page_param: page
+    has_more_at: meta.has_next
+
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: created_at
+
+error:
+  mode: standard

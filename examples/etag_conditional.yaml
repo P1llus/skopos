@@ -1,0 +1,72 @@
+# etag_conditional — conditional GET driven by an ETag.
+#
+# Demonstrates: response.on_status with skip for 304 (advance the cursor
+# without emitting events) and extract for the new ETag, which is captured
+# into the cursor so the next request's If-None-Match header carries it.
+
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
+    etag_check:
+      type: bool
+      default: true
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  none: {}
+
+# ETag conditional two-step chain.
+#
+# The probe step is unconditional; it exists to make the chain genuinely
+# multi-step. The data step carries both conditional primitives:
+#
+#   if: <Predicate>  — evaluated before issuing the request. When false, the
+#                      step emits the skip-block and no HTTP call is made.
+#                      The fixture guard reads state.etag_check (default: true).
+#
+#   on_status: {304: skip} — post-response check. When 304 is returned the
+#                      step yields the skip-block (empty events, want_more=false,
+#                      cursor preserved).
+requests:
+  - id: probe
+    method: GET
+    path: /api/v1/etag/probe
+
+  - id: data
+    method: GET
+    path: /api/v1/etag/data
+    query:
+      page: {format: string, value: {from_pagination: page}}
+    if:
+      eq:
+        path: state.etag_check
+        equal: true
+    on_status:
+      304: skip
+
+response:
+  decode: json
+  events_at: items
+
+pagination:
+  page_number:
+    page_param: page
+    has_more_at: meta.has_next
+
+progress:
+  stateless: {}
+
+error:
+  mode: standard

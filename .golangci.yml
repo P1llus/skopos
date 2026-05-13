@@ -1,0 +1,42 @@
+version: "2"
+
+run:
+  timeout: 3m
+
+linters:
+  default: standard
+  enable:
+    - revive
+  settings:
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        # exported gates missing doc comments on exported identifiers.
+        - name: exported
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: var-declaration
+        - name: var-naming
+    staticcheck:
+      # ST1000 — every package must have a package comment.
+      # ST1020 — exported func doc starts with the func name.
+      # ST1021 — exported type doc starts with the type name.
+      checks:
+        - "all"
+        - "ST1000"
+        - "ST1020"
+        - "ST1021"
