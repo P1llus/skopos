@@ -172,3 +172,12 @@ sinks, and tracing.
 | [`docs/api-methods.md`](docs/api-methods.md) | Vendor-neutral catalogue of API patterns         |
 | [`docs/usage.md`](docs/usage.md)             | Embed the runner in your own Go program          |
 | [`docs/stores.md`](docs/stores.md)           | Plug in a custom state store (SQLite, BoltDB, …) |
+
+## License
+
+Skopos is licensed under the Apache License, Version 2.0. See
+[`LICENSE`](LICENSE) for the full text.
+
+```
+SPDX-License-Identifier: Apache-2.0
+```
