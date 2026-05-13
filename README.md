@@ -1,7 +1,4 @@
-<h1>
-  <img src="docs/assets/logo.png" alt="" width="64" />
-  &nbsp;Skopos
-</h1>
+# Skopos
 
 **Declarative HTTP-pull integrations for Go.**
 
@@ -69,14 +66,10 @@ go build ./cmd/skopos
 
 API reference is published on
 [pkg.go.dev/github.com/p1llus/skopos](https://pkg.go.dev/github.com/p1llus/skopos)
-once a release tag is fetched by any consumer.
 
 ## Quickstart
 
-Skopos ships with one example per supported API shape. The canonical
-starting point, [`examples/bearer_simple.yaml`](examples/bearer_simple.yaml),
-polls an HTTP endpoint with a bearer token and advances its cursor by
-the maximum event timestamp it sees on each drain:
+The canonical starting point, [`examples/bearer_simple.yaml`](examples/bearer_simple.yaml), polls an HTTP endpoint with a bearer token and advances its cursor by the maximum event timestamp it sees on each drain:
 
 ```sh
 skopos validate -i examples/bearer_simple.yaml
