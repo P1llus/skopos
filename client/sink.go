@@ -43,10 +43,17 @@ type JSONLSink struct {
 }
 
 // NewJSONLSink returns a Sink that writes JSONL to w.
+//
+// HTML escaping is disabled on the encoder. The sink output is meant for
+// downstream pipelines and humans grepping a file, not for embedding in
+// HTML, and upstream payload bytes containing '<' or '&' should land
+// verbatim rather than as \u003c / \u0026.
 func NewJSONLSink(w io.Writer) *JSONLSink {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
 	return &JSONLSink{
 		w:   w,
-		enc: json.NewEncoder(w),
+		enc: enc,
 	}
 }
 

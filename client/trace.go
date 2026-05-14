@@ -137,8 +137,15 @@ type JSONLTracer struct {
 // load-bearing data path; the drain must not fail because the trace
 // destination went away. Wrap w with a buffered writer if you need
 // throughput on a slow sink.
+//
+// HTML escaping is disabled on the encoder: the trace is not embedded in
+// HTML, and the redaction markers (<redacted>) and valueShape output
+// (<format:string>, <from_progress:latest_timestamp>, ...) read as
+// nonsense when '<'/'>'/'&' get rewritten to \u003c/\u003e/\u0026.
 func NewJSONLTracer(w io.Writer) *JSONLTracer {
-	return &JSONLTracer{w: w, enc: json.NewEncoder(w)}
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return &JSONLTracer{w: w, enc: enc}
 }
 
 // OnExchange serialises ex as a single JSON line.

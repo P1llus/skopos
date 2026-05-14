@@ -64,17 +64,26 @@ cd skopos
 go build ./cmd/skopos
 ```
 
-**Verifying a release** — every release artifact is signed with [cosign](https://github.com/sigstore/cosign) keyless signing via GitHub Actions. To verify a downloaded binary:
+**Verifying a release** — the release workflow signs `checksums.txt` with keyless [cosign](https://github.com/sigstore/cosign) (Sigstore bundle: `checksums.txt.sigstore.json`). GoReleaser publishes the archives, `checksums.txt`, and that bundle together on GitHub Releases.
+
+Use the Git tag exactly as tagged (including the leading `v`). Archive names follow `skopos_<semver>_<os>_<arch>.<ext>` plus `checksums.txt` and `checksums.txt.sigstore.json` (semver has no leading `v` in the filenames).
 
 ```sh
-# Download the archive, checksum file, signature, and certificate from the release page, then:
-cosign verify-blob checksums.txt \
-  --signature checksums.txt.sig \
-  --certificate checksums.txt.pem \
-  --certificate-identity "https://github.com/p1llus/skopos/.github/workflows/release.yml@refs/tags/VERSION" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+TAG=v0.1.0
+VERS=${TAG#v}
+OS_ARCH=linux_amd64   # or darwin_amd64, darwin_arm64, linux_arm64 (see Assets on the release)
 
-# Then verify your archive against the checksum:
+curl -fsSLO "https://github.com/p1llus/skopos/releases/download/${TAG}/checksums.txt"
+curl -fsSLO "https://github.com/p1llus/skopos/releases/download/${TAG}/checksums.txt.sigstore.json"
+curl -fsSLO "https://github.com/p1llus/skopos/releases/download/${TAG}/skopos_${VERS}_${OS_ARCH}.tar.gz"
+# Windows: skopos_${VERS}_${OS_ARCH}.zip (no arm64 zip)
+
+cosign verify-blob \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-identity "https://github.com/p1llus/skopos/.github/workflows/release.yml@refs/tags/${TAG}" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  checksums.txt
+
 sha256sum --check --ignore-missing checksums.txt
 ```
 
@@ -89,15 +98,17 @@ skopos template show bearer_simple > spec.yml
 
 # 2. (Optional) generate a config file with all defaults documented
 skopos init -o config.yml
-# edit config.yml to set your API key, URL, interval, state file, …
 
-# 3. Validate the spec
+# 3. (Optional) start up the example mock server for bearer_simple spec
+go run ./examples/bearer_quickstart_mock
+
+# 4. Validate the spec
 skopos validate -i spec.yml
 
-# 4. Run once
+# 5. Run once
 skopos run -c config.yml -i spec.yml --once
 
-# 5. Or poll continuously
+# 6. Or poll continuously
 skopos run -c config.yml -i spec.yml --interval 30s
 ```
 

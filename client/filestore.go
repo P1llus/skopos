@@ -3,6 +3,7 @@
 package client
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,10 +70,21 @@ func (f *FileStore) Load() (Snapshot, error) {
 func (f *FileStore) Save(s Snapshot) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
+	// Use an encoder rather than json.MarshalIndent so we can disable
+	// HTML escaping — state values legitimately contain '<' / '>' / '&'
+	// (cursor tokens, opaque pagination state) and we want them stored
+	// verbatim rather than as \u003c / \u003e / \u0026.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(s); err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
+	// Encoder.Encode appends a trailing newline; MarshalIndent did not.
+	// Drop it so the file format matches what readers expect (and what
+	// our own tests assert against).
+	data := bytes.TrimRight(buf.Bytes(), "\n")
 	dir := filepath.Dir(f.path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)

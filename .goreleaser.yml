@@ -42,18 +42,17 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# Keyless checksum signing via cosign on the release runner (needs id-token in the workflow).
+# Produces checksums.txt.sigstore.json alongside checksums.txt (see README verification steps).
 signs:
   - cmd: cosign
-    env:
-      - COSIGN_EXPERIMENTAL=1
+    signature: "${artifact}.sigstore.json"
     args:
       - sign-blob
-      - "--output-certificate=${certificate}"
-      - "--output-signature=${signature}"
+      - "--bundle=${signature}"
       - "${artifact}"
       - "--yes"
     artifacts: checksum
-    output: true
 
 snapshot:
   version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
