@@ -29,7 +29,7 @@ auth:
 
 requests:
   - method: GET
-    path: /api/v2/logs
+    path: /page_number/findings
     query:
       since: {from_progress: latest_timestamp}
       page: {format: string, value: {from_pagination: page}}
@@ -47,7 +47,7 @@ pagination:
 progress:
   latest_event_timestamp:
     event_time:
-      path: created_at
+      path: timestamp
 
 error:
   mode: standard

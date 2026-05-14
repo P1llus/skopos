@@ -30,7 +30,7 @@ auth:
 
 requests:
   - method: GET
-    path: /api/v1/findings
+    path: /cursor_token/findings
     query:
       cursor: {from_pagination: token}
       limit: {format: string, value: {ref: state.page_size}}

@@ -33,7 +33,7 @@ auth:
 # Used by APIs that take both a start and an exclusive-end index.
 requests:
   - method: GET
-    path: /api/v1/items
+    path: /offset/findings
     expect_status: [200, 204]
     query:
       offset: {format: string, value: {from_pagination: offset}}
@@ -43,6 +43,7 @@ requests:
 response:
   decode: json
   events_at: items
+
 
 pagination:
   offset:

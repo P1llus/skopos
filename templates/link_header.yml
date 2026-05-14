@@ -31,7 +31,7 @@ auth:
 
 requests:
   - method: GET
-    path: /api/v2/incidents
+    path: /link_header/incidents
     query:
       updated_after: {from_progress: latest_timestamp}
       per_page: {format: string, value: {ref: state.page_size}}

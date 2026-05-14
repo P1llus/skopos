@@ -99,8 +99,10 @@ skopos template show bearer_simple > spec.yml
 # 2. (Optional) generate a config file with all defaults documented
 skopos init -o config.yml
 
-# 3. (Optional) start up the example mock server for bearer_simple spec
-go run ./examples/bearer_quickstart_mock
+# 3. (Optional) start up the testserver — hosts all six starter templates on :9999.
+#    Every template's URL defaults already point at it; no extra configuration needed.
+#    Swap "bearer_simple" for any other starter template name to try a different shape.
+go run ./cmd/testserver
 
 # 4. Validate the spec
 skopos validate -i spec.yml
@@ -108,7 +110,7 @@ skopos validate -i spec.yml
 # 5. Run once
 skopos run -c config.yml -i spec.yml --once
 
-# 6. Or poll continuously
+# 6. Or poll continuously — the testserver emits fresh events on every drain
 skopos run -c config.yml -i spec.yml --interval 30s
 ```
 
@@ -130,22 +132,26 @@ The [`templates/`](templates) directory contains one spec per pattern
 the runner supports today. Every template is also embedded in the binary — use
 `skopos template list` to browse and `skopos template show <name>` to print one.
 
-| API shape                                          | Template                                                                          |
-| -------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Bearer token, no pagination                        | [`bearer_simple.yml`](templates/bearer_simple.yml)                              |
-| API key in header, time-window cursor              | [`api_key_auth.yml`](templates/api_key_auth.yml)                                |
-| OAuth2 client-credentials with cached access token | [`oauth2_client_credentials.yml`](templates/oauth2_client_credentials.yml)      |
-| Multi-mode auth dispatched on a state flag         | [`multi_mode_auth.yml`](templates/multi_mode_auth.yml)                          |
-| `cursor_token` pagination                          | [`cursor_token.yml`](templates/cursor_token.yml)                                |
-| `page_number` pagination + `has_more_at`           | [`page_number.yml`](templates/page_number.yml)                                  |
-| `offset` pagination                                | [`offset_pagination.yml`](templates/offset_pagination.yml)                      |
-| Link-header pagination (RFC 5988)                  | [`link_header.yml`](templates/link_header.yml)                                  |
-| Next-URL-in-body pagination                        | [`next_url_in_body.yml`](templates/next_url_in_body.yml)                        |
-| `scroll_id` session                                | [`scroll_id.yml`](templates/scroll_id.yml)                                      |
-| NDJSON response decode                             | [`ndjson_response.yml`](templates/ndjson_response.yml)                          |
-| POST with JSON body                                | [`post_json_body.yml`](templates/post_json_body.yml)                            |
-| Async submit / poll / fetch                        | [`async_poll.yml`](templates/async_poll.yml)                                    |
-| Session cookie via POST login                      | [`session_cookie.yml`](templates/session_cookie.yml)                            |
+The six starter templates (marked ★) point at `http://localhost:9999` with
+paths that match [`cmd/testserver`](cmd/testserver). Run `go run ./cmd/testserver`
+and the template defaults work without any extra configuration.
+
+| API shape                                               | Template                                                                          |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| ★ Bearer token, no pagination                           | [`bearer_simple.yml`](templates/bearer_simple.yml)                              |
+| ★ `cursor_token` pagination                             | [`cursor_token.yml`](templates/cursor_token.yml)                                |
+| ★ `page_number` pagination + `has_more_at`              | [`page_number.yml`](templates/page_number.yml)                                  |
+| ★ `offset` pagination                                   | [`offset_pagination.yml`](templates/offset_pagination.yml)                      |
+| ★ Link-header pagination (RFC 5988)                     | [`link_header.yml`](templates/link_header.yml)                                  |
+| ★ OAuth2 client-credentials with cached access token    | [`oauth2_client_credentials.yml`](templates/oauth2_client_credentials.yml)      |
+| API key in header, time-window cursor                   | [`api_key_auth.yml`](templates/api_key_auth.yml)                                |
+| Multi-mode auth dispatched on a state flag              | [`multi_mode_auth.yml`](templates/multi_mode_auth.yml)                          |
+| Next-URL-in-body pagination                             | [`next_url_in_body.yml`](templates/next_url_in_body.yml)                        |
+| `scroll_id` session                                     | [`scroll_id.yml`](templates/scroll_id.yml)                                      |
+| NDJSON response decode                                  | [`ndjson_response.yml`](templates/ndjson_response.yml)                          |
+| POST with JSON body                                     | [`post_json_body.yml`](templates/post_json_body.yml)                            |
+| Async submit / poll / fetch                             | [`async_poll.yml`](templates/async_poll.yml)                                    |
+| Session cookie via POST login                           | [`session_cookie.yml`](templates/session_cookie.yml)                            |
 
 For the canonical catalogue of API shapes and the schema knobs that
 express each one, see [`docs/api-methods.md`](docs/api-methods.md).
