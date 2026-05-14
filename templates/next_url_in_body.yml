@@ -1,8 +1,14 @@
 # next_url_in_body — server returns the next URL in the response body.
 #
-# Demonstrates: pagination.next_url with the URL pulled from the body
-# (e.g. {"next": "https://api/.../?page=2"}). The runner follows the URL
-# until the field is absent.
+# Demonstrates: pagination.next_url_in_body with the URL pulled from the
+# body (e.g. {"meta": {"next_page": "https://api/.../?page=2"}}). The
+# runner parses next_url_at into cursor.next_url, and the request's url
+# slot reads it back via {ref: cursor.next_url, default: <bootstrap-url>}
+# — first iteration hits the bootstrap URL, every subsequent iteration
+# follows whatever the previous page named, until the field is absent
+# (null or ""). Like link_header, this variant has no send_as
+# auto-injection: wiring cursor.next_url into the request is the
+# template's job.
 
 ir_version: "1"
 
@@ -30,7 +36,15 @@ auth:
 
 requests:
   - method: GET
-    path: /next_url_in_body/alerts
+    # First iteration: cursor.next_url is unset, so the default builds the
+    # bootstrap URL. Subsequent iterations follow the absolute URL the server
+    # returned at meta.next_page in the previous response.
+    url:
+      ref: cursor.next_url
+      default:
+        concat:
+          - {ref: state.url}
+          - /next_url_in_body/alerts
     query:
       since: {from_progress: latest_timestamp}
       limit: {format: string, value: {ref: state.page_size}}

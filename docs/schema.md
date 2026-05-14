@@ -516,6 +516,11 @@ RFC 5988 `Link: <url>; rel="next"`.
 |-----------|----------|-------------------------------------------------------------------|
 | `pattern` | no       | Override the regex (first capture group = next URL).              |
 
+The runner parses the header into `cursor.next_link`; it is **not**
+auto-injected. The request must read it back in its `url` slot via
+`{ref: cursor.next_link, default: <bootstrap-url>}`. The drain ends when a
+response carries no `rel="next"` entry.
+
 ### `pagination.next_url_in_body`
 
 Fully-formed next-page URL inside the body.
@@ -523,6 +528,11 @@ Fully-formed next-page URL inside the body.
 | Field         | Required | Description                          |
 |---------------|----------|--------------------------------------|
 | `next_url_at` | yes      | Body [Path](#paths) to the URL.      |
+
+The runner parses the URL into `cursor.next_url`; it is **not**
+auto-injected. The request must read it back in its `url` slot via
+`{ref: cursor.next_url, default: <bootstrap-url>}`. A missing, non-string,
+or empty value terminates the drain.
 
 ### `pagination.scroll_id`
 

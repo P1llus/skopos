@@ -49,8 +49,8 @@
 //   - etag_conditional: page query param is absent or "1".
 //   - post_json_body: search_from in the JSON body is absent or "0".
 //   - scroll_id: scroll query param is absent or empty.
-//   - next_url_in_body, session_cookie: pagination.none — every request
-//     (every data request, for session_cookie) is a fresh drain.
+//   - next_url_in_body: cursor query param is absent or empty.
+//   - session_cookie: pagination.none — every data request is a fresh drain.
 //   - async_poll: every result fetch is a fresh drain.
 //
 // When a drain start is detected the scenario resets its window and appends
