@@ -6,7 +6,14 @@ body:
     id: summary
     attributes:
       label: Summary
-      description: One or two sentences describing the bug.
+      description: One or two sentences describing the bug, prefer also to include go version and OS/arch when relevant.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Skopos version
+      description: Output of `skopos --version`, or the git commit if built from source.
     validations:
       required: true
   - type: textarea
@@ -35,24 +42,5 @@ body:
         stderr events. Use `--trace` (or the equivalent embedded Tracer) if
         the bug is request-level.
       render: shell
-    validations:
-      required: true
-  - type: input
-    id: version
-    attributes:
-      label: Skopos version
-      description: Output of `skopos --version`, or the git commit if built from source.
-    validations:
-      required: true
-  - type: input
-    id: go-version
-    attributes:
-      label: Go version
-      description: Output of `go version` (only required when built from source).
-  - type: input
-    id: os
-    attributes:
-      label: OS / arch
-      placeholder: e.g. linux/amd64, darwin/arm64, windows/amd64
     validations:
       required: true

@@ -64,6 +64,20 @@ cd skopos
 go build ./cmd/skopos
 ```
 
+**Verifying a release** — every release artifact is signed with [cosign](https://github.com/sigstore/cosign) keyless signing via GitHub Actions. To verify a downloaded binary:
+
+```sh
+# Download the archive, checksum file, signature, and certificate from the release page, then:
+cosign verify-blob checksums.txt \
+  --signature checksums.txt.sig \
+  --certificate checksums.txt.pem \
+  --certificate-identity "https://github.com/p1llus/skopos/.github/workflows/release.yml@refs/tags/VERSION" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+
+# Then verify your archive against the checksum:
+sha256sum --check --ignore-missing checksums.txt
+```
+
 API reference is published on
 [pkg.go.dev/github.com/p1llus/skopos](https://pkg.go.dev/github.com/p1llus/skopos)
 

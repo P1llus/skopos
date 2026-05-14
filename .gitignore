@@ -4,15 +4,6 @@ build/
 # goreleaser output
 dist/
 
-
+# Environment variables
 .env
 .local
-
-# Claude Code harness state (worktrees, session metadata)
-.claude/
-
-# Built binary (`go build ./cmd/skopos` drops it at the repo root).
-/skopos
-
-# Built generator binary (`go build ./tools/gen-schema-doc` drops it here).
-/gen-schema-doc
