@@ -68,8 +68,8 @@ func TestHandler_UnknownPath(t *testing.T) {
 	}
 }
 
-// TestHandler_AllScenarios asserts that AllScenarios() registers at least
-// 6 scenarios and that each root GET returns 200 or 401 (not 404).
+// TestHandler_AllScenarios asserts that AllScenarios() registers all 14
+// scenarios and that each entry point returns 200 (not 404) with valid auth.
 func TestHandler_AllScenarios(t *testing.T) {
 	opts := testserver.Options{
 		PageSize:       2,
@@ -80,38 +80,58 @@ func TestHandler_AllScenarios(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	paths := []struct {
-		path   string
-		header string
-		value  string
-	}{
-		{"/bearer_simple/events", "Authorization", "Bearer " + testserver.DefaultBearer},
-		{"/cursor_token/findings", "Authorization", "Bearer " + testserver.DefaultBearer},
-		{"/page_number/findings", "Authorization", "Bearer " + testserver.DefaultBearer},
-		{"/offset/findings", "Authorization", "Bearer " + testserver.DefaultBearer},
-		{"/link_header/incidents", "X-API-Key", testserver.DefaultAPIKey},
-		{"/oauth2/findings", "Authorization", "Bearer test-oauth2-token"},
-	}
-
 	// oauth2 token endpoint must be hit first to get a valid bearer.
 	tokenResp := doPost(t, ts.Client(), ts.URL+"/oauth2/token", "test-client", "test-secret")
 	accessToken, _ := tokenResp["access_token"].(string)
 	if accessToken == "" {
 		t.Fatal("/oauth2/token returned no access_token")
 	}
-	paths[5].value = "Bearer " + accessToken
 
-	for _, p := range paths {
-		req, _ := http.NewRequest(http.MethodGet, ts.URL+p.path, nil)
-		req.Header.Set(p.header, p.value)
+	bearer := func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+testserver.DefaultBearer)
+	}
+	apiKey := func(r *http.Request) {
+		r.Header.Set("X-API-Key", testserver.DefaultAPIKey)
+	}
+
+	cases := []struct {
+		method string
+		path   string
+		auth   func(*http.Request)
+	}{
+		{http.MethodGet, "/bearer_simple/events", bearer},
+		{http.MethodGet, "/cursor_token/findings", bearer},
+		{http.MethodGet, "/page_number/findings", bearer},
+		{http.MethodGet, "/offset/findings", bearer},
+		{http.MethodGet, "/link_header/incidents", apiKey},
+		{http.MethodGet, "/oauth2/findings", func(r *http.Request) {
+			r.Header.Set("Authorization", "Bearer "+accessToken)
+		}},
+		{http.MethodGet, "/api_key_auth/detections", apiKey},
+		{http.MethodGet, "/basic_auth/data", func(r *http.Request) {
+			r.SetBasicAuth(testserver.DefaultBasicUser, testserver.DefaultBasicPass)
+		}},
+		{http.MethodGet, "/custom_auth/events", func(r *http.Request) {
+			r.Header.Set("X-Custom-Auth", testserver.DefaultCustomAuth)
+		}},
+		{http.MethodGet, "/simple_get_object/status", func(*http.Request) {}},
+		{http.MethodGet, "/ndjson_response/logs", bearer},
+		{http.MethodGet, "/multi_mode_auth/events", apiKey},
+		{http.MethodPost, "/post_raw_body/ingest", bearer},
+		{http.MethodPost, "/post_form_body/events", bearer},
+	}
+
+	for _, c := range cases {
+		req, _ := http.NewRequest(c.method, ts.URL+c.path, nil)
+		c.auth(req)
 		resp, err := ts.Client().Do(req)
 		if err != nil {
-			t.Errorf("GET %s: %v", p.path, err)
+			t.Errorf("%s %s: %v", c.method, c.path, err)
 			continue
 		}
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			t.Errorf("GET %s: status %d, want 200", p.path, resp.StatusCode)
+			t.Errorf("%s %s: status %d, want 200", c.method, c.path, resp.StatusCode)
 		}
 	}
 }

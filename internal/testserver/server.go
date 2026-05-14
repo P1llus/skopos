@@ -35,7 +35,9 @@ func (s *Server) Handler() http.Handler {
 	})
 }
 
-// AllScenarios returns the six starter-subset scenarios in declaration order.
+// AllScenarios returns every registered scenario in declaration order: the
+// six paginated/auth starter scenarios followed by the eight single-request
+// pagination.none variations.
 func AllScenarios() []Scenario {
 	return []Scenario{
 		BearerSimple(),
@@ -44,6 +46,14 @@ func AllScenarios() []Scenario {
 		Offset(),
 		LinkHeader(),
 		OAuth2ClientCredentials(),
+		APIKeyAuth(),
+		BasicAuth(),
+		CustomAuth(),
+		SimpleGetObject(),
+		NDJSONResponse(),
+		MultiModeAuth(),
+		PostRawBody(),
+		PostFormBody(),
 	}
 }
 
@@ -59,4 +69,17 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 // writeError writes a plain-text HTTP error.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	http.Error(w, fmt.Sprintf("%d %s", status, msg), status)
+}
+
+// writeNDJSON writes events as newline-delimited JSON, one object per line.
+func writeNDJSON(w http.ResponseWriter, status int, events []Event) {
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(status)
+	enc := json.NewEncoder(w)
+	for _, e := range events {
+		if err := enc.Encode(e); err != nil {
+			log.Printf("testserver: encode ndjson: %v", err)
+			return
+		}
+	}
 }
