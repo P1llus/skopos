@@ -33,7 +33,7 @@ auth:
 # a state-derived integer formatted to string, and a static literal.
 requests:
   - method: POST
-    path: /api/v1/form/events
+    path: /post_form_body/events
     body:
       form:
         since: {from_progress: latest_timestamp}

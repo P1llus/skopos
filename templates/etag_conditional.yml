@@ -42,11 +42,11 @@ auth:
 requests:
   - id: probe
     method: GET
-    path: /api/v1/etag/probe
+    path: /etag_conditional/probe
 
   - id: data
     method: GET
-    path: /api/v1/etag/data
+    path: /etag_conditional/data
     query:
       page: {format: string, value: {from_pagination: page}}
     if:

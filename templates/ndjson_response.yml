@@ -29,7 +29,7 @@ auth:
 
 requests:
   - method: GET
-    path: /api/v1/logs
+    path: /ndjson_response/logs
 
 # NDJSON decode: each newline-delimited JSON line is a separate event.
 # events_at: "" means the body root is the events stream (each line IS an event).

@@ -29,6 +29,12 @@
 //	multi_mode_auth            templates/multi_mode_auth.yml
 //	post_raw_body              templates/post_raw_body.yml
 //	post_form_body             templates/post_form_body.yml
+//	async_poll                 templates/async_poll.yml
+//	etag_conditional           templates/etag_conditional.yml
+//	next_url_in_body           templates/next_url_in_body.yml
+//	post_json_body             templates/post_json_body.yml
+//	scroll_id                  templates/scroll_id.yml
+//	session_cookie             templates/session_cookie.yml
 //
 // Example — run all scenarios then exercise the cursor_token template:
 //

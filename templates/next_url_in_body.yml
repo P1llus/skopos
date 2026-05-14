@@ -30,7 +30,7 @@ auth:
 
 requests:
   - method: GET
-    path: /api/v1/alerts
+    path: /next_url_in_body/alerts
     query:
       since: {from_progress: latest_timestamp}
       limit: {format: string, value: {ref: state.page_size}}

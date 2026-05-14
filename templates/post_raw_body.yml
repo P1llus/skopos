@@ -28,7 +28,7 @@ auth:
 
 requests:
   - method: POST
-    path: /api/v1/ingest
+    path: /post_raw_body/ingest
     headers:
       Content-Type: application/x-ndjson
     body:

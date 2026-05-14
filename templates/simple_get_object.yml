@@ -19,7 +19,7 @@ auth:
 
 requests:
   - method: GET
-    path: /api/v1/status
+    path: /simple_get_object/status
 
 # The entire decoded body is yielded as the event stream. When the body is a
 # single JSON object (not an array) the target wraps it in a list, so one
