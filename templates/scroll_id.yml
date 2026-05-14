@@ -29,7 +29,7 @@ auth:
 
 requests:
   - method: GET
-    path: /api/v1/scroll
+    path: /scroll_id/scroll
     query:
       since: {from_progress: latest_timestamp}
       scroll: {from_pagination: scroll_id}

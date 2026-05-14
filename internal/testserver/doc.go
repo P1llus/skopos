@@ -7,7 +7,8 @@
 // # Scenarios
 //
 // The scenarios registered by [AllScenarios] — six paginated/auth starter
-// scenarios plus eight single-request pagination.none variations:
+// scenarios, eight single-request pagination.none variations, and six
+// multi-step / body-cursor scenarios:
 //
 //	Scenario                  Prefix               Auth
 //	bearer_simple             /bearer_simple       Bearer test-bearer-token-12345
@@ -24,6 +25,12 @@
 //	multi_mode_auth           /multi_mode_auth     Bearer | X-API-Key | X-Fallback-Auth: test-api-key-67890
 //	post_raw_body             /post_raw_body       Bearer test-bearer-token-12345 (POST)
 //	post_form_body            /post_form_body      Bearer test-bearer-token-12345 (POST)
+//	async_poll                /async_poll          Bearer test-bearer-token-12345 (submit→poll→fetch)
+//	etag_conditional          /etag_conditional    none (probe→data, page_number)
+//	next_url_in_body          /next_url_in_body    Bearer test-bearer-token-12345
+//	post_json_body            /post_json_body      Bearer test-bearer-token-12345 (POST, offset)
+//	scroll_id                 /scroll_id           Bearer test-bearer-token-12345
+//	session_cookie            /session_cookie      none (login→data, Cookie: session=...)
 //
 // # Drain-start detection
 //
@@ -39,6 +46,12 @@
 //   - api_key_auth, basic_auth, custom_auth, simple_get_object,
 //     ndjson_response, multi_mode_auth, post_raw_body, post_form_body:
 //     pagination.none — every request is a fresh drain.
+//   - etag_conditional: page query param is absent or "1".
+//   - post_json_body: search_from in the JSON body is absent or "0".
+//   - scroll_id: scroll query param is absent or empty.
+//   - next_url_in_body, session_cookie: pagination.none — every request
+//     (every data request, for session_cookie) is a fresh drain.
+//   - async_poll: every result fetch is a fresh drain.
 //
 // When a drain start is detected the scenario resets its window and appends
 // [Options.EventsPerDrain] events with fresh timestamps and monotonically

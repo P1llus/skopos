@@ -31,7 +31,7 @@ auth:
 
 requests:
   - method: GET
-    path: /api/v1/events
+    path: /custom_auth/events
     query:
       since: {from_progress: latest_timestamp}
 

@@ -25,14 +25,14 @@ auth:
   none: {}
 
 # Two-step session-cookie chain.
-# Step 1 (login): POST /login; extract Set-Cookie response header into extract.session_cookie.
-# Step 2 (data):  GET /api/v1/cookie/data with the extracted cookie as the Cookie request header.
+# Step 1 (login): POST /session_cookie/login; extract Set-Cookie response header into extract.session_cookie.
+# Step 2 (data):  GET /session_cookie/data with the extracted cookie as the Cookie request header.
 #
 # The chain runs end-to-end every iteration so server-rotated session cookies are handled.
 requests:
   - id: login
     method: POST
-    path: /login
+    path: /session_cookie/login
     extract:
       - name: session_cookie
         source: header
@@ -40,7 +40,7 @@ requests:
 
   - id: data
     method: GET
-    path: /api/v1/cookie/data
+    path: /session_cookie/data
     headers:
       Cookie: {ref: extract.session_cookie}
 

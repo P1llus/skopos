@@ -31,10 +31,10 @@ auth:
 # Async-poll (submit → poll → fetch).
 #
 # Iteration model driven by cursor.phase (default: "submit"):
-#   phase=submit → POST /api/v1/exports (expect 202)
+#   phase=submit → POST /async_poll/exports (expect 202)
 #                  Extract body.export_id → cursor.export_id
 #                  Advance phase to "poll"
-#   phase=poll   → GET /api/v1/exports/{cursor.export_id}/status
+#   phase=poll   → GET /async_poll/exports/{cursor.export_id}/status
 #                  Loop until body.status == "complete"
 #                  Extract body.result_url → cursor.result_url
 #                  Advance phase to "fetch"
@@ -44,7 +44,7 @@ auth:
 requests:
   - id: submit
     method: POST
-    path: /api/v1/exports
+    path: /async_poll/exports
     body:
       json:
         since: {from_progress: latest_timestamp}
@@ -54,7 +54,7 @@ requests:
     method: GET
     path:
       concat:
-        - /api/v1/exports/
+        - /async_poll/exports/
         - {ref: cursor.export_id}
         - /status
 

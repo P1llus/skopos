@@ -33,7 +33,7 @@ auth:
 # The offset pagination layer slides over the window on each page.
 requests:
   - method: POST
-    path: /api/v2/alerts/search
+    path: /post_json_body/search
     body:
       json:
         from_date: {from_progress: window_start}

@@ -68,8 +68,9 @@ func TestHandler_UnknownPath(t *testing.T) {
 	}
 }
 
-// TestHandler_AllScenarios asserts that AllScenarios() registers all 14
-// scenarios and that each entry point returns 200 (not 404) with valid auth.
+// TestHandler_AllScenarios asserts that AllScenarios() registers all 20
+// scenarios and that each entry point returns its expected status (not 404)
+// with valid auth.
 func TestHandler_AllScenarios(t *testing.T) {
 	opts := testserver.Options{
 		PageSize:       2,
@@ -93,35 +94,48 @@ func TestHandler_AllScenarios(t *testing.T) {
 	apiKey := func(r *http.Request) {
 		r.Header.Set("X-API-Key", testserver.DefaultAPIKey)
 	}
+	noAuth := func(*http.Request) {}
 
+	// wantStatus 0 means "expect 200".
 	cases := []struct {
-		method string
-		path   string
-		auth   func(*http.Request)
+		method     string
+		path       string
+		auth       func(*http.Request)
+		wantStatus int
 	}{
-		{http.MethodGet, "/bearer_simple/events", bearer},
-		{http.MethodGet, "/cursor_token/findings", bearer},
-		{http.MethodGet, "/page_number/findings", bearer},
-		{http.MethodGet, "/offset/findings", bearer},
-		{http.MethodGet, "/link_header/incidents", apiKey},
+		{http.MethodGet, "/bearer_simple/events", bearer, 0},
+		{http.MethodGet, "/cursor_token/findings", bearer, 0},
+		{http.MethodGet, "/page_number/findings", bearer, 0},
+		{http.MethodGet, "/offset/findings", bearer, 0},
+		{http.MethodGet, "/link_header/incidents", apiKey, 0},
 		{http.MethodGet, "/oauth2/findings", func(r *http.Request) {
 			r.Header.Set("Authorization", "Bearer "+accessToken)
-		}},
-		{http.MethodGet, "/api_key_auth/detections", apiKey},
+		}, 0},
+		{http.MethodGet, "/api_key_auth/detections", apiKey, 0},
 		{http.MethodGet, "/basic_auth/data", func(r *http.Request) {
 			r.SetBasicAuth(testserver.DefaultBasicUser, testserver.DefaultBasicPass)
-		}},
+		}, 0},
 		{http.MethodGet, "/custom_auth/events", func(r *http.Request) {
 			r.Header.Set("X-Custom-Auth", testserver.DefaultCustomAuth)
-		}},
-		{http.MethodGet, "/simple_get_object/status", func(*http.Request) {}},
-		{http.MethodGet, "/ndjson_response/logs", bearer},
-		{http.MethodGet, "/multi_mode_auth/events", apiKey},
-		{http.MethodPost, "/post_raw_body/ingest", bearer},
-		{http.MethodPost, "/post_form_body/events", bearer},
+		}, 0},
+		{http.MethodGet, "/simple_get_object/status", noAuth, 0},
+		{http.MethodGet, "/ndjson_response/logs", bearer, 0},
+		{http.MethodGet, "/multi_mode_auth/events", apiKey, 0},
+		{http.MethodPost, "/post_raw_body/ingest", bearer, 0},
+		{http.MethodPost, "/post_form_body/events", bearer, 0},
+		{http.MethodPost, "/async_poll/exports", bearer, http.StatusAccepted},
+		{http.MethodGet, "/etag_conditional/probe", noAuth, 0},
+		{http.MethodGet, "/next_url_in_body/alerts", bearer, 0},
+		{http.MethodPost, "/post_json_body/search", bearer, 0},
+		{http.MethodGet, "/scroll_id/scroll", bearer, 0},
+		{http.MethodPost, "/session_cookie/login", noAuth, 0},
 	}
 
 	for _, c := range cases {
+		want := c.wantStatus
+		if want == 0 {
+			want = http.StatusOK
+		}
 		req, _ := http.NewRequest(c.method, ts.URL+c.path, nil)
 		c.auth(req)
 		resp, err := ts.Client().Do(req)
@@ -130,8 +144,8 @@ func TestHandler_AllScenarios(t *testing.T) {
 			continue
 		}
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("%s %s: status %d, want 200", c.method, c.path, resp.StatusCode)
+		if resp.StatusCode != want {
+			t.Errorf("%s %s: status %d, want %d", c.method, c.path, resp.StatusCode, want)
 		}
 	}
 }
