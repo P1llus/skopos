@@ -1,6 +1,6 @@
 ir_version: "1"
 
-# Same ETag conditional pattern as etag_conditional.yaml, but the conditional
+# Same ETag conditional pattern as etag_conditional.yml, but the conditional
 # step is in the MIDDLE of a three-step chain rather than the last. Skip
 # semantics apply identically: when the middle step's if-predicate is false
 # or it returns 304, {ref: steps.middle.body.<...>} resolves to a zero

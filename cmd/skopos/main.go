@@ -57,7 +57,7 @@ Usage:
       Validate a spec document. Reads stdin when -i is omitted; writes
       diagnostics to stdout. Exits 1 on any error-severity diagnostic.
 
-  skopos run [-c config.yaml] -i path [--state path] [--once] [--interval 5m]
+  skopos run [-c config.yml] -i path [--state path] [--once] [--interval 5m]
              [--out path] [--trace path] [--http-timeout dur] [--max-pages n]
       Execute a spec document in-process via the client backend. Emits
       events as JSONL to --out (default stdout). --once runs one drain;
@@ -75,9 +75,9 @@ Usage:
 
   skopos template show <name>
       Print a bundled spec template to stdout. The name may be given
-      with or without the .yaml extension. Redirect to a file to start
+      with or without the .yml extension. Redirect to a file to start
       from a known-good pattern:
-          skopos template show bearer_simple > spec.yaml
+          skopos template show bearer_simple > spec.yml
 
 Flags (validate):
   -i path     Input file (YAML or JSON). Omit or use "-" for stdin.

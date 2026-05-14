@@ -10,7 +10,7 @@ sidecar: the spec document *is* the program, the runner interprets it.
 
 ```
                 ┌─────────────────┐
-   spec.yaml ──►│                 │──► events
+   spec.yml ──►│                 │──► events
                 │  skopos runner  │
    state.json ◄►│                 │──► trace (optional)
                 └─────────────────┘
@@ -85,27 +85,27 @@ zero to running events:
 
 ```sh
 # 1. Grab a starter template (bearer token, single endpoint)
-skopos template show bearer_simple > spec.yaml
+skopos template show bearer_simple > spec.yml
 
 # 2. (Optional) generate a config file with all defaults documented
-skopos init -o config.yaml
-# edit config.yaml to set your API key, URL, interval, state file, …
+skopos init -o config.yml
+# edit config.yml to set your API key, URL, interval, state file, …
 
 # 3. Validate the spec
-skopos validate -i spec.yaml
+skopos validate -i spec.yml
 
 # 4. Run once
-skopos run -c config.yaml -i spec.yaml --once
+skopos run -c config.yml -i spec.yml --once
 
 # 5. Or poll continuously
-skopos run -c config.yaml -i spec.yaml --interval 30s
+skopos run -c config.yml -i spec.yml --interval 30s
 ```
 
 `skopos run` writes one JSON event per line to stdout. Common flags:
 
 | Flag                    | Effect                                              |
 | ----------------------- | --------------------------------------------------- |
-| `-c config.yaml`        | Load defaults from a YAML config file               |
+| `-c config.yml`        | Load defaults from a YAML config file               |
 | `--state s.json`        | Persist the cursor between runs                     |
 | `--interval 30s`        | Poll continuously until SIGINT                      |
 | `--out events.jsonl`    | Write events to a file instead of stdout            |
@@ -121,20 +121,20 @@ the runner supports today. Every template is also embedded in the binary — use
 
 | API shape                                          | Template                                                                          |
 | -------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Bearer token, no pagination                        | [`bearer_simple.yaml`](templates/bearer_simple.yaml)                              |
-| API key in header, time-window cursor              | [`api_key_auth.yaml`](templates/api_key_auth.yaml)                                |
-| OAuth2 client-credentials with cached access token | [`oauth2_client_credentials.yaml`](templates/oauth2_client_credentials.yaml)      |
-| Multi-mode auth dispatched on a state flag         | [`multi_mode_auth.yaml`](templates/multi_mode_auth.yaml)                          |
-| `cursor_token` pagination                          | [`cursor_token.yaml`](templates/cursor_token.yaml)                                |
-| `page_number` pagination + `has_more_at`           | [`page_number.yaml`](templates/page_number.yaml)                                  |
-| `offset` pagination                                | [`offset_pagination.yaml`](templates/offset_pagination.yaml)                      |
-| Link-header pagination (RFC 5988)                  | [`link_header.yaml`](templates/link_header.yaml)                                  |
-| Next-URL-in-body pagination                        | [`next_url_in_body.yaml`](templates/next_url_in_body.yaml)                        |
-| `scroll_id` session                                | [`scroll_id.yaml`](templates/scroll_id.yaml)                                      |
-| NDJSON response decode                             | [`ndjson_response.yaml`](templates/ndjson_response.yaml)                          |
-| POST with JSON body                                | [`post_json_body.yaml`](templates/post_json_body.yaml)                            |
-| Async submit / poll / fetch                        | [`async_poll.yaml`](templates/async_poll.yaml)                                    |
-| Session cookie via POST login                      | [`session_cookie.yaml`](templates/session_cookie.yaml)                            |
+| Bearer token, no pagination                        | [`bearer_simple.yml`](templates/bearer_simple.yml)                              |
+| API key in header, time-window cursor              | [`api_key_auth.yml`](templates/api_key_auth.yml)                                |
+| OAuth2 client-credentials with cached access token | [`oauth2_client_credentials.yml`](templates/oauth2_client_credentials.yml)      |
+| Multi-mode auth dispatched on a state flag         | [`multi_mode_auth.yml`](templates/multi_mode_auth.yml)                          |
+| `cursor_token` pagination                          | [`cursor_token.yml`](templates/cursor_token.yml)                                |
+| `page_number` pagination + `has_more_at`           | [`page_number.yml`](templates/page_number.yml)                                  |
+| `offset` pagination                                | [`offset_pagination.yml`](templates/offset_pagination.yml)                      |
+| Link-header pagination (RFC 5988)                  | [`link_header.yml`](templates/link_header.yml)                                  |
+| Next-URL-in-body pagination                        | [`next_url_in_body.yml`](templates/next_url_in_body.yml)                        |
+| `scroll_id` session                                | [`scroll_id.yml`](templates/scroll_id.yml)                                      |
+| NDJSON response decode                             | [`ndjson_response.yml`](templates/ndjson_response.yml)                          |
+| POST with JSON body                                | [`post_json_body.yml`](templates/post_json_body.yml)                            |
+| Async submit / poll / fetch                        | [`async_poll.yml`](templates/async_poll.yml)                                    |
+| Session cookie via POST login                      | [`session_cookie.yml`](templates/session_cookie.yml)                            |
 
 For the canonical catalogue of API shapes and the schema knobs that
 express each one, see [`docs/api-methods.md`](docs/api-methods.md).
@@ -156,7 +156,7 @@ import (
 )
 
 func main() {
-    f, err := os.Open("spec.yaml")
+    f, err := os.Open("spec.yml")
     if err != nil {
         log.Fatal(err)
     }

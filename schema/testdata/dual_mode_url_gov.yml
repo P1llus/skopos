@@ -1,8 +1,6 @@
 # NOTE: shares the auth × pagination × progress × decode tuple with
-# dual_mode_url_gov.yaml. The two fixtures intentionally differ only in
-# state.gov_cloud (false vs true) so they exercise the select branches arm
-# (gov) vs the default arm (commercial); don't drop either one without
-# splitting that coverage somewhere else.
+# dual_mode_url_commercial.yml. This sibling pins the select branches arm
+# (state.gov_cloud=true); the commercial fixture pins the default arm.
 ir_version: "1"
 
 state:
@@ -21,7 +19,7 @@ state:
       default: "test-bearer-token-12345"
     gov_cloud:
       type: bool
-      default: false
+      default: true
 
 defaults:
   base_url: {ref: state.url}
@@ -30,7 +28,8 @@ auth:
   bearer:
     token: {ref: state.api_key}
 
-# URL branch: gov_cloud=false causes no branch to fire; default (commercial) applies.
+# URL branch: gov_cloud=true fires the first branch (gov endpoint).
+# Default falls through to the commercial endpoint.
 requests:
   - method: GET
     url:

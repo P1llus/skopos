@@ -32,7 +32,7 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestLoadConfig_RoundTrip(t *testing.T) {
 	content := `
-input: spec.yaml
+input: spec.yml
 state: state.json
 out: events.jsonl
 trace: trace.jsonl
@@ -42,7 +42,7 @@ http_timeout: 45s
 max_pages: 500
 `
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
+	path := filepath.Join(dir, "config.yml")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -52,8 +52,8 @@ max_pages: 500
 		t.Fatalf("loadConfig: %v", err)
 	}
 
-	if cfg.Input != "spec.yaml" {
-		t.Errorf("Input = %q, want spec.yaml", cfg.Input)
+	if cfg.Input != "spec.yml" {
+		t.Errorf("Input = %q, want spec.yml", cfg.Input)
 	}
 	if cfg.State != "state.json" {
 		t.Errorf("State = %q, want state.json", cfg.State)
@@ -79,9 +79,9 @@ max_pages: 500
 }
 
 func TestLoadConfig_Partial(t *testing.T) {
-	content := `input: myspec.yaml`
+	content := `input: myspec.yml`
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
+	path := filepath.Join(dir, "config.yml")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -90,8 +90,8 @@ func TestLoadConfig_Partial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if cfg.Input != "myspec.yaml" {
-		t.Errorf("Input = %q, want myspec.yaml", cfg.Input)
+	if cfg.Input != "myspec.yml" {
+		t.Errorf("Input = %q, want myspec.yml", cfg.Input)
 	}
 	// Omitted fields remain zero.
 	if cfg.State != "" {
@@ -105,7 +105,7 @@ func TestLoadConfig_Partial(t *testing.T) {
 func TestLoadConfig_UnknownKeyRejected(t *testing.T) {
 	content := `intterval: 5m` // typo
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
+	path := filepath.Join(dir, "config.yml")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestLoadConfig_UnknownKeyRejected(t *testing.T) {
 }
 
 func TestLoadConfig_MissingFile(t *testing.T) {
-	_, err := loadConfig("/nonexistent/path/config.yaml")
+	_, err := loadConfig("/nonexistent/path/config.yml")
 	if err == nil {
 		t.Fatal("expected error for missing file, got nil")
 	}
@@ -126,7 +126,7 @@ func TestLoadConfig_MissingFile(t *testing.T) {
 func TestLoadConfig_InvalidYAML(t *testing.T) {
 	content := `input: [unclosed`
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
+	path := filepath.Join(dir, "config.yml")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}

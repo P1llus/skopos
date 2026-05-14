@@ -726,7 +726,7 @@ func TestTimeWindowProgress_ForwardClockClamp(t *testing.T) {
 }
 
 // TestEndToEnd_TimeWindow drives the time_window variant against a live
-// httptest server. Mirrors templates/post_json_body.yaml: the
+// httptest server. Mirrors templates/post_json_body.yml: the
 // request is a POST whose JSON body carries from_date / to_date plucked
 // from {from_progress: window_start / window_end}. Two drains, asserting
 // (a) drain-1 sends the initial [now-24h, now] window, (b) drain-2 sends
@@ -811,7 +811,7 @@ func TestEndToEnd_TimeWindow(t *testing.T) {
 	}
 }
 
-// timeWindowDoc mirrors templates/post_json_body.yaml: POST with
+// timeWindowDoc mirrors templates/post_json_body.yml: POST with
 // a JSON body whose from_date / to_date come from {from_progress: ...}.
 // Pagination is none so each drain runs exactly one iteration, keeping the
 // test focused on the time_window plumbing.
@@ -1071,7 +1071,7 @@ func TestEndToEnd_AsyncJob_LatestEventTimestamp(t *testing.T) {
 	}
 }
 
-// asyncLatestEventTimestampDoc mirrors templates/async_poll.yaml
+// asyncLatestEventTimestampDoc mirrors templates/async_poll.yml
 // but swaps the cursor_update kind from use_now to latest_event_timestamp so
 // the fetch body's max event timestamp drives the next drain's window.
 func asyncLatestEventTimestampDoc(baseURL string) *schema.Doc {

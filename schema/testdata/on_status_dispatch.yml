@@ -1,7 +1,7 @@
 ir_version: "1"
 
 # `on_status` verbs `empty_events` and `fail`. `skip` is covered by
-# etag_conditional.yaml.
+# etag_conditional.yml.
 #
 # Realistic shape: an API that returns 429 with no Retry-After header (where
 # the operator wants to treat the rate-limit as "no new data, try again next

@@ -63,7 +63,7 @@ progress:
 // in-process.
 func TestValidate_HappyPath(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "doc.yaml")
+	path := filepath.Join(dir, "doc.yml")
 	if err := os.WriteFile(path, []byte(validDoc), 0o644); err != nil {
 		t.Fatalf("write doc: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestValidate_HappyPath(t *testing.T) {
 // on stdout. main.go then maps the sentinel to exit code 1.
 func TestValidate_FailReturnsSentinel(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "bad.yaml")
+	path := filepath.Join(dir, "bad.yml")
 	if err := os.WriteFile(path, []byte(invalidDoc), 0o644); err != nil {
 		t.Fatalf("write doc: %v", err)
 	}

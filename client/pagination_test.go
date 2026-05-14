@@ -1158,7 +1158,7 @@ func TestEndToEnd_ScrollID(t *testing.T) {
 }
 
 // scrollIDDoc builds a minimal scroll_id-paginated *schema.Doc mirroring
-// templates/scroll_id.yaml. The scroll= query carries
+// templates/scroll_id.yml. The scroll= query carries
 // {from_pagination: scroll_id} so the first request goes out without it
 // (server opens the session) and subsequent requests echo the previous
 // response's scroll id. complete_when fires when the body flags the
@@ -1491,7 +1491,7 @@ func TestEndToEnd_GraphQLRelay(t *testing.T) {
 }
 
 // graphqlRelayDoc builds a minimal graphql_relay-paginated *schema.Doc mirroring
-// schema/testdata/oauth2_relay.yaml. The request is a POST with a
+// schema/testdata/oauth2_relay.yml. The request is a POST with a
 // GraphQL body whose variables.after carries {from_pagination: relay_cursor}
 // — the first request sends after=null (server starts at the beginning of
 // the connection) and subsequent requests replay the previous response's

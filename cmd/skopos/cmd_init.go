@@ -19,7 +19,7 @@ const configTemplate = `# skopos run configuration
 # Omit a field to use the built-in default.
 
 # input: path to the spec file to run. Equivalent to -i / --input.
-# input: spec.yaml
+# input: spec.yml
 
 # state: path to the JSON state file for persisting the cursor between runs.
 # Equivalent to --state. Omit to use an in-memory store (state lost on exit).

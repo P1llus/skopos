@@ -9,7 +9,7 @@
 // Typical CLI usage:
 //
 //	skopos template list          # list all template names
-//	skopos template show bearer_simple > spec.yaml
+//	skopos template show bearer_simple > spec.yml
 package templates
 
 import (
@@ -20,12 +20,12 @@ import (
 	"strings"
 )
 
-//go:embed *.yaml
+//go:embed *.yml
 
 // FS is the embedded filesystem containing all bundled spec templates.
 var FS embed.FS
 
-// Names returns the sorted list of template names without the .yaml extension.
+// Names returns the sorted list of template names without the .yml extension.
 func Names() []string {
 	entries, err := fs.ReadDir(FS, ".")
 	if err != nil {
@@ -38,25 +38,31 @@ func Names() []string {
 			continue
 		}
 		name := e.Name()
-		if strings.HasSuffix(name, ".yaml") {
-			names = append(names, strings.TrimSuffix(name, ".yaml"))
+		if strings.HasSuffix(name, ".yml") {
+			names = append(names, strings.TrimSuffix(name, ".yml"))
 		}
 	}
 	sort.Strings(names)
 	return names
 }
 
+// templateFileName resolves the user's name to an embedded template path.
+func templateFileName(name string) string {
+	name = strings.TrimSuffix(name, ".yaml")
+	name = strings.TrimSuffix(name, ".yml")
+	return name + ".yml"
+}
+
 // Read returns the raw bytes of the named template. The name may be supplied
-// with or without the .yaml extension. Returns an error if the template does
-// not exist.
+// with or without a .yml extension (legacy .yaml is also accepted).
+// Returns an error if the template does not exist.
 func Read(name string) ([]byte, error) {
-	if !strings.HasSuffix(name, ".yaml") {
-		name = name + ".yaml"
-	}
-	data, err := FS.ReadFile(name)
+	file := templateFileName(name)
+	data, err := FS.ReadFile(file)
 	if err != nil {
+		base := strings.TrimSuffix(file, ".yml")
 		available := Names()
-		return nil, fmt.Errorf("template %q not found (available: %s)", strings.TrimSuffix(name, ".yaml"), strings.Join(available, ", "))
+		return nil, fmt.Errorf("template %q not found (available: %s)", base, strings.Join(available, ", "))
 	}
 	return data, nil
 }

@@ -71,19 +71,27 @@ func TestTemplateShow_BearerSimple(t *testing.T) {
 	}
 }
 
-func TestTemplateShow_AcceptsYamlExtension(t *testing.T) {
+func TestTemplateShow_AcceptsYmlExtension(t *testing.T) {
 	outWithout := captureStdout(t, func() {
 		if err := runTemplateShow("bearer_simple"); err != nil {
 			t.Fatalf("show without ext: %v", err)
 		}
 	})
-	outWith := captureStdout(t, func() {
-		if err := runTemplateShow("bearer_simple.yaml"); err != nil {
-			t.Fatalf("show with ext: %v", err)
+	outYml := captureStdout(t, func() {
+		if err := runTemplateShow("bearer_simple.yml"); err != nil {
+			t.Fatalf("show with .yml: %v", err)
 		}
 	})
-	if outWithout != outWith {
-		t.Errorf("show with and without .yaml extension differ")
+	outLegacyYaml := captureStdout(t, func() {
+		if err := runTemplateShow("bearer_simple.yaml"); err != nil {
+			t.Fatalf("show with legacy .yaml: %v", err)
+		}
+	})
+	if outWithout != outYml {
+		t.Errorf("show with and without .yml extension differ")
+	}
+	if outWithout != outLegacyYaml {
+		t.Errorf("show with legacy .yaml extension differ")
 	}
 }
 

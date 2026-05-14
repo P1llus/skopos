@@ -1,6 +1,6 @@
 ir_version: "1"
 
-# async_job sibling of async_poll.yaml that exercises
+# async_job sibling of async_poll.yml that exercises
 # `on_complete.cursor_update.kind: latest_event_timestamp` — the cursor
 # advances to the max event timestamp seen in the fetch step's body (with an
 # optional per-iteration lookback) instead of using_now. This is the right

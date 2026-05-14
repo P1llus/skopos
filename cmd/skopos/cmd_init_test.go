@@ -26,7 +26,7 @@ func TestInit_Stdout(t *testing.T) {
 
 func TestInit_ToFile(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
+	path := filepath.Join(dir, "config.yml")
 
 	if err := runInit([]string{"-o", path}); err != nil {
 		t.Fatalf("runInit to file: %v", err)
@@ -54,7 +54,7 @@ func TestInit_ToFile(t *testing.T) {
 
 func TestInit_FailsIfFileExists(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
+	path := filepath.Join(dir, "config.yml")
 	if err := os.WriteFile(path, []byte("existing"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestInit_FailsIfFileExists(t *testing.T) {
 
 func TestInit_ForceOverwrites(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
+	path := filepath.Join(dir, "config.yml")
 	if err := os.WriteFile(path, []byte("old content"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestInit_OutputIsValidLoadableConfig(t *testing.T) {
 	// The generated template (with all lines commented out) must be
 	// loadable without error even though every field is absent.
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
+	path := filepath.Join(dir, "config.yml")
 	if err := runInit([]string{"-o", path}); err != nil {
 		t.Fatalf("runInit: %v", err)
 	}

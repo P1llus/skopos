@@ -1,8 +1,8 @@
 ir_version: "1"
 
-# NOTE: close-duplicate of bearer_simple.yaml on the matrix axes (both
+# NOTE: close-duplicate of bearer_simple.yml on the matrix axes (both
 # bearer × none × latest_event_timestamp × json). This sibling sets the
-# per-iteration `lookback` sub-variant; bearer_simple.yaml omits it.
+# per-iteration `lookback` sub-variant; bearer_simple.yml omits it.
 
 # Per-iteration lookback on latest_event_timestamp.
 #

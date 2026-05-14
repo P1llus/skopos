@@ -39,7 +39,7 @@ func TestSpecFixtures(t *testing.T) {
 			t.Fatalf("no YAML fixtures found in %s/", r.dir)
 		}
 		for _, e := range entries {
-			if e.IsDir() || filepath.Ext(e.Name()) != ".yaml" {
+			if e.IsDir() || filepath.Ext(e.Name()) != ".yml" {
 				continue
 			}
 			name := e.Name()
@@ -59,7 +59,7 @@ func TestSpecFixtures(t *testing.T) {
 					t.Fatalf("Parse(%s): %v", path, err)
 				}
 
-				// Validate. Warnings are allowed (e.g. multi_field_cursor.yaml's
+				// Validate. Warnings are allowed (e.g. multi_field_cursor.yml's
 				// extract.path namespace-shadow warning); only error-severity
 				// diagnostics fail the suite.
 				diags := schema.Validate(doc)
@@ -1001,7 +1001,7 @@ func ptrValue(v schema.Value) *schema.Value { return &v }
 // state map see it as a runtime-typed FieldDecl.
 func TestAutoRegisteredFieldDecl(t *testing.T) {
 	t.Run("request_cache_store_in", func(t *testing.T) {
-		path := filepath.Join("testdata", "session_login_cached.yaml")
+		path := filepath.Join("testdata", "session_login_cached.yml")
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read: %v", err)
@@ -1029,7 +1029,7 @@ func TestAutoRegisteredFieldDecl(t *testing.T) {
 	})
 
 	t.Run("oauth2_cache_store_in", func(t *testing.T) {
-		path := filepath.Join("testdata", "token_cache.yaml")
+		path := filepath.Join("testdata", "token_cache.yml")
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read: %v", err)

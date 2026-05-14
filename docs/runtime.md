@@ -15,7 +15,7 @@ patterns mapped to schema fragments see [`api-methods.md`](api-methods.md).
 
 ```
                                   ┌──────────────────────┐
-            templates/*.yaml ──▶  │ schema.Parse+Validate │
+            templates/*.yml ──▶  │ schema.Parse+Validate │
                                   └──────────┬───────────┘
                                              │  *schema.Doc
                                              ▼

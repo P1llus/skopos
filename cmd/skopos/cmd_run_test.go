@@ -30,7 +30,7 @@ func TestRun_TraceFlag(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	docPath := filepath.Join(dir, "doc.yaml")
+	docPath := filepath.Join(dir, "doc.yml")
 	tracePath := filepath.Join(dir, "trace.jsonl")
 	outPath := filepath.Join(dir, "events.jsonl")
 
@@ -124,7 +124,7 @@ func TestRun_TraceFlag_AppendsAcrossRuns(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	docPath := filepath.Join(dir, "doc.yaml")
+	docPath := filepath.Join(dir, "doc.yml")
 	tracePath := filepath.Join(dir, "trace.jsonl")
 	outPath := filepath.Join(dir, "events.jsonl")
 
@@ -225,10 +225,10 @@ func TestRun_ConfigFile(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	docPath := filepath.Join(dir, "spec.yaml")
+	docPath := filepath.Join(dir, "spec.yml")
 	outPath := filepath.Join(dir, "events.jsonl")
 	tracePath := filepath.Join(dir, "trace.jsonl")
-	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgPath := filepath.Join(dir, "config.yml")
 
 	if err := os.WriteFile(docPath, []byte(minimalDocYAML(server.URL)), 0o644); err != nil {
 		t.Fatalf("write doc: %v", err)
@@ -266,15 +266,15 @@ func TestRun_ConfigFileInputOverriddenByFlag(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	docPath := filepath.Join(dir, "spec.yaml")
-	cfgPath := filepath.Join(dir, "config.yaml")
+	docPath := filepath.Join(dir, "spec.yml")
+	cfgPath := filepath.Join(dir, "config.yml")
 
 	if err := os.WriteFile(docPath, []byte(minimalDocYAML(server.URL)), 0o644); err != nil {
 		t.Fatalf("write doc: %v", err)
 	}
 
 	// Config points at a nonexistent file; the explicit -i should override it.
-	cfgContent := "input: /nonexistent/should-not-be-read.yaml\n"
+	cfgContent := "input: /nonexistent/should-not-be-read.yml\n"
 	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestRun_HTTPTimeout(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	docPath := filepath.Join(dir, "spec.yaml")
+	docPath := filepath.Join(dir, "spec.yml")
 	if err := os.WriteFile(docPath, []byte(minimalDocYAML(server.URL)), 0o644); err != nil {
 		t.Fatalf("write doc: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestRun_MaxPages(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	docPath := filepath.Join(dir, "spec.yaml")
+	docPath := filepath.Join(dir, "spec.yml")
 	if err := os.WriteFile(docPath, []byte(minimalDocYAML(server.URL)), 0o644); err != nil {
 		t.Fatalf("write doc: %v", err)
 	}
@@ -345,8 +345,8 @@ func TestRun_ConfigFileHTTPTimeout(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	docPath := filepath.Join(dir, "spec.yaml")
-	cfgPath := filepath.Join(dir, "config.yaml")
+	docPath := filepath.Join(dir, "spec.yml")
+	cfgPath := filepath.Join(dir, "config.yml")
 
 	if err := os.WriteFile(docPath, []byte(minimalDocYAML(server.URL)), 0o644); err != nil {
 		t.Fatalf("write doc: %v", err)
@@ -384,8 +384,8 @@ func TestRun_InputFromConfig(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	docPath := filepath.Join(dir, "spec.yaml")
-	cfgPath := filepath.Join(dir, "config.yaml")
+	docPath := filepath.Join(dir, "spec.yml")
+	cfgPath := filepath.Join(dir, "config.yml")
 
 	if err := os.WriteFile(docPath, []byte(minimalDocYAML(server.URL)), 0o644); err != nil {
 		t.Fatalf("write doc: %v", err)
@@ -405,7 +405,7 @@ func TestRun_InputFromConfig(t *testing.T) {
 // works after the config-merge refactor.
 func TestRun_OnceAndIntervalBothSet(t *testing.T) {
 	dir := t.TempDir()
-	docPath := filepath.Join(dir, "spec.yaml")
+	docPath := filepath.Join(dir, "spec.yml")
 	// A placeholder file; runRun will error before trying to load it.
 	if err := os.WriteFile(docPath, []byte("placeholder"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
@@ -426,8 +426,8 @@ func TestRun_ConfigOnceOverriddenByInterval(t *testing.T) {
 	// We just want to confirm the incompatibility check fires after merge.
 	// Config says once:true; CLI says --interval; the check should reject.
 	dir := t.TempDir()
-	docPath := filepath.Join(dir, "spec.yaml")
-	cfgPath := filepath.Join(dir, "config.yaml")
+	docPath := filepath.Join(dir, "spec.yml")
+	cfgPath := filepath.Join(dir, "config.yml")
 
 	if err := os.WriteFile(docPath, []byte("placeholder"), 0o644); err != nil {
 		t.Fatalf("write doc: %v", err)

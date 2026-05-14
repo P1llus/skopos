@@ -217,8 +217,8 @@ schedule.
 
 ```go
 specs := []struct{ Name, Path string }{
-    {"github", "specs/github.yaml"},
-    {"okta",   "specs/okta.yaml"},
+    {"github", "specs/github.yml"},
+    {"okta",   "specs/okta.yml"},
 }
 
 var wg sync.WaitGroup

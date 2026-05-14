@@ -22,7 +22,7 @@ import (
 
 // runRun is the entry point for "skopos run".
 //
-//	skopos run [-c config.yaml] -i spec.yaml [--state path] [--once] [--interval 5m]
+//	skopos run [-c config.yml] -i spec.yml [--state path] [--once] [--interval 5m]
 //	           [--out path] [--trace path] [--http-timeout dur] [--max-pages n]
 //
 // Loads + validates the spec document, builds a client.Runner, and drives
