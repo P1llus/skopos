@@ -76,11 +76,12 @@ import (
 //     advances normally.
 //     - "invalidate_cache": clears every OAuth2 token-cache slot reachable
 //     from doc.Auth (state.<store_in> + cursor.__oauth2_<store_in>_expires_at,
-//     including each branch of an auth.multi_mode dispatch) and then
-//     advances as if the page came back empty. The next request misses the
-//     cache and forces a fresh token fetch. When the active auth has no
-//     cache block (or no OAuth2 grant), the verb degrades to empty_events
-//     with a log line — there is nothing to invalidate.
+//     including each branch of an auth.multi_mode dispatch) AND every
+//     requests[].cache step-cache slot (state.<store_in> +
+//     cursor.__step_<store_in>_expires_at), then advances as if the page
+//     came back empty. The next request misses the cache and forces a fresh
+//     token fetch / login. When there is no cache block of either kind, the
+//     verb degrades to empty_events with a log line — nothing to invalidate.
 //
 //  2. document.error.mode — fallback for statuses not named in on_status.
 //
@@ -466,6 +467,16 @@ func (r *Runner) runIteration(
 			}
 		}
 
+		// requests[].cache gates a token-style step on a per-step expiry
+		// cache. When state.<store_in> still carries a value inside its
+		// expiry buffer, the step is skipped entirely — the cached value
+		// stays in state for downstream refs (auth.bearer.token, headers).
+		// The non-OAuth2 counterpart of auth.oauth2.<grant>.cache.
+		if req.Cache != nil && s.cachedStepValue(req.Cache) {
+			logger.Printf("client: %s cache hit (state.%s valid) → skip", reqLabel(req), req.Cache.StoreIn)
+			continue
+		}
+
 		// Attach a trace scratchpad only when the caller wired a Tracer.
 		// executeRequest checks for nil internally; passing nil keeps the
 		// untraced path allocation-identical to before.
@@ -510,15 +521,18 @@ func (r *Runner) runIteration(
 				continue
 			case "invalidate_cache":
 				// Drop every OAuth2 token-cache slot reachable from doc.Auth
-				// (state.<store_in> + cursor.__oauth2_<store_in>_expires_at),
+				// (state.<store_in> + cursor.__oauth2_<store_in>_expires_at)
+				// AND every requests[].cache step-cache slot
+				// (state.<store_in> + cursor.__step_<store_in>_expires_at),
 				// then treat the page as empty. The cursor still advances at
 				// drain end; the next request misses the cache and forces a
-				// fresh token fetch. When the active auth has no cache (or
-				// is non-OAuth2), the verb degrades to empty_events with an
-				// explanatory log line.
+				// fresh token fetch / login. When there is nothing to clear
+				// the verb degrades to empty_events with an explanatory log
+				// line.
 				cleared := s.invalidateAuthCaches(r.Doc.Auth)
+				cleared = append(cleared, s.invalidateStepCaches(r.Doc)...)
 				if len(cleared) == 0 {
-					logger.Printf("client: %s status %d → invalidate_cache (no auth cache to invalidate; advance cursor)", reqLabel(req), usErr.status)
+					logger.Printf("client: %s status %d → invalidate_cache (no cache to invalidate; advance cursor)", reqLabel(req), usErr.status)
 				} else {
 					logger.Printf("client: %s status %d → invalidate_cache (cleared %v; advance cursor)", reqLabel(req), usErr.status, cleared)
 				}
@@ -579,6 +593,15 @@ func (r *Runner) runIteration(
 		// Bind step body for downstream refs.
 		if req.ID != "" {
 			s.steps[req.ID] = res.body
+		}
+
+		// requests[].cache: capture the step's token-shaped value into
+		// state.<store_in> + its expiry into cursor so the next iteration
+		// (or drain) can skip the step until the expiry buffer is crossed.
+		if req.Cache != nil {
+			if err := s.storeStepValue(req.Cache, res.body); err != nil {
+				return iterationResult{}, fmt.Errorf("%s.cache: %w", reqLabel(req), err)
+			}
 		}
 
 		// Phase transition (only async_job acts here; others return no-op).

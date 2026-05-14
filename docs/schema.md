@@ -337,7 +337,7 @@ Per-entry fields:
 | `if`              | no                             | [Predicate](#predicates) — skip the step when false.                                                                                   |
 | `on_status`       | no                             | Map of status code → verb (`skip`, `fail`, `empty_events`, `invalidate_cache`). Per-step override of `error.mode` for that status.     |
 | `produces_events` | no                             | Marks this step as the events producer. At most one in the chain; defaults to the last request.                                       |
-| `cache`           | no                             | [RequestCache](#requestcache) — generic step-level cache for non-OAuth2 cached logins (deferred).                                      |
+| `cache`           | no                             | [RequestCache](#requestcache) — generic step-level cache for non-OAuth2 cached logins.                                                 |
 
 ### Request rules
 
@@ -359,8 +359,9 @@ Per-entry fields:
     cursor as if successful (the cisco_duo
     429-with-`ignore_api_errors` pattern).
   - `invalidate_cache` — drop the cached value backing the active
-    auth's `oauth2.<grant>.cache` slot and treat the response as a
-    non-event "retry next iteration" signal.
+    auth's `oauth2.<grant>.cache` slot AND every `requests[].cache`
+    step-cache slot, then treat the response as a non-event "retry next
+    iteration" signal.
 
   `retry` is intentionally absent until the retry/backoff contract
   lands.
@@ -410,9 +411,21 @@ Deferred — accepted by the validator, not yet runnable.
 
 ### RequestCache
 
-Mirror of [TokenCache](#tokencache) for non-OAuth2 cached step
-responses (custom JSON logins, session-cookie refreshes). Deferred —
-accepted by the validator, not runnable in the current runner.
+The non-OAuth2 counterpart of [TokenCache](#tokencache): wraps a
+token-style step (custom JSON logins, session-key exchanges) in a
+fresh-vs-cached conditional so the login round-trip is skipped while the
+cached token is still inside its expiry buffer.
+
+| Field           | Required | Description                                                                                                                       |
+|-----------------|----------|-----------------------------------------------------------------------------------------------------------------------------------|
+| `store_in`      | yes      | Names *both* the top-level response field captured *and* the state slot it lands in. Auto-registers as a runtime `string` field — do NOT declare under `state`. |
+| `expiry_field`  | yes      | Body-relative [Path](#paths) to the response field carrying the token's lifetime / expiry instant.                                |
+| `expiry_buffer` | yes      | Go-style duration — re-run the step when the remaining lifetime drops below this.                                                 |
+| `expiry_format` | no       | How `expiry_field` is read: `duration` (default — a remaining lifetime) or an absolute-instant format (`unix_seconds`, `unix_millis`, `rfc3339`, `rfc3339nano`). |
+
+The expiry timestamp is tracked at `cursor.__step_<store_in>_expires_at` as
+an RFC 3339 string. A `on_status: invalidate_cache` verb clears the slot
+(see [`on_status`](#request-rules)), forcing a re-login on the next drain.
 
 ```yaml
 requests:
@@ -424,9 +437,9 @@ requests:
         username: {ref: state.username}
         password: {ref: state.password}
     cache:
-      store_in: session_token        # state slot (auto-registered as runtime)
+      store_in: session_token        # body field captured + state slot (auto-registered as runtime)
       expiry_field: expires_in       # body-relative Path
-      expiry_buffer: 60s             # Go duration; re-fetch ahead of expiry
+      expiry_buffer: 60s             # Go duration; re-run ahead of expiry
       expiry_format: duration        # optional; default "duration"
 ```
 
