@@ -365,9 +365,23 @@ client carries that field's value forward as the next-page cursor.
 names or formats override via `pattern:` (a regex whose first capture group
 is the next URL).
 
+The runner parses the header into `cursor.next_link` but does **not**
+substitute it into the request — `link_header` has no `send_as` slot, so
+wiring the URL back is the template's job. Read it in the request's `url`
+slot via `{ref: cursor.next_link, default: <bootstrap-url>}`: the first
+iteration falls through to the bootstrap URL, every later iteration follows
+the server's link. The drain ends when a response carries no `rel="next"`
+entry.
+
 **IR shape:**
 
 ```yaml
+requests:
+  - method: GET
+    url:
+      ref: cursor.next_link
+      default: { concat: [ { ref: state.url }, /v1/incidents ] }
+
 pagination:
   strategy: link_header
   pattern: '<([^>]+)>;\s*rel="next"'   # optional; default = RFC 5988
@@ -375,13 +389,22 @@ pagination:
 
 ### 2.6 Next URL in body (`pagination.next_url_in_body`)
 
-**What it does:** Response body carries the full next-page URL. The runner
-substitutes it as the request URL on subsequent iterations. A missing,
-non-string, or empty value terminates the drain.
+**What it does:** Response body carries the full next-page URL at
+`next_url_at`. The runner parses it into `cursor.next_url` but — like
+`link_header` — does **not** substitute it into the request automatically.
+Read it back in the request's `url` slot via
+`{ref: cursor.next_url, default: <bootstrap-url>}`. A missing, non-string,
+or empty value terminates the drain.
 
 **IR shape:**
 
 ```yaml
+requests:
+  - method: GET
+    url:
+      ref: cursor.next_url
+      default: { concat: [ { ref: state.url }, /v1/alerts ] }
+
 pagination:
   strategy: next_url_in_body
   next_url_at: body."@odata.nextLink"   # or body.next, body.links.next, etc.

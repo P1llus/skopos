@@ -200,21 +200,31 @@ func TestEtagConditional_ReplenishOnSecondDrain(t *testing.T) {
 
 // ---- next_url_in_body ----
 
-func TestNextURLInBody_ReturnsEventsAndNullNext(t *testing.T) {
+// drainNextURLInBody follows meta.next_page until it is null, returning the
+// event ids.
+func drainNextURLInBody(t *testing.T, client *http.Client, startURL string) []string {
+	t.Helper()
+	auth := map[string]string{"Authorization": bearerHeader()}
+	var ids []string
+	nextURL := startURL
+	for nextURL != "" {
+		body := doJSON(t, client, http.MethodGet, nextURL, auth, nil, http.StatusOK)
+		for _, e := range body["alerts"].([]any) {
+			ids = append(ids, e.(map[string]any)["id"].(string))
+		}
+		meta := body["meta"].(map[string]any)
+		nextURL, _ = meta["next_page"].(string)
+	}
+	return ids
+}
+
+func TestNextURLInBody_Pagination(t *testing.T) {
 	ts := newTestServer(t, testserver.NextURLInBody())
 	defer ts.Close()
 
-	body := getJSON(t, ts.Client(), ts.URL+"/next_url_in_body/alerts", "Authorization", bearerHeader())
-	alerts, ok := body["alerts"].([]any)
-	if !ok || len(alerts) == 0 {
-		t.Fatalf("alerts empty or wrong type: %v", body["alerts"])
-	}
-	meta, ok := body["meta"].(map[string]any)
-	if !ok {
-		t.Fatalf("meta missing or wrong type: %v", body["meta"])
-	}
-	if meta["next_page"] != nil {
-		t.Errorf("meta.next_page = %v, want nil", meta["next_page"])
+	ids := drainNextURLInBody(t, ts.Client(), ts.URL+"/next_url_in_body/alerts")
+	if len(ids) != 5 {
+		t.Errorf("got %d events, want 5", len(ids))
 	}
 }
 
@@ -229,16 +239,14 @@ func TestNextURLInBody_AuthRejection(t *testing.T) {
 	}
 }
 
-func TestNextURLInBody_EachRequestReplenishes(t *testing.T) {
+func TestNextURLInBody_ReplenishOnSecondDrain(t *testing.T) {
 	ts := newTestServer(t, testserver.NextURLInBody())
 	defer ts.Close()
 
-	firstID := func() string {
-		body := getJSON(t, ts.Client(), ts.URL+"/next_url_in_body/alerts", "Authorization", bearerHeader())
-		return body["alerts"].([]any)[0].(map[string]any)["id"].(string)
-	}
-	if a, b := firstID(), firstID(); a == b {
-		t.Errorf("second request returned same first ID %q — replenish did not fire", a)
+	first := drainNextURLInBody(t, ts.Client(), ts.URL+"/next_url_in_body/alerts")
+	second := drainNextURLInBody(t, ts.Client(), ts.URL+"/next_url_in_body/alerts")
+	if first[0] == second[0] {
+		t.Errorf("second drain returned same first event ID %q — replenish did not fire", first[0])
 	}
 }
 
