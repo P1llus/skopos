@@ -21,6 +21,8 @@ import (
 )
 
 //go:embed *.yaml
+
+// FS is the embedded filesystem containing all bundled spec templates.
 var FS embed.FS
 
 // Names returns the sorted list of template names without the .yaml extension.

@@ -12,11 +12,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// defaultHTTPClientTimeout is the per-request HTTP timeout applied when the
-// caller has not set HTTPTimeout in the config or via --http-timeout.
-// Mirrors the constant defined in client/runner.go.
-const defaultHTTPClientTimeout = 30 * time.Second
-
 // Config holds the optional run configuration read from a -c/--config file.
 // Every field corresponds to a CLI flag; the merge order is:
 //

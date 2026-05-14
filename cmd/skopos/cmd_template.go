@@ -34,7 +34,9 @@ func runTemplate(args []string) error {
 func runTemplateList() error {
 	names := templates.Names()
 	for _, n := range names {
-		fmt.Fprintln(os.Stdout, n)
+		if _, err := fmt.Fprintln(os.Stdout, n); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -51,7 +53,9 @@ func runTemplateShow(name string) error {
 		return err
 	}
 	if !strings.HasSuffix(string(data), "\n") {
-		fmt.Fprintln(os.Stdout)
+		if _, err := fmt.Fprintln(os.Stdout); err != nil {
+			return err
+		}
 	}
 	return nil
 }
