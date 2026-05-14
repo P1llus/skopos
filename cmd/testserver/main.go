@@ -21,6 +21,14 @@
 //	offset                     templates/offset_pagination.yml
 //	link_header                templates/link_header.yml
 //	oauth2                     templates/oauth2_client_credentials.yml
+//	api_key_auth               templates/api_key_auth.yml
+//	basic_auth                 templates/basic_auth.yml
+//	custom_auth                templates/custom_auth.yml
+//	simple_get_object          templates/simple_get_object.yml
+//	ndjson_response            templates/ndjson_response.yml
+//	multi_mode_auth            templates/multi_mode_auth.yml
+//	post_raw_body              templates/post_raw_body.yml
+//	post_form_body             templates/post_form_body.yml
 //
 // Example — run all scenarios then exercise the cursor_token template:
 //
