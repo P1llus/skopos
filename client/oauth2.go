@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -371,11 +370,9 @@ func (s *scope) buildOAuth2TokenRequest(grant oauth2Grant) (string, string, stri
 // cache.expiry_field Path is followed; otherwise the well-known
 // "expires_in" key (RFC 6749 §4.4.3) is used.
 //
-// The value at the located path is interpreted as integer seconds (a JSON
-// number, the RFC's canonical form). For interoperability with servers
-// that emit the value as a stringified integer, a JSON string is
-// re-parsed as an integer; if that fails, time.ParseDuration is tried
-// (so "1h" / "3600s" also work).
+// The located value is coerced through coerceLifetime (shared with the
+// requests[].cache step path): integer seconds, a stringified integer, or
+// a Go duration string all decode.
 func extractOAuth2Lifetime(body map[string]any, cache *schema.TokenCache) (time.Duration, error) {
 	var raw any
 	var ok bool
@@ -395,21 +392,5 @@ func extractOAuth2Lifetime(body map[string]any, cache *schema.TokenCache) (time.
 		}
 	}
 
-	switch x := raw.(type) {
-	case float64:
-		return time.Duration(x * float64(time.Second)), nil
-	case int64:
-		return time.Duration(x) * time.Second, nil
-	case int:
-		return time.Duration(x) * time.Second, nil
-	case string:
-		if n, err := strconv.ParseInt(x, 10, 64); err == nil {
-			return time.Duration(n) * time.Second, nil
-		}
-		if d, err := time.ParseDuration(x); err == nil {
-			return d, nil
-		}
-		return 0, fmt.Errorf("expiry value %q is neither integer seconds nor a Go duration", x)
-	}
-	return 0, fmt.Errorf("expiry value has unexpected type %T", raw)
+	return coerceLifetime(raw)
 }

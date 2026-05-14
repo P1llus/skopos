@@ -152,6 +152,7 @@ and the template defaults work without any extra configuration.
 | POST with JSON body                                     | [`post_json_body.yml`](templates/post_json_body.yml)                            |
 | Async submit / poll / fetch                             | [`async_poll.yml`](templates/async_poll.yml)                                    |
 | Session cookie via POST login                           | [`session_cookie.yml`](templates/session_cookie.yml)                            |
+| Cached JSON login with a per-step token cache           | [`session_login_cached.yml`](templates/session_login_cached.yml)                |
 
 For the canonical catalogue of API shapes and the schema knobs that
 express each one, see [`docs/api-methods.md`](docs/api-methods.md).

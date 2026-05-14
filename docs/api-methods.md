@@ -712,14 +712,45 @@ requests:
 
 ### 3.12 Step-level cache (`requests[].cache`)
 
-**What it does:** Same `store_in` / `expiry_field` / `expiry_buffer` shape
-as the OAuth2 token cache (§1.8), applied to a non-OAuth2 step (e.g. a
-cached login endpoint with its own TTL).
+**What it does:** Wraps a token-style step (a custom JSON login, a
+session-key exchange) in a fresh-vs-cached conditional — the non-OAuth2
+counterpart of the OAuth2 token cache (§1.8). `store_in` names *both* the
+top-level response field captured *and* the state slot it lands in (a
+Splunk login uses `store_in: sessionKey`, a Lacework login `store_in:
+token`), so the cached value survives across iterations and drains.
+`expiry_field` is the body-relative path to the response field carrying
+the lifetime; `expiry_buffer` is the "don't cut it too close" margin;
+`expiry_format` selects how `expiry_field` is read — `duration` (the
+default: a remaining lifetime, integer seconds or a Go duration string,
+same as OAuth2 `expires_in`) or one of the absolute-instant formats
+(`unix_seconds`, `unix_millis`, `rfc3339`, `rfc3339nano`). The `store_in`
+key is auto-registered as a runtime string and survives across iterations.
+The step is re-run when `now + expiry_buffer >= cached_expires_at`; the
+expiry timestamp lives at `cursor.__step_<store_in>_expires_at` as RFC 3339.
 
-**Deferred.** The IR schema accepts the
-form; the runner does not yet honour it. `invalidateAuthCaches` is
-structured so a second walk over `doc.Requests[i].Cache` hooks in
-additively.
+**IR shape:**
+
+```yaml
+requests:
+  - id: login
+    method: POST
+    path: /api/v1/login
+    body:
+      json:
+        username: {ref: state.username}
+        password: {ref: state.password}
+    cache:
+      store_in: session_token
+      expiry_field: expires_in
+      expiry_buffer: 60s
+      expiry_format: duration
+```
+
+**Cache invalidation:** A request step that declares `on_status:
+{code: 401, do: invalidate_cache}` drops every step-cache slot
+(`state.<store_in>` + `cursor.__step_<store_in>_expires_at`) alongside the
+OAuth2 cache slots (§1.8), then advances as if the page came back empty.
+The next drain misses the cache and re-runs the login step.
 
 ---
 
@@ -977,9 +1008,9 @@ round-trip on every iteration.
 See `auth.oauth2.<grant>.cache` (§1.8).
 
 For non-OAuth2 cached-login endpoints (custom session tokens with their own
-expiry), the same shape as `requests[].cache` is deferred (§3.12). Until it
-lands, authors can express the cache manually via `state.passthrough:` +
-an `if:` predicate that gates the login step on a stored expiry timestamp.
+expiry), `requests[].cache` (§3.12) wraps the login step in the same
+fresh-vs-cached conditional — the step is skipped while the cached token is
+still inside its expiry buffer.
 
 ### 6.2 State passthrough (`state.passthrough`)
 
