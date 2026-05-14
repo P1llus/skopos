@@ -77,7 +77,7 @@ func TestSimpleScenarios_ReturnEvents(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s %s: %v", sc.method, sc.path, err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("status = %d, want 200", resp.StatusCode)
 			}
@@ -105,7 +105,7 @@ func TestSimpleScenarios_AuthRejection(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s %s: %v", sc.method, sc.path, err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusUnauthorized {
 				t.Errorf("status = %d, want 401", resp.StatusCode)
 			}
@@ -126,7 +126,7 @@ func TestSimpleScenarios_EachRequestReplenishes(t *testing.T) {
 				if err != nil {
 					t.Fatalf("%s %s: %v", sc.method, sc.path, err)
 				}
-				defer resp.Body.Close()
+				defer func() { _ = resp.Body.Close() }()
 				var body map[string]any
 				if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 					t.Fatalf("decode: %v", err)
@@ -159,7 +159,7 @@ func TestMultiModeAuth_AcceptsAllModes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GET with %s: %v", m.header, err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("auth via %s: status = %d, want 200", m.header, resp.StatusCode)
 		}
@@ -176,7 +176,7 @@ func TestSimpleGetObject_ReturnsSingleObject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -201,7 +201,7 @@ func TestNDJSONResponse_ReturnsJSONLines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -240,7 +240,7 @@ func TestNDJSONResponse_AuthRejection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}

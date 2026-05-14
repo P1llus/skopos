@@ -41,7 +41,7 @@ func getJSON(t *testing.T, client *http.Client, url, authHeader, authValue strin
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s: status %d", url, resp.StatusCode)
 	}
@@ -62,7 +62,7 @@ func TestHandler_UnknownPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
@@ -143,7 +143,7 @@ func TestHandler_AllScenarios(t *testing.T) {
 			t.Errorf("%s %s: %v", c.method, c.path, err)
 			continue
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != want {
 			t.Errorf("%s %s: status %d, want %d", c.method, c.path, resp.StatusCode, want)
 		}

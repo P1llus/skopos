@@ -39,7 +39,7 @@ func drainOAuth2(t *testing.T, client *http.Client, baseURL, token string, wantP
 		}
 		var body map[string]any
 		json.NewDecoder(resp.Body).Decode(&body) //nolint:errcheck
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status %d at %s", resp.StatusCode, u)
 		}
@@ -47,7 +47,7 @@ func drainOAuth2(t *testing.T, client *http.Client, baseURL, token string, wantP
 		for _, e := range body["findings"].([]any) {
 			ids = append(ids, e.(map[string]any)["id"].(string))
 		}
-		next, _ := body["next_cursor"]
+		next := body["next_cursor"]
 		if next == nil || next == "" {
 			break
 		}
@@ -79,7 +79,7 @@ func TestOAuth2_TokenEndpoint_WrongCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
@@ -122,7 +122,7 @@ func TestOAuth2_DataEndpoint_WrongToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}

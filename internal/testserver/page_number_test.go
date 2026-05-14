@@ -24,7 +24,7 @@ func drainPageNumber(t *testing.T, client *http.Client, baseURL string, wantPage
 		}
 		var body map[string]any
 		json.NewDecoder(resp.Body).Decode(&body) //nolint:errcheck
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status %d", resp.StatusCode)
 		}
@@ -75,7 +75,7 @@ func TestPageNumber_AuthRejection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}

@@ -40,7 +40,7 @@ func doJSON(t *testing.T, client *http.Client, method, url string, headers map[s
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != wantStatus {
 		t.Fatalf("%s %s: status %d, want %d", method, url, resp.StatusCode, wantStatus)
 	}
@@ -67,7 +67,7 @@ func statusOnly(t *testing.T, client *http.Client, method, url string, headers m
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, url, err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return resp.StatusCode
 }
 
@@ -380,7 +380,7 @@ func loginSessionCookie(t *testing.T, client *http.Client, baseURL string) strin
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("login status = %d, want 200", resp.StatusCode)
 	}

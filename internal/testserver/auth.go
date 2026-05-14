@@ -14,9 +14,11 @@ const (
 	// corresponding templates.
 	DefaultAPIKey = "test-api-key-67890"
 
-	// DefaultBasicUser and DefaultBasicPass are the HTTP Basic credentials
-	// used by the basic_auth scenario. They match templates/basic_auth.yml.
+	// DefaultBasicUser is the HTTP Basic username used by the basic_auth
+	// scenario. It matches templates/basic_auth.yml.
 	DefaultBasicUser = "testuser"
+	// DefaultBasicPass is the HTTP Basic password used by the basic_auth
+	// scenario. It matches templates/basic_auth.yml.
 	DefaultBasicPass = "testpass"
 
 	// DefaultCustomAuth is the value carried in the X-Custom-Auth header by
