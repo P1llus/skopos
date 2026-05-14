@@ -17,17 +17,17 @@ import (
 )
 
 // TestSpecFixtures loads every YAML under schema/testdata/ (internal-only
-// variants and matrix coverage) and examples/ (user-facing examples),
+// variants and matrix coverage) and templates/ (user-facing templates),
 // validates it, and round-trips it through YAML and JSON to verify the
 // codecs. Both roots share the same conformance bar so user-visible
-// examples cannot drift away from the parser.
+// templates cannot drift away from the parser.
 func TestSpecFixtures(t *testing.T) {
 	roots := []struct {
 		label string
 		dir   string
 	}{
 		{"testdata", "testdata"},
-		{"examples", filepath.Join("..", "examples")},
+		{"templates", filepath.Join("..", "templates")},
 	}
 
 	for _, r := range roots {

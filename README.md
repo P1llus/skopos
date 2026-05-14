@@ -78,48 +78,63 @@ cosign verify-blob checksums.txt \
 sha256sum --check --ignore-missing checksums.txt
 ```
 
-API reference is published on
-[pkg.go.dev/github.com/p1llus/skopos](https://pkg.go.dev/github.com/p1llus/skopos)
-
 ## Quickstart
 
-The canonical starting point, [`examples/bearer_simple.yaml`](examples/bearer_simple.yaml), polls an HTTP endpoint with a bearer token and advances its cursor by the maximum event timestamp it sees on each drain:
+No repo clone needed. The binary embeds all templates. The fastest path from
+zero to running events:
 
 ```sh
-skopos validate -i examples/bearer_simple.yaml
-skopos run     -i examples/bearer_simple.yaml --once
+# 1. Grab a starter template (bearer token, single endpoint)
+skopos template show bearer_simple > spec.yaml
+
+# 2. (Optional) generate a config file with all defaults documented
+skopos init -o config.yaml
+# edit config.yaml to set your API key, URL, interval, state file, …
+
+# 3. Validate the spec
+skopos validate -i spec.yaml
+
+# 4. Run once
+skopos run -c config.yaml -i spec.yaml --once
+
+# 5. Or poll continuously
+skopos run -c config.yaml -i spec.yaml --interval 30s
 ```
 
 `skopos run` writes one JSON event per line to stdout. Common flags:
 
-| Flag                  | Effect                                              |
-| --------------------- | --------------------------------------------------- |
-| `--state s.json`      | Persist the cursor between runs                     |
-| `--interval 30s`      | Poll continuously until SIGINT                      |
-| `--out events.jsonl`  | Write events to a file instead of stdout            |
-| `--trace trace.jsonl` | Record every HTTP exchange (with secret redaction)  |
+| Flag                    | Effect                                              |
+| ----------------------- | --------------------------------------------------- |
+| `-c config.yaml`        | Load defaults from a YAML config file               |
+| `--state s.json`        | Persist the cursor between runs                     |
+| `--interval 30s`        | Poll continuously until SIGINT                      |
+| `--out events.jsonl`    | Write events to a file instead of stdout            |
+| `--trace trace.jsonl`   | Record every HTTP exchange (with secret redaction)  |
+| `--http-timeout 45s`    | Per-request HTTP timeout (default 30s)              |
+| `--max-pages 500`       | Pagination cap per drain (default 10 000)           |
 
-## Examples
+## Templates
 
-The [`examples/`](examples) directory contains one fixture per pattern
-the runner supports today.
+The [`templates/`](templates) directory contains one spec per pattern
+the runner supports today. Every template is also embedded in the binary — use
+`skopos template list` to browse and `skopos template show <name>` to print one.
 
-| API shape                                          | Example                                                                     |
-| -------------------------------------------------- | --------------------------------------------------------------------------- |
-| Bearer token, no pagination                        | [`bearer_simple.yaml`](examples/bearer_simple.yaml)                         |
-| API key in header, time-window cursor              | [`api_key_auth.yaml`](examples/api_key_auth.yaml)                           |
-| OAuth2 client-credentials with cached access token | [`oauth2_client_credentials.yaml`](examples/oauth2_client_credentials.yaml) |
-| Multi-mode auth dispatched on a state flag         | [`multi_mode_auth.yaml`](examples/multi_mode_auth.yaml)                     |
-| `cursor_token` pagination                          | [`cursor_token.yaml`](examples/cursor_token.yaml)                           |
-| `page_number` pagination + `has_more_at`           | [`page_number.yaml`](examples/page_number.yaml)                             |
-| `offset` pagination                                | [`offset_pagination.yaml`](examples/offset_pagination.yaml)                 |
-| Link-header pagination (RFC 5988)                  | [`link_header.yaml`](examples/link_header.yaml)                             |
-| Next-URL-in-body pagination                        | [`next_url_in_body.yaml`](examples/next_url_in_body.yaml)                   |
-| `scroll_id` session                                | [`scroll_id.yaml`](examples/scroll_id.yaml)                                 |
-| NDJSON response decode                             | [`ndjson_response.yaml`](examples/ndjson_response.yaml)                     |
-| POST with JSON body                                | [`post_json_body.yaml`](examples/post_json_body.yaml)                       |
-| Async submit / poll / fetch                        | [`async_poll.yaml`](examples/async_poll.yaml)                               |
-| Session cookie via POST login                      | [`session_cookie.yaml`](examples/session_cookie.yaml)                       |
+| API shape                                          | Template                                                                          |
+| -------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Bearer token, no pagination                        | [`bearer_simple.yaml`](templates/bearer_simple.yaml)                              |
+| API key in header, time-window cursor              | [`api_key_auth.yaml`](templates/api_key_auth.yaml)                                |
+| OAuth2 client-credentials with cached access token | [`oauth2_client_credentials.yaml`](templates/oauth2_client_credentials.yaml)      |
+| Multi-mode auth dispatched on a state flag         | [`multi_mode_auth.yaml`](templates/multi_mode_auth.yaml)                          |
+| `cursor_token` pagination                          | [`cursor_token.yaml`](templates/cursor_token.yaml)                                |
+| `page_number` pagination + `has_more_at`           | [`page_number.yaml`](templates/page_number.yaml)                                  |
+| `offset` pagination                                | [`offset_pagination.yaml`](templates/offset_pagination.yaml)                      |
+| Link-header pagination (RFC 5988)                  | [`link_header.yaml`](templates/link_header.yaml)                                  |
+| Next-URL-in-body pagination                        | [`next_url_in_body.yaml`](templates/next_url_in_body.yaml)                        |
+| `scroll_id` session                                | [`scroll_id.yaml`](templates/scroll_id.yaml)                                      |
+| NDJSON response decode                             | [`ndjson_response.yaml`](templates/ndjson_response.yaml)                          |
+| POST with JSON body                                | [`post_json_body.yaml`](templates/post_json_body.yaml)                            |
+| Async submit / poll / fetch                        | [`async_poll.yaml`](templates/async_poll.yaml)                                    |
+| Session cookie via POST login                      | [`session_cookie.yaml`](templates/session_cookie.yaml)                            |
 
 For the canonical catalogue of API shapes and the schema knobs that
 express each one, see [`docs/api-methods.md`](docs/api-methods.md).
@@ -172,13 +187,14 @@ sinks, and tracing.
 
 ## Documentation
 
-| Doc                                          | When to read it                                  |
-| -------------------------------------------- | ------------------------------------------------ |
-| [`docs/schema.md`](docs/schema.md)           | Per-field reference for the YAML spec            |
-| [`docs/runtime.md`](docs/runtime.md)         | Runtime contract and supported-variant table     |
-| [`docs/api-methods.md`](docs/api-methods.md) | Vendor-neutral catalogue of API patterns         |
-| [`docs/usage.md`](docs/usage.md)             | Embed the runner in your own Go program          |
-| [`docs/stores.md`](docs/stores.md)           | Plug in a custom state store (SQLite, BoltDB, …) |
+| Doc                                                       | When to read it                                  |
+| ----------------------------------------------------------| -------------------------------------------------|
+| [`docs/schema.md`](docs/schema.md)                        | Per-field reference for the YAML spec            |
+| [`docs/runtime.md`](docs/runtime.md)                      | Runtime contract and supported-variant table     |
+| [`docs/api-methods.md`](docs/api-methods.md)              | Vendor-neutral catalogue of API patterns         |
+| [`docs/usage.md`](docs/usage.md)                          | Embed the runner in your own Go program          |
+| [`docs/stores.md`](docs/stores.md)                        | Plug in a custom state store (SQLite, BoltDB, …) |
+| [`Go API reference`](https://pkg.go.dev/github.com/p1llus/skopos) | Go API reference                         |
 
 ## License
 

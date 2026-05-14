@@ -1158,7 +1158,7 @@ func TestEndToEnd_ScrollID(t *testing.T) {
 }
 
 // scrollIDDoc builds a minimal scroll_id-paginated *schema.Doc mirroring
-// examples/scroll_id.yaml. The scroll= query carries
+// templates/scroll_id.yaml. The scroll= query carries
 // {from_pagination: scroll_id} so the first request goes out without it
 // (server opens the session) and subsequent requests echo the previous
 // response's scroll id. complete_when fires when the body flags the

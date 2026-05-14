@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -21,48 +22,111 @@ import (
 
 // runRun is the entry point for "skopos run".
 //
-//	skopos run -i spec.yaml [--state state.json] [--once] [--interval 5m] [--out events.jsonl] [--trace trace.jsonl]
+//	skopos run [-c config.yaml] -i spec.yaml [--state path] [--once] [--interval 5m]
+//	           [--out path] [--trace path] [--http-timeout dur] [--max-pages n]
 //
 // Loads + validates the spec document, builds a client.Runner, and drives
 // it: --once for a single drain, --interval for continuous polling.
+//
+// The effective configuration is built with increasing precedence:
+//
+//  1. built-in defaults (zero values where runner has its own defaults)
+//  2. values from -c/--config file
+//  3. explicit CLI flags (detected via fs.Visit so unset flags do not clobber
+//     config-file values)
 func runRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	input := fs.String("i", "", "Input spec file (YAML or JSON). Required.")
-	statePath := fs.String("state", "", "State file path (JSON). Optional; in-memory when omitted.")
-	once := fs.Bool("once", false, "Run a single drain and exit (default when --interval is unset).")
-	interval := fs.Duration("interval", 0, "When set, sleep this duration between drains and repeat until SIGINT.")
-	outPath := fs.String("out", "", "Event output file (JSONL). Defaults to stdout.")
-	tracePath := fs.String("trace", "", "Per-exchange trace output file (JSONL). When set, one redacted Exchange record is appended per HTTP request/response pair. Defaults to no trace.")
+	configPath := fs.String("c", "", "Config file path (YAML). Optional; flags override config values.")
+	fs.String("config", "", "Alias for -c.") // alias, consumed below
+	input := fs.String("i", "", "Input spec file (YAML or JSON). Overrides config.input.")
+	statePath := fs.String("state", "", "State file path (JSON). Overrides config.state.")
+	once := fs.Bool("once", false, "Run a single drain and exit. Overrides config.once.")
+	interval := fs.Duration("interval", 0, "Sleep this duration between drains and repeat. Overrides config.interval.")
+	outPath := fs.String("out", "", "Event output file (JSONL). Overrides config.out.")
+	tracePath := fs.String("trace", "", "Per-exchange trace output file (JSONL). Overrides config.trace.")
+	httpTimeout := fs.Duration("http-timeout", 0, "Per-request HTTP timeout. Overrides config.http_timeout.")
+	maxPages := fs.Int("max-pages", 0, "Max pagination iterations per drain. Overrides config.max_pages.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *input == "" {
-		return errors.New("skopos run: -i is required")
+
+	// Resolve -c / --config alias.
+	if *configPath == "" {
+		if v := fs.Lookup("config"); v != nil {
+			*configPath = v.Value.String()
+		}
 	}
-	if *once && *interval != 0 {
+
+	// Track which flags were explicitly set by the user.
+	explicit := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+
+	// Start from built-in defaults.
+	cfg := DefaultConfig()
+
+	// Layer in the config file if provided.
+	if *configPath != "" {
+		fileCfg, err := loadConfig(*configPath)
+		if err != nil {
+			return err
+		}
+		cfg = fileCfg
+	}
+
+	// Explicit flags override the config.
+	if explicit["i"] {
+		cfg.Input = *input
+	}
+	if explicit["state"] {
+		cfg.State = *statePath
+	}
+	if explicit["once"] {
+		cfg.Once = *once
+	}
+	if explicit["interval"] {
+		cfg.Interval = *interval
+	}
+	if explicit["out"] {
+		cfg.Out = *outPath
+	}
+	if explicit["trace"] {
+		cfg.Trace = *tracePath
+	}
+	if explicit["http-timeout"] {
+		cfg.HTTPTimeout = *httpTimeout
+	}
+	if explicit["max-pages"] {
+		cfg.MaxPages = *maxPages
+	}
+
+	// Validate the resolved config.
+	if cfg.Input == "" {
+		return errors.New("skopos run: -i (or config.input) is required")
+	}
+	if cfg.Once && cfg.Interval != 0 {
 		return errors.New("skopos run: --once is incompatible with --interval; pick one")
 	}
 
-	doc, err := loadDoc(*input)
+	doc, err := loadDoc(cfg.Input)
 	if err != nil {
 		return err
 	}
 	if diags := schema.Validate(doc); hasErrorSeverity(diags) {
 		for _, d := range diags {
-			fmt.Fprintln(os.Stderr, formatDiag(d, *input))
+			fmt.Fprintln(os.Stderr, formatDiag(d, cfg.Input))
 		}
 		return errors.New("skopos run: spec validation failed")
 	}
 
-	out, closeOut, err := openOutput(*outPath)
+	out, closeOut, err := openOutput(cfg.Out)
 	if err != nil {
 		return err
 	}
 	defer closeOut()
 
 	var tracer client.Tracer
-	if *tracePath != "" {
-		tf, closeTrace, err := openTrace(*tracePath)
+	if cfg.Trace != "" {
+		tf, closeTrace, err := openTrace(cfg.Trace)
 		if err != nil {
 			return err
 		}
@@ -75,14 +139,15 @@ func runRun(args []string) error {
 	}
 
 	var store client.Store
-	if *statePath != "" {
-		if err := preflightStatePath(*statePath); err != nil {
+	if cfg.State != "" {
+		if err := preflightStatePath(cfg.State); err != nil {
 			return err
 		}
-		store = client.NewFileStore(*statePath)
+		store = client.NewFileStore(cfg.State)
 	}
 
 	logger := log.New(os.Stderr, "skopos: ", log.LstdFlags|log.Lmsgprefix)
+
 	runner := &client.Runner{
 		Doc:    doc,
 		Store:  store,
@@ -91,11 +156,20 @@ func runRun(args []string) error {
 		Tracer: tracer,
 	}
 
+	// Apply optional overrides that have non-zero values. When zero the
+	// runner falls back to its own internal defaults (30s timeout, 10k pages).
+	if cfg.HTTPTimeout > 0 {
+		runner.Client = &http.Client{Timeout: cfg.HTTPTimeout}
+	}
+	if cfg.MaxPages != 0 {
+		runner.MaxPages = cfg.MaxPages
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// --once OR (--interval unset → implicit one-shot)
-	if *once || *interval == 0 {
+	if cfg.Once || cfg.Interval == 0 {
 		if err := runner.Drain(ctx); err != nil {
 			// Mirror the continuous-mode unwind: SIGINT mid-drain is a
 			// graceful end, not an error exit.
@@ -117,7 +191,7 @@ func runRun(args []string) error {
 			// --once and let the orchestrator decide. Wrap with
 			// client.RedactURLError at the log site so a future Drain path
 			// that returns a *url.Error still scrubs before logging.
-			logger.Printf("drain error: %v (retrying after %s)", client.RedactURLError(err), *interval)
+			logger.Printf("drain error: %v (retrying after %s)", client.RedactURLError(err), cfg.Interval)
 		}
 		if ctx.Err() != nil {
 			return nil
@@ -125,7 +199,7 @@ func runRun(args []string) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(*interval):
+		case <-time.After(cfg.Interval):
 		}
 	}
 }
