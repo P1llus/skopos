@@ -578,7 +578,7 @@ func TestProducerByIndex_NotByLabel(t *testing.T) {
 // ---- doc builders ----
 //
 // These factories produce minimal schema.Doc values that mirror the curated
-// examples/ + schema/testdata/ fixtures. They are NOT a substitute for the
+// templates/ + schema/testdata/ fixtures. They are NOT a substitute for the
 // fixtures (the IR-roundtrip suite covers those); they isolate the runner
 // test from the fixture directories so an example author can iterate
 // without retro-fitting tests.
