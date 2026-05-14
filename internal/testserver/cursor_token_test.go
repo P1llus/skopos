@@ -79,7 +79,10 @@ func TestCursorToken_AuthRejection(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/cursor_token/findings", nil)
 	req.Header.Set("Authorization", "Bearer wrong")
-	resp, _ := ts.Client().Do(req)
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)

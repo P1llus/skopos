@@ -75,7 +75,10 @@ func TestOAuth2_TokenEndpoint_WrongCredentials(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/oauth2/token", nil)
 	req.SetBasicAuth("wrong", "creds")
-	resp, _ := ts.Client().Do(req)
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
@@ -115,7 +118,10 @@ func TestOAuth2_DataEndpoint_WrongToken(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/oauth2/findings", nil)
 	req.Header.Set("Authorization", "Bearer stale-token")
-	resp, _ := ts.Client().Do(req)
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
