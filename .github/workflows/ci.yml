@@ -7,60 +7,27 @@ on:
     branches: [main]
 
 jobs:
-  test-go:
-    name: test-go
+  ci:
+    name: ci
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
-      - name: go vet ./...
-        run: go vet ./...
-      - name: go test ./... -race
-        run: go test ./... -race -count=1
+      - name: make schema-doc-check
+        run: |
+          make schema-doc-check
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.12.2
+      - name: make ci
+        run: make ci
 
-  build-go:
-    name: build-go
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: go build ./...
-        run: go build ./...
 
-  schema-doc-check:
-    name: schema-doc-check
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: docs/schema-reference.md is in lockstep with schema/
-        run: make schema-doc-check
-
-  lint-go:
-    name: lint-go
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.12.2
 
   # release-snapshot disabled until first release; re-enable when going public.
   # release-snapshot:
