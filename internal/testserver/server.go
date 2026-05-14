@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package testserver
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+)
+
+// Server holds the assembled mux and the registered scenarios.
+type Server struct {
+	mux       *http.ServeMux
+	scenarios []Scenario
+}
+
+// New builds a Server by registering each scenario on a fresh ServeMux.
+// opts is applied with defaults before being passed to each scenario.
+func New(opts Options, ss ...Scenario) *Server {
+	opts = opts.withDefaults()
+	mux := http.NewServeMux()
+	for _, s := range ss {
+		s.Register(mux, opts)
+	}
+	return &Server{mux: mux, scenarios: ss}
+}
+
+// Handler returns an http.Handler that serves all registered scenarios and
+// logs every request to the default logger.
+func (s *Server) Handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("%s %s", r.Method, r.URL.RequestURI())
+		s.mux.ServeHTTP(w, r)
+	})
+}
+
+// AllScenarios returns the six starter-subset scenarios in declaration order.
+func AllScenarios() []Scenario {
+	return []Scenario{
+		BearerSimple(),
+		CursorToken(),
+		PageNumber(),
+		Offset(),
+		LinkHeader(),
+		OAuth2ClientCredentials(),
+	}
+}
+
+// writeJSON writes a JSON-encoded body with the given status code.
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		log.Printf("testserver: encode response: %v", err)
+	}
+}
+
+// writeError writes a plain-text HTTP error.
+func writeError(w http.ResponseWriter, status int, msg string) {
+	http.Error(w, fmt.Sprintf("%d %s", status, msg), status)
+}
