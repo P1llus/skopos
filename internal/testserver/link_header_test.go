@@ -23,7 +23,7 @@ func drainLinkHeader(t *testing.T, client *http.Client, startURL string) []strin
 		}
 		var body map[string]any
 		json.NewDecoder(resp.Body).Decode(&body) //nolint:errcheck
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status %d at %s", resp.StatusCode, nextURL)
 		}
@@ -83,7 +83,7 @@ func TestLinkHeader_AuthRejection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
