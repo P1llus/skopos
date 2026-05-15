@@ -290,7 +290,6 @@ func TestAuth_OAuth2_ClientCredentials_Cache_PersistsAcrossRunners(t *testing.T)
 	}
 }
 
-
 // TestAuth_OAuth2_TokenEndpoint_NonSuccess asserts a non-2xx response from
 // the token endpoint surfaces as an auth error AND does NOT leak the
 // response body into the error string.
