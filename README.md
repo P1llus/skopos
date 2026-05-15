@@ -89,32 +89,52 @@ sha256sum --check --ignore-missing checksums.txt
 
 ## Quickstart
 
-No repo clone needed. The binary embeds all templates. The fastest path from
-zero to running events:
+No repo clone needed. The `skopos` binary embeds every template, and the
+testserver runs straight from the module path. Every template's URL
+defaults already point at `http://localhost:9999`, so no flags or edits
+are required to drive any of them against the testserver.
 
 ```sh
-# 1. Grab a starter template (bearer token, single endpoint)
-skopos template show bearer_simple > spec.yml
-
-# 2. (Optional) generate a config file with all defaults documented
+# 1. (Optional) generate a fully commented config file. Skip this if you
+#    don't need to override any defaults — every flag has a sensible one.
 skopos init -o config.yml
 
-# 3. (Optional) start up the testserver — hosts all six starter templates on :9999.
-#    Every template's URL defaults already point at it; no extra configuration needed.
-#    Swap "bearer_simple" for any other starter template name to try a different shape.
-go run ./cmd/testserver
+# 2. Start the testserver in another terminal. It hosts a stub endpoint
+#    for every bundled template on :9999 and exits on Ctrl-C, so there's
+#    nothing to install permanently.
+go run github.com/p1llus/skopos/cmd/testserver@latest
 
-# 4. Validate the spec
+# 3. Grab a starter spec (bearer token, single GET) and validate it.
+skopos template show bearer_simple > spec.yml
 skopos validate -i spec.yml
 
-# 5. Run once
-skopos run -c config.yml -i spec.yml --once
-
-# 6. Or poll continuously — the testserver emits fresh events on every drain
-skopos run -c config.yml -i spec.yml --interval 30s
+# 4. Run once. Events are emitted as JSONL on stdout.
+skopos run -i spec.yml --once
 ```
 
-`skopos run` writes one JSON event per line to stdout. Common flags:
+```json
+{"id":"evt-000001","seq_num":1,"timestamp":"2026-05-15T06:28:29.552249238Z"}
+{"id":"evt-000002","seq_num":2,"timestamp":"2026-05-15T06:28:30.552249238Z"}
+{"id":"evt-000003","seq_num":3,"timestamp":"2026-05-15T06:28:31.552249238Z"}
+{"id":"evt-000004","seq_num":4,"timestamp":"2026-05-15T06:28:32.552249238Z"}
+{"id":"evt-000005","seq_num":5,"timestamp":"2026-05-15T06:28:33.552249238Z"}
+```
+
+```sh
+# 5. Run again, this time tee-ing events to a file and recording each
+#    HTTP exchange to a redacted trace.
+skopos run -i spec.yml --once --out events.jsonl --trace trace.jsonl
+```
+
+`events.jsonl` is the same JSONL stream as above. `trace.jsonl` carries
+one record per HTTP exchange with secrets redacted:
+
+```json
+{"iteration":1,"method":"GET","url":"http://localhost:9999/bearer_simple/events","query":{"limit":"<format:string>","since":"<from_progress:latest_timestamp>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"status":200,"response_body":"body 403 bytes, object-like","started_at":"2026-05-15T06:28:47.777479114Z","elapsed":16011226}
+```
+
+Swap `bearer_simple` for any other template name to try a different API
+shape against the same testserver. Common flags:
 
 | Flag                    | Effect                                              |
 | ----------------------- | --------------------------------------------------- |
@@ -132,27 +152,33 @@ The [`templates/`](templates) directory contains one spec per pattern
 the runner supports today. Every template is also embedded in the binary — use
 `skopos template list` to browse and `skopos template show <name>` to print one.
 
-The six starter templates (marked ★) point at `http://localhost:9999` with
-paths that match [`cmd/testserver`](cmd/testserver). Run `go run ./cmd/testserver`
-and the template defaults work without any extra configuration.
+Every template points at `http://localhost:9999` with paths that match
+[`cmd/testserver`](cmd/testserver). Run the testserver and any template
+runs end-to-end with no further configuration.
 
 | API shape                                               | Template                                                                          |
 | ------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| ★ Bearer token, no pagination                           | [`bearer_simple.yml`](templates/bearer_simple.yml)                              |
-| ★ `cursor_token` pagination                             | [`cursor_token.yml`](templates/cursor_token.yml)                                |
-| ★ `page_number` pagination + `has_more_at`              | [`page_number.yml`](templates/page_number.yml)                                  |
-| ★ `offset` pagination                                   | [`offset_pagination.yml`](templates/offset_pagination.yml)                      |
-| ★ Link-header pagination (RFC 5988)                     | [`link_header.yml`](templates/link_header.yml)                                  |
-| ★ OAuth2 client-credentials with cached access token    | [`oauth2_client_credentials.yml`](templates/oauth2_client_credentials.yml)      |
+| Bearer token, no pagination                             | [`bearer_simple.yml`](templates/bearer_simple.yml)                              |
+| HTTP Basic auth                                         | [`basic_auth.yml`](templates/basic_auth.yml)                                    |
 | API key in header, time-window cursor                   | [`api_key_auth.yml`](templates/api_key_auth.yml)                                |
+| Operator-defined auth headers                           | [`custom_auth.yml`](templates/custom_auth.yml)                                  |
 | Multi-mode auth dispatched on a state flag              | [`multi_mode_auth.yml`](templates/multi_mode_auth.yml)                          |
-| Next-URL-in-body pagination                             | [`next_url_in_body.yml`](templates/next_url_in_body.yml)                        |
-| `scroll_id` session                                     | [`scroll_id.yml`](templates/scroll_id.yml)                                      |
-| NDJSON response decode                                  | [`ndjson_response.yml`](templates/ndjson_response.yml)                          |
-| POST with JSON body                                     | [`post_json_body.yml`](templates/post_json_body.yml)                            |
-| Async submit / poll / fetch                             | [`async_poll.yml`](templates/async_poll.yml)                                    |
+| OAuth2 client-credentials with cached access token      | [`oauth2_client_credentials.yml`](templates/oauth2_client_credentials.yml)      |
 | Session cookie via POST login                           | [`session_cookie.yml`](templates/session_cookie.yml)                            |
 | Cached JSON login with a per-step token cache           | [`session_login_cached.yml`](templates/session_login_cached.yml)                |
+| Minimal GET, no auth, no pagination                     | [`simple_get_object.yml`](templates/simple_get_object.yml)                      |
+| `cursor_token` pagination                               | [`cursor_token.yml`](templates/cursor_token.yml)                                |
+| `page_number` pagination + `has_more_at`                | [`page_number.yml`](templates/page_number.yml)                                  |
+| `offset` pagination                                     | [`offset_pagination.yml`](templates/offset_pagination.yml)                      |
+| Link-header pagination (RFC 5988)                       | [`link_header.yml`](templates/link_header.yml)                                  |
+| Next-URL-in-body pagination                             | [`next_url_in_body.yml`](templates/next_url_in_body.yml)                        |
+| `scroll_id` session                                     | [`scroll_id.yml`](templates/scroll_id.yml)                                      |
+| Async submit / poll / fetch                             | [`async_poll.yml`](templates/async_poll.yml)                                    |
+| ETag-driven conditional GET (304 skip)                  | [`etag_conditional.yml`](templates/etag_conditional.yml)                        |
+| NDJSON response decode                                  | [`ndjson_response.yml`](templates/ndjson_response.yml)                          |
+| POST with JSON body                                     | [`post_json_body.yml`](templates/post_json_body.yml)                            |
+| POST with form-urlencoded body                          | [`post_form_body.yml`](templates/post_form_body.yml)                            |
+| POST with a raw (non-JSON) body                         | [`post_raw_body.yml`](templates/post_raw_body.yml)                              |
 
 For the canonical catalogue of API shapes and the schema knobs that
 express each one, see [`docs/api-methods.md`](docs/api-methods.md).
