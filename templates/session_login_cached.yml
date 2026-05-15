@@ -49,7 +49,7 @@ requests:
         password: {ref: state.password}
     cache:
       store_in: session_token
-      expiry_field: expires_in
+      expiry_field: response.body.expires_in
       expiry_buffer: 60s
       expiry_format: duration
 
@@ -62,7 +62,7 @@ requests:
 
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 
 pagination:
   none: {}

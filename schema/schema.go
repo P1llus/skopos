@@ -543,9 +543,12 @@ type AsyncFetchStep struct {
 
 // AsyncExtract extracts a single field from a step's decoded body into the cursor.
 type AsyncExtract struct {
-	// Path is the body-relative locator resolved against the named
-	// step's response body.
-	Path Path `yaml:"path" json:"path"`
+	// From is the namespace-rooted Path locating the value to capture.
+	// Accepted roots: response.body.<path> (the named role step's
+	// response) and steps.<id>.body.<path> (a labelled prior step's
+	// response). The runner walks the named body at the trailing path
+	// segments and writes the result to cursor.<name>.
+	From Path `yaml:"from" json:"from"`
 }
 
 // AsyncOnComplete describes cursor advancement after a completed async fetch.

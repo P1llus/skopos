@@ -108,7 +108,14 @@ func (s *scope) storeStepValue(cache *schema.RequestCache, body any) error {
 //   - "unix_seconds" / "unix_millis": an absolute Unix timestamp.
 //   - "rfc3339" / "rfc3339nano": an absolute RFC 3339 timestamp string.
 func stepCacheExpiry(now time.Time, body map[string]any, cache *schema.RequestCache) (time.Time, error) {
-	raw, found, err := lookupBodyPath(body, cache.ExpiryField.Parts)
+	parts, stepID, err := stripBodyRoot(cache.ExpiryField)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("expiry_field: %w", err)
+	}
+	if stepID != "" {
+		return time.Time{}, fmt.Errorf("requests[].cache.expiry_field must be rooted at response.body.<path> (the cached step's own response); steps.<id>.body.<path> is not valid here")
+	}
+	raw, found, err := lookupBodyPath(body, parts)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("expiry_field: %w", err)
 	}

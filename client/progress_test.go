@@ -138,21 +138,21 @@ func TestAsyncJobProgress_FirstPhaseAndShouldSkip(t *testing.T) {
 //   - fetch resets phase to submit, applies on_complete (use_now).
 func TestAsyncJobProgress_PhaseTransition(t *testing.T) {
 	completeWhen := schema.Predicate{Eq: &schema.PredicateEq{
-		Path:  mustPath("body.status"),
+		Path:  mustPath("response.body.status"),
 		Equal: vStr("complete"),
 	}}
 	cfg := &schema.AsyncJobProgress{
 		Submit: &schema.AsyncSubmitStep{
 			Step: "submit",
 			Extract: map[string]schema.AsyncExtract{
-				"export_id": {Path: mustPath("export_id")},
+				"export_id": {From: mustPath("response.body.export_id")},
 			},
 		},
 		Poll: &schema.AsyncPollStep{
 			Step:         "poll",
 			CompleteWhen: &completeWhen,
 			Extract: map[string]schema.AsyncExtract{
-				"result_url": {Path: mustPath("result_url")},
+				"result_url": {From: mustPath("response.body.result_url")},
 			},
 		},
 		Fetch: &schema.AsyncFetchStep{Step: "fetch"},
@@ -550,7 +550,7 @@ func maxEventFieldDoc(baseURL string) *schema.Doc {
 				"since": vFromProg("latest_timestamp"),
 			},
 		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress: schema.Progress{MaxEventField: &schema.TimestampProgress{
 			EventTime: schema.EventTime{Path: mustPath("created_at")},
@@ -831,7 +831,7 @@ func timeWindowDoc(baseURL string) *schema.Doc {
 				"to_date":   vFromProg("window_end"),
 			}},
 		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress: schema.Progress{TimeWindow: &schema.TimeWindowProgress{
 			InitialOffset: vStr("24h"),
@@ -858,7 +858,7 @@ func constNow(t *testing.T, s string) func() time.Time {
 // the (out-of-order) events lands in cursor.last_timestamp.
 func TestAsyncJobProgress_OnCompleteLatestEventTimestamp(t *testing.T) {
 	completeWhen := schema.Predicate{Eq: &schema.PredicateEq{
-		Path:  mustPath("body.status"),
+		Path:  mustPath("response.body.status"),
 		Equal: vStr("complete"),
 	}}
 	cfg := &schema.AsyncJobProgress{
@@ -875,7 +875,7 @@ func TestAsyncJobProgress_OnCompleteLatestEventTimestamp(t *testing.T) {
 			},
 		},
 	}
-	p := &asyncJobProgress{cfg: cfg, eventsAt: mustPath("items")}
+	p := &asyncJobProgress{cfg: cfg, eventsAt: mustPath("response.body.items")}
 	s := newTestScope(t, nil, map[string]any{"phase": "fetch"})
 
 	// Out-of-order events: max is in the middle, not the last item.
@@ -909,7 +909,7 @@ func TestAsyncJobProgress_OnCompleteLatestEventTimestamp_Lookback(t *testing.T) 
 			},
 		},
 	}
-	p := &asyncJobProgress{cfg: cfg, eventsAt: mustPath("items")}
+	p := &asyncJobProgress{cfg: cfg, eventsAt: mustPath("response.body.items")}
 	s := newTestScope(t, nil, map[string]any{"phase": "fetch"})
 
 	fetchRes := &stepResult{statusCode: 200, body: map[string]any{
@@ -940,7 +940,7 @@ func TestAsyncJobProgress_OnCompleteLatestEventTimestamp_EmptyEvents(t *testing.
 			},
 		},
 	}
-	p := &asyncJobProgress{cfg: cfg, eventsAt: mustPath("items")}
+	p := &asyncJobProgress{cfg: cfg, eventsAt: mustPath("response.body.items")}
 	s := newTestScope(t, nil, map[string]any{
 		"phase":          "fetch",
 		"last_timestamp": "2026-05-12T08:00:00Z",
@@ -970,7 +970,7 @@ func TestAsyncJobProgress_OnCompleteLatestEventTimestamp_MissingEventTime(t *tes
 			},
 		},
 	}
-	p := &asyncJobProgress{cfg: cfg, eventsAt: mustPath("items")}
+	p := &asyncJobProgress{cfg: cfg, eventsAt: mustPath("response.body.items")}
 	s := newTestScope(t, nil, map[string]any{"phase": "fetch"})
 	fetchRes := &stepResult{statusCode: 200, body: map[string]any{"items": []any{}}}
 	if _, _, _, err := p.phaseTransition(s, "fetch", fetchRes); err == nil {
@@ -1071,7 +1071,7 @@ func TestEndToEnd_AsyncJob_LatestEventTimestamp(t *testing.T) {
 // the fetch body's max event timestamp drives the next drain's window.
 func asyncLatestEventTimestampDoc(baseURL string) *schema.Doc {
 	completeWhen := schema.Predicate{Eq: &schema.PredicateEq{
-		Path:  mustPath("body.status"),
+		Path:  mustPath("response.body.status"),
 		Equal: vStr("complete"),
 	}}
 	return &schema.Doc{
@@ -1104,17 +1104,17 @@ func asyncLatestEventTimestampDoc(baseURL string) *schema.Doc {
 				URL:    ptrValue(vRef("cursor.result_url")),
 			},
 		},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("items")},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.items")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress: schema.Progress{AsyncJob: &schema.AsyncJobProgress{
 			Submit: &schema.AsyncSubmitStep{
 				Step:    "submit",
-				Extract: map[string]schema.AsyncExtract{"export_id": {Path: mustPath("export_id")}},
+				Extract: map[string]schema.AsyncExtract{"export_id": {From: mustPath("response.body.export_id")}},
 			},
 			Poll: &schema.AsyncPollStep{
 				Step:         "poll",
 				CompleteWhen: &completeWhen,
-				Extract:      map[string]schema.AsyncExtract{"result_url": {Path: mustPath("result_url")}},
+				Extract:      map[string]schema.AsyncExtract{"result_url": {From: mustPath("response.body.result_url")}},
 			},
 			Fetch: &schema.AsyncFetchStep{Step: "fetch"},
 			OnComplete: &schema.AsyncOnComplete{

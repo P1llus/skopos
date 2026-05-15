@@ -114,10 +114,11 @@ func (m *MemoryStore) Save(s Snapshot) error { m.snap = s; return nil }
 //   - item:           PER-FAN-OUT-ITERATION. Reserved for fan_out's
 //     per-item binding.
 //
-//   - body:           SCOPED to the complete_when predicate evaluation in
-//     async_job. Outside that narrow window the field is unset.
-//     The new response.body.<path> ref also resolves against this field;
-//     it is the same data, just under the new namespace name.
+//   - body:           SCOPED to complete_when predicate evaluation
+//     (pagination.scroll_id.complete_when, progress.async_job.poll.complete_when).
+//     Outside that narrow window the field is unset. The
+//     response.body.<path> ref resolves against this field; the legacy
+//     body.<path> root was deleted in slice 2.
 //
 //   - responseHeaders: SCOPED, mirrors body. Set alongside scope.body
 //     whenever the response context is active (currently only
@@ -144,7 +145,7 @@ type scope struct {
 	steps   map[string]any         // step id → decoded body
 	item    any                    // per-item binding when inside fan_out
 	body    any                    // active response context body (unused outside the predicate);
-	                               // resolves both body.<path> (legacy) and response.body.<path> (new)
+	                               // resolves response.body.<path> via lookupBodyPath
 	responseHeaders http.Header    // active response context headers (mirrors body)
 	stepHeaders     map[string]http.Header // step id → response headers
 
@@ -303,14 +304,11 @@ func (s *scope) resolveNamespaceRef(p schema.Path) (any, bool, error) {
 			return nil, false, nil
 		}
 		return walk(s.item, rest)
-	case "body":
-		if s.body == nil {
-			return nil, false, nil
-		}
-		return walk(s.body, rest)
 	case "response":
-		// response.body.<path>    → s.body (same target as the legacy body.* root;
-		//                          uses lookupBodyPath so list indexing matches body.<...>)
+		// response.body.<path>    → s.body (the active response context;
+		//                          uses lookupBodyPath so list indexing
+		//                          matches the body-walk used everywhere
+		//                          else in the runtime)
 		// response.header.<name>  → s.responseHeaders[name] (first value, case-insensitive)
 		if len(rest) < 1 {
 			return nil, false, fmt.Errorf("response ref requires a kind segment: response.body[.<path>] or response.header.<name>")

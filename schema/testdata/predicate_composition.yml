@@ -40,29 +40,29 @@ requests:
 
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 
 pagination:
   scroll_id:
-    scroll_id_at: meta.next_scroll
+    scroll_id_at: response.body.meta.next_scroll
     send_as: query.scroll
     complete_when:
       or:
         - eq:
-            path: body.meta.complete
+            path: response.body.meta.complete
             equal: true
         - and:
             - gt:
-                path: body.meta.page_count
+                path: response.body.meta.page_count
                 equal: 50
             - lte:
-                path: body.meta.page_count
+                path: response.body.meta.page_count
                 equal: 1000
             - gte:
-                path: body.meta.page_count
+                path: response.body.meta.page_count
                 equal: 50
             - lt:
-                path: body.meta.error_count
+                path: response.body.meta.error_count
                 equal: 1
             - not:
                 eq:

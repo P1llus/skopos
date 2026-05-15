@@ -51,13 +51,13 @@ requests:
 
 response:
   decode: json
-  events_at: alerts
+  events_at: response.body.alerts
 
 # The response body carries a fully-formed URL for the next page. When absent
 # (null or "") the drain completes.
 pagination:
   next_url_in_body:
-    next_url_at: meta.next_page
+    next_url_at: response.body.meta.next_page
 
 progress:
   latest_event_timestamp:

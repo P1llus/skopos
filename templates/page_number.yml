@@ -37,12 +37,12 @@ requests:
 
 response:
   decode: json
-  events_at: data
+  events_at: response.body.data
 
 pagination:
   page_number:
     page_param: page
-    has_more_at: meta.has_next
+    has_more_at: response.body.meta.has_next
 
 progress:
   latest_event_timestamp:

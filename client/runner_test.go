@@ -351,7 +351,7 @@ func bearerSimpleDoc(baseURL, token string) *schema.Doc {
 				"since": vFromProg("latest_timestamp"),
 			},
 		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress: schema.Progress{
 			LatestEventTimestamp: &schema.TimestampProgress{
@@ -378,9 +378,9 @@ func cursorTokenDoc(baseURL, token string) *schema.Doc {
 				"cursor": vFromPag("token"),
 			},
 		}},
-		Response: schema.Response{Decode: "json", EventsAt: mustPath("findings")},
+		Response: schema.Response{Decode: "json", EventsAt: mustPath("response.body.findings")},
 		Pagination: schema.Pagination{CursorToken: &schema.CursorTokenPagination{
-			TokenAt: mustPath("next_cursor"),
+			TokenAt: mustPath("response.body.next_cursor"),
 			SendAs:  "query.cursor",
 		}},
 		Progress: schema.Progress{
@@ -476,7 +476,7 @@ func TestEmptyEventsDoesNotBindStaleSteps(t *testing.T) {
 				Path: mustPath("body_marker"),
 			}},
 		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress:   schema.Progress{Stateless: &struct{}{}},
 	}

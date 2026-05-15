@@ -184,7 +184,7 @@ func (p *cursorTokenPagination) seed(s *scope) {
 }
 
 func (p *cursorTokenPagination) advance(s *scope, body any, _ http.Header, _ []any) (bool, error) {
-	got, ok, err := lookupBodyPath(body, pathParts(p.cfg.TokenAt))
+	got, ok, err := s.resolveBodyPath(body, p.cfg.TokenAt)
 	if err != nil {
 		return false, fmt.Errorf("pagination.cursor_token.token_at: %w", err)
 	}
@@ -223,7 +223,7 @@ func (p *pageNumberPagination) advance(s *scope, body any, _ http.Header, events
 
 	// has_more_at takes precedence when set: false → stop, true → advance.
 	if !p.cfg.HasMoreAt.IsEmpty() {
-		got, ok, err := lookupBodyPath(body, pathParts(p.cfg.HasMoreAt))
+		got, ok, err := s.resolveBodyPath(body, p.cfg.HasMoreAt)
 		if err != nil {
 			return false, fmt.Errorf("pagination.page_number.has_more_at: %w", err)
 		}
@@ -520,7 +520,7 @@ func (p *nextURLInBodyPagination) seed(s *scope) {
 }
 
 func (p *nextURLInBodyPagination) advance(s *scope, body any, _ http.Header, _ []any) (bool, error) {
-	got, ok, err := lookupBodyPath(body, pathParts(p.cfg.NextURLAt))
+	got, ok, err := s.resolveBodyPath(body, p.cfg.NextURLAt)
 	if err != nil {
 		return false, fmt.Errorf("pagination.next_url_in_body.next_url_at: %w", err)
 	}
@@ -599,10 +599,10 @@ func (p *scrollIDPagination) seed(s *scope) {
 func (p *scrollIDPagination) advance(s *scope, body any, headers http.Header, _ []any) (bool, error) {
 	// complete_when (if declared) wins over the zero-id default rule. We
 	// evaluate it against the producer body via the same {body: ...} scope
-	// mechanic async_job.poll uses for its complete_when. The predicate may
-	// reference either the legacy body.<path> root or the new
-	// response.body.<path> / response.header.<name> roots; both resolve
-	// against the just-decoded producer response.
+	// mechanic async_job.poll uses for its complete_when. After slice 2 the
+	// predicate's response.body.<path> / response.header.<name> refs
+	// resolve against the just-decoded producer response; bare body.<path>
+	// is no longer accepted.
 	if p.cfg.CompleteWhen != nil {
 		prevBody := s.body
 		prevHeaders := s.responseHeaders
@@ -623,7 +623,7 @@ func (p *scrollIDPagination) advance(s *scope, body any, headers http.Header, _ 
 	// Read the next scroll id from the body. When complete_when is set and
 	// returned false, we still need the freshest id for the next request.
 	// When complete_when is absent, a zero id IS the termination signal.
-	got, ok, err := lookupBodyPath(body, pathParts(p.cfg.ScrollIDAt))
+	got, ok, err := s.resolveBodyPath(body, p.cfg.ScrollIDAt)
 	if err != nil {
 		return false, fmt.Errorf("pagination.scroll_id.scroll_id_at: %w", err)
 	}
@@ -672,7 +672,7 @@ func (p *graphQLRelayPagination) seed(s *scope) {
 }
 
 func (p *graphQLRelayPagination) advance(s *scope, body any, _ http.Header, _ []any) (bool, error) {
-	hasNext, ok, err := lookupBodyPath(body, pathParts(p.cfg.HasNextPageAt))
+	hasNext, ok, err := s.resolveBodyPath(body, p.cfg.HasNextPageAt)
 	if err != nil {
 		return false, fmt.Errorf("pagination.graphql_relay.has_next_page_at: %w", err)
 	}
@@ -696,7 +696,7 @@ func (p *graphQLRelayPagination) advance(s *scope, body any, _ http.Header, _ []
 	// has_next_page=true is a server contract violation, but the
 	// conservative read is "we can't request the next page without a
 	// cursor" — terminate and clear so the next drain can recover.
-	got, ok, err := lookupBodyPath(body, pathParts(p.cfg.EndCursorAt))
+	got, ok, err := s.resolveBodyPath(body, p.cfg.EndCursorAt)
 	if err != nil {
 		return false, fmt.Errorf("pagination.graphql_relay.end_cursor_at: %w", err)
 	}

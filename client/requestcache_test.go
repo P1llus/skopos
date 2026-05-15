@@ -51,7 +51,7 @@ func sessionLoginCachedDoc(baseURL string, cache *schema.RequestCache) *schema.D
 				ProducesEvents: true,
 			},
 		},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress:   schema.Progress{Stateless: &struct{}{}},
 	}
@@ -108,7 +108,7 @@ func TestRequestCache_ExpiredRefetch(t *testing.T) {
 
 	doc := sessionLoginCachedDoc(srv.events.URL, &schema.RequestCache{
 		StoreIn:      "session_token",
-		ExpiryField:  mustPath("expires_in"),
+		ExpiryField:  mustPath("response.body.expires_in"),
 		ExpiryBuffer: "30s",
 		ExpiryFormat: "duration",
 	})
@@ -145,7 +145,7 @@ func TestRequestCache_ExpiredViaStaleCursor(t *testing.T) {
 
 	doc := sessionLoginCachedDoc(srv.events.URL, &schema.RequestCache{
 		StoreIn:      "session_token",
-		ExpiryField:  mustPath("expires_in"),
+		ExpiryField:  mustPath("response.body.expires_in"),
 		ExpiryBuffer: "60s",
 		ExpiryFormat: "duration",
 	})
@@ -204,7 +204,7 @@ func TestRequestCache_InvalidateCache(t *testing.T) {
 
 	doc := sessionLoginCachedDoc(events.URL, &schema.RequestCache{
 		StoreIn:      "session_token",
-		ExpiryField:  mustPath("expires_in"),
+		ExpiryField:  mustPath("response.body.expires_in"),
 		ExpiryBuffer: "60s",
 		ExpiryFormat: "duration",
 	})
@@ -254,28 +254,28 @@ func TestStepCacheExpiry_Formats(t *testing.T) {
 		{
 			name:   "duration_default",
 			format: "",
-			field:  "expires_in",
+			field:  "response.body.expires_in",
 			body:   map[string]any{"expires_in": float64(3600)},
 			want:   now.Add(time.Hour),
 		},
 		{
 			name:   "duration_explicit",
 			format: "duration",
-			field:  "ttl",
+			field:  "response.body.ttl",
 			body:   map[string]any{"ttl": "1h"},
 			want:   now.Add(time.Hour),
 		},
 		{
 			name:   "unix_seconds",
 			format: "unix_seconds",
-			field:  "expires_at",
+			field:  "response.body.expires_at",
 			body:   map[string]any{"expires_at": float64(abs.Unix())},
 			want:   abs,
 		},
 		{
 			name:   "rfc3339",
 			format: "rfc3339",
-			field:  "expires_at",
+			field:  "response.body.expires_at",
 			body:   map[string]any{"expires_at": abs.Format(time.RFC3339)},
 			want:   abs,
 		},
@@ -306,7 +306,7 @@ func TestStoreStepValue_MissingField(t *testing.T) {
 	s := newTestScope(t, nil, nil)
 	cache := &schema.RequestCache{
 		StoreIn:      "session_token",
-		ExpiryField:  mustPath("expires_in"),
+		ExpiryField:  mustPath("response.body.expires_in"),
 		ExpiryBuffer: "60s",
 	}
 	err := s.storeStepValue(cache, map[string]any{"expires_in": float64(3600)})

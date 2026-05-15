@@ -44,11 +44,11 @@ requests:
 
 response:
   decode: json
-  events_at: findings
+  events_at: response.body.findings
 
 pagination:
   cursor_token:
-    token_at: next_cursor
+    token_at: response.body.next_cursor
     send_as: query.cursor
 
 progress:

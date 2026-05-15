@@ -27,7 +27,7 @@ func requestDoc(baseURL string, reqs []schema.Request) *schema.Doc {
 		Defaults:   &schema.Defaults{BaseURL: vRef("state.url")},
 		Auth:       schema.Auth{None: &struct{}{}},
 		Requests:   reqs,
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress:   schema.Progress{Stateless: &struct{}{}},
 	}

@@ -51,7 +51,7 @@ requests:
 
 response:
   decode: json
-  events_at: incidents
+  events_at: response.body.incidents
 
 # Follows the RFC 5988 Link: <url>; rel="next" response header. When a
 # next-link is absent the drain completes. The default regex pattern is

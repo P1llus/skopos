@@ -20,7 +20,7 @@ requests:
     path: /api/v1/status
 response:
   decode: json
-  events_at: items
+  events_at: response.body.items
 pagination:
   none: {}
 progress:

@@ -639,7 +639,23 @@ func (r *Runner) runIteration(
 
 	ndjson := r.Doc.Response.Decode == "ndjson"
 	if out.producerBody != nil {
-		evs, err := locateEvents(out.producerBody, pathParts(r.Doc.Response.EventsAt), ndjson)
+		parts, stepID, err := stripBodyRoot(r.Doc.Response.EventsAt)
+		if err != nil {
+			return iterationResult{}, fmt.Errorf("response.events_at: %w", err)
+		}
+		// events_at's body root is always the producer step we just
+		// captured into out.producerBody. The validator currently
+		// rejects steps.<id>.body.<...> at events_at sites, but the
+		// defensive switch keeps the producer-body invariant explicit.
+		body := out.producerBody
+		if stepID != "" {
+			b, ok := s.steps[stepID]
+			if !ok {
+				return iterationResult{}, fmt.Errorf("response.events_at references step %q with no captured body", stepID)
+			}
+			body = b
+		}
+		evs, err := locateEvents(body, parts, ndjson)
 		if err != nil {
 			return iterationResult{}, fmt.Errorf("locate events: %w", err)
 		}

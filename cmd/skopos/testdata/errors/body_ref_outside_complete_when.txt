@@ -4,7 +4,7 @@
 
 ! exec skopos validate -i spec.yml
 ! stderr .
-stdout 'body namespace is only valid inside complete_when predicates'
+stdout 'body namespace was removed'
 
 -- spec.yml --
 ir_version: "1"
@@ -17,7 +17,7 @@ requests:
       since: {ref: body.timestamp}
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:

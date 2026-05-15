@@ -176,7 +176,7 @@ func TestParseJSON(t *testing.T) {
   "ir_version": "1",
   "auth": {"none": {}},
   "requests": [{"method": "GET", "path": "/api/v1/events"}],
-  "response": {"decode": "json", "events_at": "events"},
+  "response": {"decode": "json", "events_at": "response.body.events"},
   "pagination": {"none": {}},
   "progress": {"stateless": {}}
 }`)
@@ -198,7 +198,7 @@ func TestParseJSONIntDefault(t *testing.T) {
   "auth": {"none": {}},
   "state": {"fields": {"size": {"type": "int", "default": 5}}},
   "requests": [{"method": "GET", "path": "/api/v1/events"}],
-  "response": {"decode": "json", "events_at": "events"},
+  "response": {"decode": "json", "events_at": "response.body.events"},
   "pagination": {"none": {}},
   "progress": {"stateless": {}}
 }`)
@@ -880,7 +880,7 @@ requests:
     path: /api/v1/events
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:
@@ -1013,7 +1013,7 @@ requests:
     path: /api/v1/events
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:
@@ -1041,7 +1041,7 @@ requests:
     path: /api/v1/events
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:
@@ -1085,7 +1085,7 @@ requests:
         equal: 0
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:
@@ -1124,14 +1124,14 @@ auth:
       password: {ref: state.password}
       cache:
         store_in: token
-        expiry_field: expires_in
+        expiry_field: response.body.expires_in
         expiry_buffer: 60s
 requests:
   - method: GET
     path: /api/v1/events
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:
@@ -1178,7 +1178,7 @@ requests:
     path: /api/v1/events
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:
@@ -1215,7 +1215,7 @@ requests:
       401: invalidate_cache
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:
@@ -1253,7 +1253,7 @@ requests:
     produces_events: true
 response:
   decode: json
-  events_at: items
+  events_at: response.body.items
 pagination:
   none: {}
 progress:
@@ -1290,7 +1290,7 @@ requests:
     path: /api/v1/exports
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:
@@ -1351,10 +1351,10 @@ requests:
     path: /api/v1/events
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   scroll_id:
-    scroll_id_at: scroll
+    scroll_id_at: response.body.scroll
     send_as: query.scroll_id
     complete_when:
       eq:
@@ -1377,10 +1377,10 @@ requests:
     path: /api/v1/events
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   scroll_id:
-    scroll_id_at: scroll
+    scroll_id_at: response.body.scroll
     send_as: query.scroll_id
     complete_when:
       present: response.header.X-Done
@@ -1406,7 +1406,7 @@ requests:
     produces_events: true
 response:
   decode: json
-  events_at: items
+  events_at: response.body.items
 pagination:
   none: {}
 progress:
@@ -1445,7 +1445,7 @@ requests:
       If-None-Match: {ref: steps.meta.header.ETag}
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:
@@ -1469,7 +1469,7 @@ requests:
       X-Probe: {ref: response.body.token}
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:
@@ -1502,7 +1502,7 @@ requests:
       from: {ref: response.header.X-Cursor}
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:
@@ -1532,10 +1532,10 @@ requests:
     path: /api/v1/events
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   scroll_id:
-    scroll_id_at: scroll
+    scroll_id_at: response.body.scroll
     send_as: query.scroll_id
     complete_when:
       eq:
@@ -1571,7 +1571,7 @@ requests:
       X-Probe: {ref: steps.meta.header}
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:
@@ -1590,9 +1590,82 @@ progress:
 		}
 	})
 
-	t.Run("legacy_body_path_still_accepted_in_complete_when", func(t *testing.T) {
-		// Slice 1 is additive: the legacy body.<path> root continues to
-		// work inside complete_when. Slice 2 deletes it.
+	t.Run("legacy_body_path_rejected_in_complete_when", func(t *testing.T) {
+		// Slice 2 deletes the legacy body.<path> root. complete_when
+		// predicates must now use response.body.<path>; bare body.<path>
+		// is rejected with a guidance message.
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  scroll_id:
+    scroll_id_at: response.body.scroll
+    send_as: query.scroll_id
+    complete_when:
+      eq:
+        path: body.done
+        equal: true
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		if len(diags) == 0 {
+			t.Fatalf("legacy body.<path> in complete_when should be rejected; got no diagnostics")
+		}
+		found := false
+		for _, d := range diags {
+			if strings.Contains(d.Message, "body namespace was removed") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected 'body namespace was removed' diagnostic; got %+v", diags)
+		}
+	})
+}
+
+// TestSliceTwoBarePathsRejected pins slice 2's tightening: every body-rooted
+// path slot from §1.2 now rejects bare dotted strings and demands an explicit
+// response.body.<path> (or steps.<id>.body.<path>) form. This guards against
+// regressions where a slot is loosened back to body-relative-only by accident.
+//
+// progress.{latest_event_timestamp,max_event_field}.event_time.path is the
+// §1.5 exception (per-event, no namespace root) and is covered separately by
+// TestSliceTwoPerEventPathRejectsNamespaceRoot.
+func TestSliceTwoBarePathsRejected(t *testing.T) {
+	validateErrs := func(t *testing.T, src string) []schema.Diagnostic {
+		t.Helper()
+		doc, err := schema.Parse([]byte(src))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		var out []schema.Diagnostic
+		for _, d := range schema.Validate(doc) {
+			if d.Severity == "error" {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+
+	mustContain := func(t *testing.T, diags []schema.Diagnostic, needle string) {
+		t.Helper()
+		for _, d := range diags {
+			if strings.Contains(d.Message, needle) {
+				return
+			}
+		}
+		t.Errorf("expected diagnostic containing %q; got %+v", needle, diags)
+	}
+
+	t.Run("events_at_bare_rejected", func(t *testing.T) {
 		src := `ir_version: "1"
 auth:
   none: {}
@@ -1603,8 +1676,48 @@ response:
   decode: json
   events_at: events
 pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, "must be namespace-rooted")
+	})
+
+	t.Run("token_at_bare_rejected", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  cursor_token:
+    token_at: next_cursor
+    send_as: query.cursor
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, "must be namespace-rooted")
+	})
+
+	t.Run("complete_when_bare_body_rejected", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
   scroll_id:
-    scroll_id_at: scroll
+    scroll_id_at: response.body.scroll
     send_as: query.scroll_id
     complete_when:
       eq:
@@ -1613,8 +1726,212 @@ pagination:
 progress:
   stateless: {}
 `
+		diags := validateErrs(t, src)
+		mustContain(t, diags, "body namespace was removed")
+	})
+
+	t.Run("oauth2_expiry_field_bare_rejected", func(t *testing.T) {
+		src := `ir_version: "1"
+state:
+  fields:
+    token_url:
+      type: url
+      default: "http://x/token"
+    s:
+      type: secret
+      default: "x"
+auth:
+  oauth2:
+    client_credentials:
+      token_url: {ref: state.token_url}
+      client_id: id
+      client_secret: {ref: state.s}
+      cache:
+        store_in: token
+        expiry_field: expires_in
+        expiry_buffer: 60s
+requests:
+  - method: GET
+    path: /api/v1/events
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, "must be namespace-rooted")
+	})
+
+	t.Run("request_cache_expiry_field_bare_rejected", func(t *testing.T) {
+		src := `ir_version: "1"
+state:
+  fields:
+    url:
+      type: url
+      default: "http://x"
+auth:
+  none: {}
+requests:
+  - id: login
+    method: POST
+    path: /login
+    cache:
+      store_in: session_token
+      ttl: 5m
+      expiry_field: expires_in
+  - method: GET
+    path: /api/v1/events
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, "must be namespace-rooted")
+	})
+
+	t.Run("async_extract_from_bare_rejected", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - id: submit
+    method: POST
+    path: /api/v1/exports
+  - id: poll
+    method: GET
+    path: /api/v1/status
+    produces_events: true
+progress:
+  async_job:
+    submit:
+      step: submit
+      extract:
+        export_id: {from: export_id}
+    poll:
+      step: poll
+      complete_when: {literal_bool: true}
+    on_complete:
+      cursor_update:
+        kind: use_now
+response:
+  decode: json
+  events_at: response.body.items
+pagination:
+  none: {}
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, "must be namespace-rooted")
+	})
+}
+
+// TestSliceTwoPerEventPathRejectsNamespaceRoot pins the §1.5 exception: the
+// progress.{latest_event_timestamp,max_event_field}.event_time.path slot is
+// per-event (the walker descends into each event in turn), so it must reject
+// namespace roots — response.body.<path> there would be meaningless because
+// the walk is already scoped to a single event object.
+func TestSliceTwoPerEventPathRejectsNamespaceRoot(t *testing.T) {
+	validateErrs := func(t *testing.T, src string) []schema.Diagnostic {
+		t.Helper()
+		doc, err := schema.Parse([]byte(src))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		var out []schema.Diagnostic
+		for _, d := range schema.Validate(doc) {
+			if d.Severity == "error" {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+
+	mustContain := func(t *testing.T, diags []schema.Diagnostic, needle string) {
+		t.Helper()
+		for _, d := range diags {
+			if strings.Contains(d.Message, needle) {
+				return
+			}
+		}
+		t.Errorf("expected diagnostic containing %q; got %+v", needle, diags)
+	}
+
+	t.Run("latest_event_timestamp_namespace_root_rejected", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: response.body.ts
+    initial:
+      lookback: "24h"
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, "must be a per-event sub-path")
+	})
+
+	t.Run("max_event_field_namespace_root_rejected", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      since: {from_progress: max_seq}
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  max_event_field:
+    name: max_seq
+    event_time:
+      path: response.body.seq
+    initial:
+      value: "0"
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, "must be a per-event sub-path")
+	})
+
+	t.Run("latest_event_timestamp_bare_path_accepted", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: ts
+    initial:
+      lookback: "24h"
+`
 		if diags := validateErrs(t, src); len(diags) != 0 {
-			t.Errorf("legacy body.<path> in complete_when should still validate in slice 1; got %+v", diags)
+			t.Errorf("bare per-event path should validate; got %+v", diags)
 		}
 	})
 }

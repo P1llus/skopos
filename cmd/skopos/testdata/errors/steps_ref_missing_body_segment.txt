@@ -4,7 +4,7 @@
 
 ! exec skopos validate -i spec.yml
 ! stderr .
-stdout 'steps ref must include the body segment'
+stdout 'steps ref must include a kind segment'
 
 -- spec.yml --
 ir_version: "1"
@@ -20,7 +20,7 @@ requests:
       token: {ref: steps.login}
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:

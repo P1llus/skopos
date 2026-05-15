@@ -640,7 +640,7 @@ func (p *asyncJobProgress) phaseTransition(s *scope, stepID string, res *stepRes
 
 func (p *asyncJobProgress) captureExtracts(s *scope, body any, ex map[string]schema.AsyncExtract) error {
 	for name, axc := range ex {
-		got, ok, err := lookupBodyPath(body, pathParts(axc.Path))
+		got, ok, err := s.resolveBodyPath(body, axc.From)
 		if err != nil {
 			return fmt.Errorf("async_job.<phase>.extract.%s: %w", name, err)
 		}
@@ -699,7 +699,23 @@ func (p *asyncJobProgress) applyOnComplete(s *scope, producerBody any) error {
 		if cu.EventTime == nil {
 			return fmt.Errorf("async_job.on_complete.cursor_update.event_time: required for kind=latest_event_timestamp")
 		}
-		events, err := locateEvents(producerBody, pathParts(p.eventsAt), p.ndjson)
+		// p.eventsAt mirrors doc.Response.EventsAt; the validator enforces
+		// response.body.<path> at that slot, so stripBodyRoot trims the two
+		// leading segments and the locateEvents walk runs against the
+		// producer body.
+		parts, stepID, err := stripBodyRoot(p.eventsAt)
+		if err != nil {
+			return fmt.Errorf("async_job.on_complete.cursor_update: response.events_at: %w", err)
+		}
+		body := producerBody
+		if stepID != "" {
+			b, ok := s.steps[stepID]
+			if !ok {
+				return fmt.Errorf("async_job.on_complete.cursor_update: response.events_at references step %q with no captured body", stepID)
+			}
+			body = b
+		}
+		events, err := locateEvents(body, parts, p.ndjson)
 		if err != nil {
 			return fmt.Errorf("async_job.on_complete.cursor_update: locate events: %w", err)
 		}

@@ -36,7 +36,7 @@ requests:
 
 response:
   decode: json
-  events_at: resources
+  events_at: response.body.resources
 
 pagination:
   none: {}

@@ -82,7 +82,7 @@ func oauth2Doc(apiURL, tokenURL string, grant oauth2GrantSpec, cache *schema.Tok
 			Method: "GET",
 			Path:   ptrValue(vStr("/api/v1/events")),
 		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress:   schema.Progress{Stateless: &struct{}{}},
 	}
@@ -189,7 +189,7 @@ func TestAuth_OAuth2_ClientCredentials_Cache_Hit(t *testing.T) {
 		kind:         "client_credentials",
 		clientID:     "test-client",
 		clientSecret: "test-secret",
-	}, &schema.TokenCache{StoreIn: "token", ExpiryField: mustPath("expires_in"), ExpiryBuffer: "60s"})
+	}, &schema.TokenCache{StoreIn: "token", ExpiryField:  mustPath("response.body.expires_in"), ExpiryBuffer: "60s"})
 
 	store := &MemoryStore{}
 	r := &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: api.Client()}
@@ -231,7 +231,7 @@ func TestAuth_OAuth2_ClientCredentials_Cache_ExpiredRefetch(t *testing.T) {
 		kind:         "client_credentials",
 		clientID:     "test-client",
 		clientSecret: "test-secret",
-	}, &schema.TokenCache{StoreIn: "token", ExpiryField: mustPath("expires_in"), ExpiryBuffer: "30s"})
+	}, &schema.TokenCache{StoreIn: "token", ExpiryField:  mustPath("response.body.expires_in"), ExpiryBuffer: "30s"})
 
 	clock := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
 	advance := time.Duration(0)
@@ -275,7 +275,7 @@ func TestAuth_OAuth2_ClientCredentials_Cache_PersistsAcrossRunners(t *testing.T)
 			kind:         "client_credentials",
 			clientID:     "test-client",
 			clientSecret: "test-secret",
-		}, &schema.TokenCache{StoreIn: "token", ExpiryField: mustPath("expires_in"), ExpiryBuffer: "60s"})
+		}, &schema.TokenCache{StoreIn: "token", ExpiryField:  mustPath("response.body.expires_in"), ExpiryBuffer: "60s"})
 		return &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: api.Client()}
 	}
 
@@ -351,7 +351,7 @@ func TestAuth_OAuth2_CustomExpiryField(t *testing.T) {
 		kind:         "client_credentials",
 		clientID:     "test-client",
 		clientSecret: "test-secret",
-	}, &schema.TokenCache{StoreIn: "token", ExpiryField: mustPath("ttl.seconds"), ExpiryBuffer: "60s"})
+	}, &schema.TokenCache{StoreIn: "token", ExpiryField: mustPath("response.body.ttl.seconds"), ExpiryBuffer: "60s"})
 
 	store := &MemoryStore{}
 	r := &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: api.Client()}
@@ -436,7 +436,7 @@ func TestAuth_MultiMode_FirstMatchWins(t *testing.T) {
 			Method: "GET",
 			Path:   ptrValue(vStr("/api/v1/events")),
 		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress:   schema.Progress{Stateless: &struct{}{}},
 	}
@@ -466,7 +466,7 @@ func TestOnStatus_InvalidateCache_OAuth2_ClearsSlots(t *testing.T) {
 		kind:         "client_credentials",
 		clientID:     "test-client",
 		clientSecret: "test-secret",
-	}, &schema.TokenCache{StoreIn: "token", ExpiryField: mustPath("expires_in"), ExpiryBuffer: "60s"})
+	}, &schema.TokenCache{StoreIn: "token", ExpiryField:  mustPath("response.body.expires_in"), ExpiryBuffer: "60s"})
 	// Surface the 401 through on_status so it dispatches as invalidate_cache.
 	doc.Requests[0].ExpectStatus = []int{200}
 	doc.Requests[0].OnStatus = map[int]string{401: "invalidate_cache"}
@@ -524,7 +524,7 @@ func TestOnStatus_InvalidateCache_OAuth2_RefetchesOnNextDrain(t *testing.T) {
 		kind:         "client_credentials",
 		clientID:     "test-client",
 		clientSecret: "test-secret",
-	}, &schema.TokenCache{StoreIn: "token", ExpiryField: mustPath("expires_in"), ExpiryBuffer: "60s"})
+	}, &schema.TokenCache{StoreIn: "token", ExpiryField:  mustPath("response.body.expires_in"), ExpiryBuffer: "60s"})
 	doc.Requests[0].ExpectStatus = []int{200}
 	doc.Requests[0].OnStatus = map[int]string{401: "invalidate_cache"}
 
@@ -582,7 +582,7 @@ func TestOnStatus_InvalidateCache_MultiMode_ClearsOAuth2Branch(t *testing.T) {
 							TokenURL:     vRef("state.token_url"),
 							ClientID:     vRef("state.client_id"),
 							ClientSecret: vRef("state.client_secret"),
-							Cache:        &schema.TokenCache{StoreIn: "token", ExpiryField: mustPath("expires_in"), ExpiryBuffer: "60s"},
+							Cache:        &schema.TokenCache{StoreIn: "token", ExpiryField:  mustPath("response.body.expires_in"), ExpiryBuffer: "60s"},
 						},
 					}},
 				},
@@ -599,7 +599,7 @@ func TestOnStatus_InvalidateCache_MultiMode_ClearsOAuth2Branch(t *testing.T) {
 			ExpectStatus: []int{200},
 			OnStatus:     map[int]string{401: "invalidate_cache"},
 		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress:   schema.Progress{Stateless: &struct{}{}},
 	}

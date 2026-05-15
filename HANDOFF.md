@@ -146,211 +146,174 @@ moments:
 
 ### Slice number and title
 
-**Slice 2 — Body-relative path positions become namespace-rooted.**
-
-**This is the biggest body of work in the redesign.** It tightens
-the runtime contract so that every body-relative slot listed in
-`SCHEMA_DESIGN.md` §1.2 requires a namespace root (`response.body.*`
-or `steps.<id>.body.*`), rewrites every bundled template to match,
-regenerates every golden, rewrites every fixture, and deletes the
-legacy `body.<path>` root once `complete_when` predicates have been
-migrated to `response.body.<path>`. Plan to land it in one
-self-contained commit (or a tight commit set).
+**Slice 3 — `ExtractVar` collapses to a single `from` field.**
 
 ### What this slice does
 
-Reject bare body-relative dotted strings everywhere they currently
-appear. Each affected `Path`-typed field in §1.2 must now carry a
-namespace root: `response.body.<path>` for "the active step's body"
-or `steps.<id>.body.<path>` for "a labelled prior step's body".
-After the slice the runtime has one path grammar — the validator
-points at the new form whenever an old bare path slips through.
-
-Concretely, the fields hardened in this slice (full list in §1.2):
-
-- `response.events_at`
-- `pagination.cursor_token.token_at`
-- `pagination.scroll_id.scroll_id_at`
-- `pagination.next_url_in_body.next_url_at`
-- `pagination.graphql_relay.has_next_page_at` / `end_cursor_at`
-- `pagination.page_number.has_more_at`
-- `auth.oauth2.<grant>.cache.expiry_field`
-- `requests[].cache.expiry_field`
-- `progress.async_job.poll.complete_when` and
-  `pagination.scroll_id.complete_when` predicate paths
-  (`body.<path>` → `response.body.<path>`)
-- `progress.async_job.<role>.extract.<name>.path` (renames to its
-  new shape per §1.2; the **ExtractVar collapse on
-  `requests[].extract[]` itself is slice 3** — do not touch
-  `requests[].extract[].path` / `.source` / `.header` here)
-
-Two exceptions per §1.5:
-
-- `progress.latest_event_timestamp.event_time.path` and
-  `progress.max_event_field.event_time.path` keep their bare,
-  per-event dotted-string semantics. Document this explicitly in
-  the validator (the field is per-event, not namespace-rooted).
-  The slice should keep the existing zero/non-zero check and add a
-  rule that rejects a leading `response.`/`steps.`/`state.`/...
-  segment so authors don't expect namespace resolution here.
+Replace the three-way `path` / `source` / `header` discriminator on
+`schema.ExtractVar` with a single namespace-rooted `from: Path`.
+After the slice, every `requests[].extract[]` entry reads
+`from: response.body.<path>` (or `response.header.<name>` /
+`steps.<id>.body.<path>` / `steps.<id>.header.<name>`); the runtime
+chooses body-walk vs header-lookup based on the path root rather
+than a side-channel discriminator. See `SCHEMA_DESIGN.md` §1.2 for
+the "After" wording and §2 Slice 3 for the implementation outline.
 
 ### Surfaces this slice touches
 
-- `schema/validate.go` — tighten `checkPathRef` (or its callers)
-  so every field in §1.2 demands `response.body.*` /
-  `steps.<id>.body.*` (or `steps.<id>.header.*`). The slice 1
-  scaffolding (`response.*` validator arm + `allowBody` flag) is
-  already in place; this slice flips it on at the new call sites.
-- `schema/validate.go::checkPathRef` `case "body":` — delete the
-  legacy arm. Replace the error message with one pointing at
-  `response.body.<path>` so any straggler template gets a precise
-  migration nudge.
-- `schema/validate.go::isNamespaceRoot` — leave `body` and
-  `response` in the list (the fan_out.as shadow check still needs
-  them). The extract-shadow warning at `checkRequest` line ~674
-  stays in place for slice 2 — extract.path is still
-  body-relative until slice 3 collapses it. Deferring the
-  warning's deletion is a divergence from the original plan; see
-  the open-questions note below.
-- `client/state.go::resolveNamespaceRef` — delete the bare `case
-  "body":` arm. Slice 1 already wired `response.body.<path>` to
-  the same `s.body` field via `lookupBodyPath`, so the deletion is
-  a one-spot change.
-- `client/predicate.go::resolveOrBodyPath` — the `body.<...>`
-  short-circuit is now dead; either delete it (every path now
-  flows through `resolveNamespaceRef`) or rename and keep it for
-  the few callers that still need direct body access. Audit
-  callers before deleting.
-- `client/bodypath.go`, `client/pagination.go`, `client/progress.go`,
-  `client/extract.go`, `client/oauth2.go`, `client/requestcache.go`
-  — the runtime resolvers that walk the producer body for
-  `events_at`, `token_at`, `expiry_field`, etc. Today they call
-  `lookupBodyPath` against a bare `pathParts(...)`. After this
-  slice they must accept a namespaced `Path` and strip the leading
-  `response.body.` / `steps.<id>.body.` segments before walking.
-  The validator already enforces the root, so a defensive runtime
-  check that the first 1–2 segments match the expected shape is
-  enough; the walk that follows is unchanged.
-- `templates/*.yml` — rewrite every bundled template so every slot
-  in §1.2 uses the new form. See §1.2's "After" column for the
-  exact spellings. Be exhaustive — `scroll_id`, `async_poll`,
-  `cursor_token`, `next_url_in_body`, every `oauth2_*`,
-  `etag_conditional*`, `session_login_cached`, etc.
-- `schema/testdata/*.yml` — same rewrite for every internal fixture.
-- `cmd/skopos/testdata/*.txt` — regenerate via the project's
-  golden-update mechanism. **Confirm the flag name before relying
-  on it** (`-update` is common; check
-  `cmd/skopos/testdata/README` or run a single golden with `-v` to
-  see the prompt).
+- `schema/schema.go::ExtractVar` — add `From Path`, remove the old
+  `Path` / `Source` / `Header` fields (the `Name`, `Coerce`, and
+  `Target` fields stay). Update any doc comments that reference
+  the old triple.
+- `schema/codec.go` (wherever `ExtractVar` is encoded/decoded) —
+  drop the old YAML/JSON keys; reject any leftover `path:` /
+  `source:` / `header:` at parse time with an error that names the
+  new shape.
+- `schema/validate.go::checkRequestExtract` (or equivalent) — use
+  the same `response.body.<path>` / `response.header.<name>` /
+  `steps.<id>.body.<path>` / `steps.<id>.header.<name>` rule that
+  Slice 2 introduced (`checkBodyRootedPath` in `validate.go`
+  already covers the body roots; add the symmetric header arm
+  here). The **extract-shadow warning** that lived alongside the
+  old triple in `checkRequest` is the warning Slice 2 deferred —
+  delete it now that the body-relative discriminator is gone.
+  `isNamespaceRoot` already lists `response`/`steps`; no shadow
+  check is needed once `from` is a fully namespace-rooted Path.
+- `client/extract.go` (and any helper consumed by
+  `client/runner.go` to materialise extracts into state) — switch
+  from a discriminator switch to a single path walk: call
+  `stripBodyRoot` (already in `client/bodypath.go`) for body
+  references, and add a small helper that strips the
+  `response.header.` / `steps.<id>.header.` prefix and dispatches
+  through `headerLookup`. Mirror the structure of
+  `scope.resolveBodyPath` so the four arms share validation
+  behaviour.
+- `templates/*.yml` — rewrite every `extract:` entry. Most live in
+  `etag_conditional*`, `session_login_cached`, `async_poll*`,
+  `oauth2_*`, and the request-cache templates. Search
+  `extract:\n` and visit each one.
+- `schema/testdata/*.yml` — same rewrite for every internal
+  fixture that uses `extract:`.
+- `cmd/skopos/testdata/*.txt` — embedded YAML inside testscript
+  fixtures. Update by hand (slice 2 did the same — `find
+  cmd/skopos/testdata -name '*.txt' | xargs grep -ln 'extract:'`
+  is the inventory). Reset any `stdout '<old-msg>'` assertions
+  that pinned the deleted-warning's text.
 - Tests:
-  - `schema/fixtures_test.go` — every inline YAML using the
-    affected slots flips to the new form. The existing
-    `TestSliceOneAdditiveRoots/legacy_body_path_still_accepted_in_complete_when`
-    test must be **deleted or inverted** to assert rejection
-    instead.
-  - Add a focused "bare body-relative path rejected" test for each
-    of the major slots (one per family is enough — events_at,
-    token_at, complete_when's body.<path>, expiry_field) confirming
-    the error message points at the new namespace form.
-  - `client/*_test.go` — every test fixture that seeds a Path with
-    a body-relative dotted string (`mustPath("data.events")`, etc.)
-    rewrites to `mustPath("response.body.data.events")`. There are
-    a lot; grep `mustPath\(` for the inventory.
+  - `schema/fixtures_test.go` — every inline YAML using
+    `extract:` flips to the new form. Add a focused negative test
+    for each rejected leftover: `path:`, `source:`, `header:`.
+  - `client/extract_test.go` (or wherever the runtime test lives)
+    — rewrite to drive the `From` field. Existing assertions on
+    extracted values should still pass once the input syntax
+    changes.
+  - `client/runner_test.go::TestStandardModeOnFailureDoesNotAdvanceProgress`
+    seeds a `Path: mustPath("body_marker")` against an
+    `ExtractVar` — that bare body-relative path must flip to
+    `From: mustPath("response.body.body_marker")` (or whatever the
+    new field name is in the test fixture's response).
 
 ### Acceptance criteria
 
-1. The validator rejects bare body-relative paths at every slot in
-   §1.2 with an error message that names the new namespace form
-   (e.g. `events_at: "data.events"` → `events_at "data.events" must
-   be namespace-rooted; use response.body.data.events`).
-2. `client.Runner` resolves the new namespace-rooted paths
-   correctly for every affected slot; the legacy `body.<path>` form
-   and the `case "body":` arm in `resolveNamespaceRef` are removed.
-3. Every template under `templates/*.yml` and every fixture under
-   `schema/testdata/*.yml` is on the new form.
-4. `cmd/skopos/testdata/*.txt` goldens are regenerated and the
-   golden test suite passes without `-update`.
+1. `schema.ExtractVar` exposes `Name`, `From`, `Coerce`, `Target`
+   only — `Path`, `Source`, `Header` are gone. The codec rejects
+   the old keys with an error message naming `from`.
+2. The validator enforces `response.body.<path>` /
+   `response.header.<name>` / `steps.<id>.body.<path>` /
+   `steps.<id>.header.<name>` on `ExtractVar.From`. The
+   extract-shadow warning at `checkRequest` is deleted (it was
+   deferred from slice 2 and is now obsolete).
+3. The runtime resolves `From` correctly for both body and header
+   roots; existing extracted-value behaviour is unchanged.
+4. Every template / `schema/testdata` fixture / `cmd/skopos`
+   testscript uses `from:`; no leftover `path:` / `source:` /
+   `header:` keys on `extract:` entries.
 5. Every template loads + validates + runs end-to-end against the
-   testserver (`go run ./cmd/testserver` + `go run ./cmd/skopos
-   run -i templates/<...>.yml --once`) and emits the expected
-   events.
+   testserver and still produces the same events.
 6. `go test ./...` green; `go vet ./...` clean;
-   `go run ./tools/gen-schema-doc -check` green (no exported schema
-   type changes are required by this slice, but the check should
-   still pass).
+   `go run ./tools/gen-schema-doc -check` green (the
+   `ExtractVar` rename touches an exported struct — the doc gen
+   _will_ change in this slice; run `go run ./tools/gen-schema-doc`
+   without `-check` first, then verify with `-check`).
 7. `ir_version` stays `"1"`.
 
 ### Out of scope for this slice
 
-- Do not collapse `ExtractVar` (`requests[].extract[].path` /
-  `.source` / `.header` → `from: Path`) — that's slice 3.
 - Do not delete `from_pagination` / `from_progress` — slice 4.
 - Do not delete `send_as` — slice 5.
 - Do not rename `equal:` → `value:` — slice 6.
 - Do not move expiry slots out of `cursor.__…` — slice 7.
-- Do not touch `docs/`, `README.md`, `docs/schema-reference.md` —
-  slice 8.
+- Do not touch `docs/`, `README.md`, `docs/schema-reference.md`
+  beyond what `gen-schema-doc` regenerates automatically — that
+  cleanup is slice 8.
 
 If any of those become unavoidable, **stop and ask**.
 
 ### Notes / open questions for this agent
 
-- **Slice 1 grounding.** Slice 1 (now landed) added the validator
-  arms for `response.*` and `steps.<id>.header.*`, threaded the
-  per-call-site `allowBody` flag (still a bool — bumping it to a
-  struct may be the right call now that more sites flip to
-  "response.body required"; pick the smallest change that still
-  reads), wired `s.responseHeaders` + `s.stepHeaders[id]` into the
-  scope, and proved `response.body.<path>` is interchangeable
-  with `body.<path>` via `TestEvalPredicate_ResponseBodyInterchangeableWithBody`
-  in `client/predicate_test.go`. Lean on that test as you remove
-  the legacy `body.<...>` arm — interchangeability means the
-  runtime semantics carry over verbatim.
-- **`isNamespaceRoot` and the extract-shadow warning.** The
-  original plan said slice 2 deletes the namespace-shadow warning
-  at `checkRequest`. That warning only fires on
-  `requests[].extract[].path`, which slice 2 leaves body-relative
-  (the ExtractVar collapse is slice 3). **Defer the warning's
-  deletion to slice 3.** If you find the warning becomes
-  misleading mid-slice (e.g. because users start writing
-  `extract.path: response.body.x` after seeing the rest of the
-  redesign), at most update its hint to "use `from:
-  response.body.<path>` once slice 3 lands". This is the only
-  intentional divergence from the original §2 slice 2 plan; record
-  any further deviations both here AND inline in
-  `SCHEMA_DESIGN.md` §2.
-- **Runtime path-strip helper.** The simplest factoring is a
-  helper like `bodyPath(p schema.Path) []string` that:
-  1. asserts `p.Parts[0] == "response"` (or `"steps"`),
-  2. for `response.body.*` returns `p.Parts[2:]`,
-  3. for `steps.<id>.body.*` returns `p.Parts[3:]` plus the step
-     id (and the caller resolves the body from `s.steps[id]`).
-  Put it in `client/bodypath.go` alongside `lookupBodyPath` and
-  call it from every site that today does `pathParts(cfg.TokenAt)`
-  etc.
-- **`complete_when` predicates today.** Slice 1 wired
-  `response.body.*` to `s.body`. Slice 2 deletes the legacy
-  `body.<...>` ref and rewrites both `pagination.scroll_id.complete_when`
-  and `progress.async_job.poll.complete_when` fixtures /
-  templates. The runtime plumbing (the `prev := s.body; s.body =
-  body` blocks) stays — only the YAML wording flips.
-- **Goldens are large.** The `cmd/skopos/testdata/*.txt` files
-  include verbatim YAML round-trips of every template. They will
-  all change in this slice — regenerate them in a single batch
-  after the template edits land, then sanity-eyeball the diff for
-  any unintended formatting churn.
-- **Per-event `event_time.path` exception (§1.5).** Reject
-  namespace-rooted forms here (per-event field, not body-rooted).
-  The error should mention "per-event sub-path; the runner walks
-  the events list at `events_at` and reads this path from each
-  element."
+- **Slice 2 grounding (what landed in this commit).**
+  - Every body-rooted Path slot from §1.2 now requires
+    `response.body.<path>` or `steps.<id>.body.<path>`:
+    `response.events_at`, every `pagination.*_at`,
+    `complete_when.path`, `auth.oauth2.<grant>.cache.expiry_field`,
+    `requests[].cache.expiry_field`, and the new
+    `progress.async_job.<role>.extract.<name>.from` slot
+    (renamed from `.path`).
+  - The validator helpers you'll reuse are
+    `validator.checkBodyRootedPath` (rejects bare paths, emits the
+    "must be namespace-rooted" message) and
+    `validator.checkPerEventPath` (the §1.5 exception — rejects
+    namespace roots at per-event `event_time.path` sites).
+  - The runtime helpers you'll reuse are
+    `stripBodyRoot(p schema.Path)` and
+    `(s *scope).resolveBodyPath(body, p)` in `client/bodypath.go`.
+    `stripBodyRoot` returns `(parts, stepID, err)`; a non-empty
+    `stepID` means the caller should resolve against
+    `s.steps[stepID]` instead of the current body. OAuth2 and
+    request-cache expiry-field sites reject a non-empty `stepID`
+    at runtime because those slots can only reference the current
+    response body — copy that pattern wherever an extract makes
+    sense only against the current step.
+  - `client/state.go::resolveNamespaceRef` no longer has a `case
+    "body":` arm. `client/predicate.go::resolveOrBodyPath` was
+    deleted; predicates flow through `resolveNamespaceRef`
+    directly.
+  - The slice-1 interchangeability test
+    (`TestEvalPredicate_ResponseBodyInterchangeableWithBody`) was
+    reframed into `TestEvalPredicate_ResponseBodyPaths` — it now
+    just exercises the `response.body.<path>` form. Slice 2 added
+    `TestSliceTwoBarePathsRejected` and
+    `TestSliceTwoPerEventPathRejectsNamespaceRoot` to lock the
+    rejection messages.
+- **Pre-existing flake** in `TestScripts/post_json_body` —
+  observed roughly 1/10 runs both before and after this slice. The
+  request-body byte count drifts by ±1 byte non-deterministically.
+  It is **not** caused by Slice 2 (reproduced on a stashed
+  baseline). Leave it for now; if Slice 3 happens to fix it
+  great, but don't chase it as part of this slice.
+- **Codec strictness.** The current `schema.Parse` is lenient on
+  unknown YAML keys (that's how slice 2 silently dropped `path:`
+  on `AsyncExtract` until the validator caught the empty
+  `From`). For slice 3 you almost certainly want a stricter codec
+  arm on `ExtractVar` so a leftover `path:` / `source:` /
+  `header:` surfaces as a parse error instead of an empty `From`.
+  Check `schema/codec.go` for the existing strict-key
+  infrastructure (`yaml.KnownFields(true)` on `decoder` etc.) and
+  reuse it. If you can't get a parse-time error easily, settle for
+  a validator-level error that explicitly names the removed keys.
+- **Doc generator.** `tools/gen-schema-doc` round-trips `Doc`
+  through reflection — the rename of `ExtractVar.Path` →
+  `ExtractVar.From` (and the deletion of `Source` / `Header`)
+  will produce a non-trivial doc diff. Run
+  `go run ./tools/gen-schema-doc` to regenerate, eyeball the
+  diff, then `-check` to lock it in.
 
 ### When you finish
 
-1. Update `SCHEMA_DESIGN.md` §5 with a "Slice 2 complete" row.
-2. Rewrite this "Current task" section for slice 3 using the
-   template below. Slice 3 is the `ExtractVar` collapse — it's the
-   slice that finally deletes the namespace-shadow warning.
+1. Update `SCHEMA_DESIGN.md` §5 with a "Slice 3 complete" row.
+2. Rewrite this "Current task" section for slice 4 using the
+   template at the bottom of this file. Slice 4 deletes
+   `from_pagination` / `from_progress`.
 3. Commit. Don't push.
 
 ---

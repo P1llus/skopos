@@ -64,7 +64,7 @@ requests:
 
 response:
   decode: json
-  events_at: items
+  events_at: response.body.items
 
 pagination:
   none: {}
@@ -74,15 +74,15 @@ progress:
     submit:
       step: submit
       extract:
-        export_id: {path: export_id}
+        export_id: {from: response.body.export_id}
     poll:
       step: poll
       complete_when:
         eq:
-          path: body.status
+          path: response.body.status
           equal: complete
       extract:
-        result_url: {path: result_url}
+        result_url: {from: response.body.result_url}
     fetch:
       step: fetch
     on_complete:

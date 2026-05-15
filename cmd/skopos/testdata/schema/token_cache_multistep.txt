@@ -53,7 +53,7 @@ auth:
       client_secret: {ref: state.client_secret}
       cache:
         store_in: token
-        expiry_field: expires_in
+        expiry_field: response.body.expires_in
         expiry_buffer: 60s
 
 requests:

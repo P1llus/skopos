@@ -18,7 +18,7 @@ requests:
         since: {from_progress: latest_timestamp}
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:

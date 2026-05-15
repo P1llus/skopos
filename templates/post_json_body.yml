@@ -43,7 +43,7 @@ requests:
 
 response:
   decode: json
-  events_at: data.alerts
+  events_at: response.body.data.alerts
 
 pagination:
   offset:

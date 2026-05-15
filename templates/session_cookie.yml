@@ -46,7 +46,7 @@ requests:
 
 response:
   decode: json
-  events_at: items
+  events_at: response.body.items
 
 pagination:
   none: {}

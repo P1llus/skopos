@@ -36,15 +36,15 @@ requests:
 
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 
 pagination:
   scroll_id:
-    scroll_id_at: request_metadata.scroll
+    scroll_id_at: response.body.request_metadata.scroll
     send_as: query.scroll
     complete_when:
       eq:
-        path: body.request_metadata.complete
+        path: response.body.request_metadata.complete
         equal: "true"
 
 progress:

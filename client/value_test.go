@@ -319,48 +319,45 @@ func mustTime(s string) time.Time {
 	return t
 }
 
-// TestSliceOneResponseAndStepHeaderRefs covers runtime resolution of the new
-// roots introduced in slice 1: response.body.<path>, response.header.<name>,
-// and steps.<id>.header.<name>.
+// TestSliceOneResponseAndStepHeaderRefs covers runtime resolution of the
+// namespace-rooted body/header roots: response.body.<path>,
+// response.header.<name>, and steps.<id>.header.<name>.
 //
-// Slice 1's acceptance criterion 2 demands that response.body.<path> resolve
-// the same value as the legacy body.<path> form for the same fixture — the
-// "interchangeable" test below pins that.
+// Slice 2 retired the legacy body.<path> root, so the interchangeability
+// subtest from slice 1 was reframed to assert the response.body.<path>
+// resolver returns the expected scalar/list/missing values directly.
 func TestSliceOneResponseAndStepHeaderRefs(t *testing.T) {
-	t.Run("response_body_matches_legacy_body_path", func(t *testing.T) {
+	t.Run("response_body_resolves_expected_values", func(t *testing.T) {
 		s := newTestScope(t, nil, nil)
 		body := map[string]any{
-			"status":  "complete",
-			"meta":    map[string]any{"page": int64(7)},
-			"items":   []any{map[string]any{"id": "a"}, map[string]any{"id": "b"}},
+			"status": "complete",
+			"meta":   map[string]any{"page": int64(7)},
+			"items":  []any{map[string]any{"id": "a"}, map[string]any{"id": "b"}},
 		}
 		s.body = body
 
 		cases := []struct {
 			label    string
-			legacy   string
 			response string
+			want     any
+			wantOK   bool
 		}{
-			{"top-level scalar", "body.status", "response.body.status"},
-			{"nested object", "body.meta.page", "response.body.meta.page"},
-			{"list index", "body.items.1.id", "response.body.items.1.id"},
-			{"missing leaf", "body.meta.missing", "response.body.meta.missing"},
+			{"top-level scalar", "response.body.status", "complete", true},
+			{"nested object", "response.body.meta.page", int64(7), true},
+			{"list index", "response.body.items.1.id", "b", true},
+			{"missing leaf", "response.body.meta.missing", nil, false},
 		}
 		for _, c := range cases {
 			t.Run(c.label, func(t *testing.T) {
-				legacyVal, legacyOK, err := s.resolveOrBodyPath(mustPath(c.legacy))
+				got, ok, err := s.resolveNamespaceRef(mustPath(c.response))
 				if err != nil {
-					t.Fatalf("legacy resolve(%s): %v", c.legacy, err)
+					t.Fatalf("resolve(%s): %v", c.response, err)
 				}
-				respVal, respOK, err := s.resolveNamespaceRef(mustPath(c.response))
-				if err != nil {
-					t.Fatalf("response resolve(%s): %v", c.response, err)
+				if ok != c.wantOK {
+					t.Fatalf("ok = %v, want %v", ok, c.wantOK)
 				}
-				if legacyOK != respOK {
-					t.Fatalf("ok mismatch: legacy=%v response=%v", legacyOK, respOK)
-				}
-				if !reflect.DeepEqual(legacyVal, respVal) {
-					t.Errorf("value mismatch: legacy=%#v response=%#v", legacyVal, respVal)
+				if !reflect.DeepEqual(got, c.want) {
+					t.Errorf("value = %#v, want %#v", got, c.want)
 				}
 			})
 		}

@@ -65,7 +65,7 @@ func TestEvalPredicate(t *testing.T) {
 			// JSON-loose stringification keeps this match working.
 			name: "eq_bool_loose_against_string",
 			body: map[string]any{"flag": true},
-			pred: pEq("body.flag", vStr("true")),
+			pred: pEq("response.body.flag", vStr("true")),
 			want: true,
 		},
 		{
@@ -239,46 +239,41 @@ func TestEqualRule(t *testing.T) {
 	}
 }
 
-// TestEvalPredicate_ResponseBodyInterchangeableWithBody pins slice 1's
-// acceptance criterion 2: a complete_when predicate using
-// response.body.<path> must evaluate identically to one using the legacy
-// body.<path> form against the same scope. The two forms address the same
-// data — only the spelling differs.
-func TestEvalPredicate_ResponseBodyInterchangeableWithBody(t *testing.T) {
+// TestEvalPredicate_ResponseBodyPaths pins runtime resolution of the
+// namespace-rooted response.body.<path> form used by complete_when
+// predicates. Slice 2 retired the legacy bare body.<path> spelling, so
+// each subtest exercises only the response.body.<path> form against the
+// same fixture body and asserts the expected boolean.
+func TestEvalPredicate_ResponseBodyPaths(t *testing.T) {
 	cases := []struct {
 		name string
 		body any
-		// pair: (legacy body path, new response.body path)
-		legacy, response schema.Predicate
-		want             bool
+		pred schema.Predicate
+		want bool
 	}{
 		{
-			name:     "eq_top_level_string",
-			body:     map[string]any{"status": "complete"},
-			legacy:   pEq("body.status", vStr("complete")),
-			response: pEq("response.body.status", vStr("complete")),
-			want:     true,
+			name: "eq_top_level_string",
+			body: map[string]any{"status": "complete"},
+			pred: pEq("response.body.status", vStr("complete")),
+			want: true,
 		},
 		{
-			name:     "eq_nested_int",
-			body:     map[string]any{"meta": map[string]any{"page": int64(7)}},
-			legacy:   pEq("body.meta.page", vInt(7)),
-			response: pEq("response.body.meta.page", vInt(7)),
-			want:     true,
+			name: "eq_nested_int",
+			body: map[string]any{"meta": map[string]any{"page": int64(7)}},
+			pred: pEq("response.body.meta.page", vInt(7)),
+			want: true,
 		},
 		{
-			name:     "present_list_index",
-			body:     map[string]any{"items": []any{map[string]any{"id": "a"}}},
-			legacy:   pPresent("body.items.0.id"),
-			response: pPresent("response.body.items.0.id"),
-			want:     true,
+			name: "present_list_index",
+			body: map[string]any{"items": []any{map[string]any{"id": "a"}}},
+			pred: pPresent("response.body.items.0.id"),
+			want: true,
 		},
 		{
-			name:     "missing_leaf_is_false",
-			body:     map[string]any{"meta": map[string]any{"page": int64(7)}},
-			legacy:   pPresent("body.meta.missing"),
-			response: pPresent("response.body.meta.missing"),
-			want:     false,
+			name: "missing_leaf_is_false",
+			body: map[string]any{"meta": map[string]any{"page": int64(7)}},
+			pred: pPresent("response.body.meta.missing"),
+			want: false,
 		},
 	}
 
@@ -288,16 +283,12 @@ func TestEvalPredicate_ResponseBodyInterchangeableWithBody(t *testing.T) {
 			s := newTestScope(t, nil, nil)
 			s.body = tc.body
 
-			gotLegacy, err := s.evalPredicate(tc.legacy)
+			got, err := s.evalPredicate(tc.pred)
 			if err != nil {
-				t.Fatalf("evalPredicate(legacy): %v", err)
+				t.Fatalf("evalPredicate: %v", err)
 			}
-			gotResponse, err := s.evalPredicate(tc.response)
-			if err != nil {
-				t.Fatalf("evalPredicate(response): %v", err)
-			}
-			if gotLegacy != tc.want || gotResponse != tc.want {
-				t.Errorf("legacy=%v response=%v; want both %v", gotLegacy, gotResponse, tc.want)
+			if got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
 	}

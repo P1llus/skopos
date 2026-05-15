@@ -15,10 +15,10 @@ requests:
     path: /api/v1/events
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   cursor_token:
-    token_at: next
+    token_at: response.body.next
     send_as: cookie.token
 progress:
   stateless: {}

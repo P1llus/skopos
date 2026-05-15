@@ -17,7 +17,7 @@ requests:
       99: skip
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:

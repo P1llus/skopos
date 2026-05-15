@@ -377,7 +377,14 @@ func extractOAuth2Lifetime(body map[string]any, cache *schema.TokenCache) (time.
 	var raw any
 	var ok bool
 	if cache != nil && !cache.ExpiryField.IsEmpty() {
-		val, found, err := lookupBodyPath(body, cache.ExpiryField.Parts)
+		parts, stepID, err := stripBodyRoot(cache.ExpiryField)
+		if err != nil {
+			return 0, fmt.Errorf("expiry_field: %w", err)
+		}
+		if stepID != "" {
+			return 0, fmt.Errorf("auth.oauth2.<grant>.cache.expiry_field must be rooted at response.body.<path> (the token endpoint's response); steps.<id>.body.<path> is not valid here")
+		}
+		val, found, err := lookupBodyPath(body, parts)
 		if err != nil {
 			return 0, fmt.Errorf("expiry_field: %w", err)
 		}

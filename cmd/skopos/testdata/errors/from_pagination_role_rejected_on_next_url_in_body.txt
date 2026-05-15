@@ -17,9 +17,9 @@ requests:
       tok: {from_pagination: token}
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   next_url_in_body:
-    next_url_at: meta.next
+    next_url_at: response.body.meta.next
 progress:
   stateless: {}

@@ -104,7 +104,7 @@ func TestTracer_APIKeyInQuery_Redacted(t *testing.T) {
 			Method: "GET",
 			Path:   ptrValue(vStr("/api/v1/events")),
 		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress:   schema.Progress{Stateless: &struct{}{}},
 	}
@@ -154,7 +154,7 @@ func TestTracer_SecretHeader_Redacted(t *testing.T) {
 				"X-Tenant-Id":   vStr("tenant-42"),
 			},
 		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress:   schema.Progress{Stateless: &struct{}{}},
 	}
@@ -233,7 +233,7 @@ func TestTracer_RequestBodyMetadata(t *testing.T) {
 			Path:   ptrValue(vStr("/echo")),
 			Body:   &schema.Body{JSON: map[string]schema.Value{"hello": vStr("world")}},
 		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress:   schema.Progress{Stateless: &struct{}{}},
 	}
