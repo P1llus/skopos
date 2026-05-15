@@ -418,14 +418,15 @@ cached token is still inside its expiry buffer.
 
 | Field           | Required | Description                                                                                                                       |
 |-----------------|----------|-----------------------------------------------------------------------------------------------------------------------------------|
-| `store_in`      | yes      | Names *both* the top-level response field captured *and* the state slot it lands in. Auto-registers as a runtime `string` field — do NOT declare under `state`. |
-| `expiry_field`  | yes      | Body-relative [Path](#paths) to the response field carrying the token's lifetime / expiry instant.                                |
+| `store_in`      | yes      | Names *both* the top-level response field captured *and* the state slot it lands in. Auto-registers as a runtime `string` field — do NOT declare under `state`. The paired expiry slot (`<store_in>_expires_at`) auto-registers the same way. |
+| `expiry_field`  | yes      | [Path](#paths) rooted at `response.body.<path>` (of the cached step's own response) carrying the token's lifetime / expiry instant.                                |
 | `expiry_buffer` | yes      | Go-style duration — re-run the step when the remaining lifetime drops below this.                                                 |
 | `expiry_format` | no       | How `expiry_field` is read: `duration` (default — a remaining lifetime) or an absolute-instant format (`unix_seconds`, `unix_millis`, `rfc3339`, `rfc3339nano`). |
 
-The expiry timestamp is tracked at `cursor.__step_<store_in>_expires_at` as
-an RFC 3339 string. A `on_status: invalidate_cache` verb clears the slot
-(see [`on_status`](#request-rules)), forcing a re-login on the next drain.
+The expiry timestamp is tracked at `state.<store_in>_expires_at` as an
+RFC 3339 string (slice 7 moved this slot out of the cursor namespace). A
+`on_status: invalidate_cache` verb clears both slots (see
+[`on_status`](#request-rules)), forcing a re-login on the next drain.
 
 ```yaml
 requests:

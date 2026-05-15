@@ -2848,3 +2848,281 @@ progress:
 		}
 	})
 }
+
+// TestSliceSevenExpirySlotsMoved pins the slice-7 contract: the cache-pair
+// expiry timestamp moves out of cursor.__*_expires_at into the state
+// namespace as state.<store_in>_expires_at, paired with the token it
+// describes. Both slots auto-register as runtime / string state fields by
+// the validator's preregisterStateAndCursor pass.
+func TestSliceSevenExpirySlotsMoved(t *testing.T) {
+	t.Run("oauth2_cache_auto_registers_expires_at", func(t *testing.T) {
+		src := `ir_version: "1"
+state:
+  fields:
+    url:           {type: url,    default: "http://example/api"}
+    token_url:     {type: url,    default: "http://example/token"}
+    client_id:     {type: string, default: cid}
+    client_secret: {type: secret, default: csecret}
+auth:
+  oauth2:
+    client_credentials:
+      token_url:     {ref: state.token_url}
+      client_id:     {ref: state.client_id}
+      client_secret: {ref: state.client_secret}
+      cache:
+        store_in: oauth2_token
+        expiry_field: response.body.expires_in
+        expiry_buffer: 60s
+defaults:
+  base_url: {ref: state.url}
+requests:
+  - method: GET
+    path: /api/v1/events
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		doc, err := schema.Parse([]byte(src))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		diags := schema.Validate(doc)
+		for _, d := range diags {
+			if d.Severity == "error" {
+				t.Fatalf("unexpected diagnostic: %s: %s", d.Path, d.Message)
+			}
+		}
+		tok, ok := doc.State.Fields["oauth2_token"]
+		if !ok {
+			t.Fatalf("expected auto-registered state.fields.oauth2_token; got %v", doc.State.Fields)
+		}
+		if tok.Type != "string" || tok.Mutability != "runtime" {
+			t.Errorf("state.fields.oauth2_token = %+v, want {Type:string, Mutability:runtime}", tok)
+		}
+		exp, ok := doc.State.Fields["oauth2_token_expires_at"]
+		if !ok {
+			t.Fatalf("expected auto-registered state.fields.oauth2_token_expires_at; got %v", doc.State.Fields)
+		}
+		if exp.Type != "string" || exp.Mutability != "runtime" {
+			t.Errorf("state.fields.oauth2_token_expires_at = %+v, want {Type:string, Mutability:runtime}", exp)
+		}
+	})
+
+	t.Run("request_cache_auto_registers_expires_at", func(t *testing.T) {
+		src := `ir_version: "1"
+state:
+  fields:
+    url:      {type: url, default: "http://example/api"}
+    username: {type: string, default: u}
+    password: {type: secret, default: p}
+auth:
+  none: {}
+defaults:
+  base_url: {ref: state.url}
+requests:
+  - id: login
+    method: POST
+    path: /login
+    body:
+      json:
+        username: {ref: state.username}
+        password: {ref: state.password}
+    cache:
+      store_in: session_token
+      expiry_field: response.body.expires_in
+      expiry_buffer: 60s
+  - id: events
+    method: GET
+    path: /events
+    produces_events: true
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		doc, err := schema.Parse([]byte(src))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		diags := schema.Validate(doc)
+		for _, d := range diags {
+			if d.Severity == "error" {
+				t.Fatalf("unexpected diagnostic: %s: %s", d.Path, d.Message)
+			}
+		}
+		if _, ok := doc.State.Fields["session_token"]; !ok {
+			t.Errorf("expected auto-registered state.fields.session_token; got %v", doc.State.Fields)
+		}
+		exp, ok := doc.State.Fields["session_token_expires_at"]
+		if !ok {
+			t.Fatalf("expected auto-registered state.fields.session_token_expires_at; got %v", doc.State.Fields)
+		}
+		if exp.Type != "string" || exp.Mutability != "runtime" {
+			t.Errorf("state.fields.session_token_expires_at = %+v, want {Type:string, Mutability:runtime}", exp)
+		}
+	})
+
+	t.Run("author_declared_expires_at_collides_with_oauth2_cache", func(t *testing.T) {
+		src := `ir_version: "1"
+state:
+  fields:
+    url:                     {type: url,    default: "http://example/api"}
+    token_url:               {type: url,    default: "http://example/token"}
+    client_id:               {type: string, default: cid}
+    client_secret:           {type: secret, default: csecret}
+    oauth2_token_expires_at: {type: string}
+auth:
+  oauth2:
+    client_credentials:
+      token_url:     {ref: state.token_url}
+      client_id:     {ref: state.client_id}
+      client_secret: {ref: state.client_secret}
+      cache:
+        store_in: oauth2_token
+        expiry_field: response.body.expires_in
+        expiry_buffer: 60s
+defaults:
+  base_url: {ref: state.url}
+requests:
+  - method: GET
+    path: /api/v1/events
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		doc, err := schema.Parse([]byte(src))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		diags := schema.Validate(doc)
+		var found bool
+		for _, d := range diags {
+			if d.Severity != "error" {
+				continue
+			}
+			if strings.Contains(d.Message, "oauth2_token_expires_at") &&
+				strings.Contains(d.Message, "paired expiry slot") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected diagnostic naming oauth2_token_expires_at as the paired expiry slot; got %+v", diags)
+		}
+	})
+
+	t.Run("author_declared_expires_at_collides_with_request_cache", func(t *testing.T) {
+		src := `ir_version: "1"
+state:
+  fields:
+    url:                       {type: url,    default: "http://example/api"}
+    username:                  {type: string, default: u}
+    password:                  {type: secret, default: p}
+    session_token_expires_at:  {type: string}
+auth:
+  none: {}
+defaults:
+  base_url: {ref: state.url}
+requests:
+  - id: login
+    method: POST
+    path: /login
+    body:
+      json:
+        username: {ref: state.username}
+        password: {ref: state.password}
+    cache:
+      store_in: session_token
+      expiry_field: response.body.expires_in
+      expiry_buffer: 60s
+  - id: events
+    method: GET
+    path: /events
+    produces_events: true
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		doc, err := schema.Parse([]byte(src))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		diags := schema.Validate(doc)
+		var found bool
+		for _, d := range diags {
+			if d.Severity != "error" {
+				continue
+			}
+			if strings.Contains(d.Message, "session_token_expires_at") &&
+				strings.Contains(d.Message, "paired expiry slot") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected diagnostic naming session_token_expires_at as the paired expiry slot; got %+v", diags)
+		}
+	})
+
+	t.Run("cursor_underscore_expiry_ref_rejected", func(t *testing.T) {
+		// After slice 7, no pagination strategy registers __*_expires_at
+		// names in the cursor namespace, so a ref to the old slot is
+		// rejected as an unknown cursor field.
+		src := `ir_version: "1"
+state:
+  fields:
+    url: {type: url, default: "http://example/api"}
+auth:
+  none: {}
+defaults:
+  base_url: {ref: state.url}
+requests:
+  - method: GET
+    path: /api/v1/events
+    headers:
+      X-Stale: {ref: cursor.__oauth2_token_expires_at, default: ""}
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  cursor_token:
+    token_at: response.body.next_cursor
+progress:
+  stateless: {}
+`
+		doc, err := schema.Parse([]byte(src))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		diags := schema.Validate(doc)
+		var found bool
+		for _, d := range diags {
+			if d.Severity != "error" {
+				continue
+			}
+			if strings.Contains(d.Message, "__oauth2_token_expires_at") &&
+				strings.Contains(d.Message, "not provided by the active pagination/progress strategy") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected diagnostic rejecting cursor.__oauth2_token_expires_at as an unknown cursor field; got %+v", diags)
+		}
+	})
+}

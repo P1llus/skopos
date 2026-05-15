@@ -23,10 +23,11 @@ type Snapshot struct {
 	// state.<cache.store_in>, custom-login session tokens, etc.
 	State map[string]any `json:"state,omitempty"`
 	// Cursor holds every inferred cursor field for the active
-	// pagination + progress + async_job strategies, plus
-	// framework-internal expiry-tracking slots paired with cached auth
-	// tokens (the __oauth2_<store_in>_expires_at key catalogued in
-	// scope's cursor catalogue).
+	// pagination + progress + async_job strategies. Slice 7 moved the
+	// framework-internal expiry-tracking slots out of cursor and into
+	// state (paired with the token they describe), so Snapshot.Cursor
+	// now carries only author-facing pagination / progress / async_job
+	// state.
 	Cursor map[string]any `json:"cursor,omitempty"`
 }
 
@@ -69,8 +70,9 @@ func (m *MemoryStore) Save(s Snapshot) error { m.snap = s; return nil }
 //
 //   - state:          PER-DRAIN. Seeded once from Snapshot.State + IR defaults
 //     in newScope; runtime-mutable writes (OAuth2 token cache, custom-login
-//     session tokens) accumulate within a drain and persist across drains
-//     via the deferred store.Save in Runner.Drain.
+//     session tokens, plus their paired <store_in>_expires_at slots after
+//     slice 7) accumulate within a drain and persist across drains via the
+//     deferred store.Save in Runner.Drain.
 //
 //   - cursor:         PER-DRAIN, PERSISTED. Seeded once from Snapshot.Cursor
 //     in newScope. Mutated by pagination.seed + pagination.advance +
@@ -97,7 +99,6 @@ func (m *MemoryStore) Save(s Snapshot) error { m.snap = s; return nil }
 //     async_job.{submit,poll}.extract <author-named>     (auth tokens, job ids, etc.)
 //     async_job.on_complete=use_now   "last_timestamp"   (set at producer completion)
 //     async_job.on_complete=latest_event_timestamp "last_timestamp" (max value at cu.event_time.path inside the producer body's events list)
-//     auth.oauth2.<grant>.cache       "__oauth2_<store_in>_expires_at" (RFC 3339 string; paired with state.<store_in> which holds the access token. Refreshed when now+expiry_buffer catches the cached value)
 //     extract[].target=cursor         <extract.name>     (author-declared)
 //
 //     Unset keys read as nil at Value-eval time; the {default: ...} branch

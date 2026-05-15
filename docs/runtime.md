@@ -170,7 +170,7 @@ state reached so far. A negative value disables the cap (tests only).
 | `auth.custom`                        | `auth.go`. |
 | `auth.oauth2.client_credentials`     | `oauth2.go`. POSTs `grant_type=client_credentials` to `token_url` with HTTP Basic `client_id:client_secret` (RFC 6749 §2.3.1) plus optional `scope=...` / `audience=...`. Access token rides as `Authorization: Bearer <token>`. Non-2xx token responses surface with body-classification only — never the response bytes. |
 | `auth.oauth2.password_grant`         | `oauth2.go`. POSTs `grant_type=password` + `username` / `password` in the form body (RFC 6749 §4.3.2). Optional `client_id` rides in the form body. Same Bearer-injection + token-fetch error contract as `client_credentials`. |
-| `auth.oauth2.<grant>.cache`          | `oauth2.go`. Cached access token at `state.<cache.store_in>` (auto-registered as a runtime string). Expiry timestamp at `cursor.__oauth2_<store_in>_expires_at` as RFC 3339. `expiry_field` is body-relative; parsed value interpreted as integer seconds (RFC 6749 `expires_in`) with `string→int` / `string→Go-duration` fallbacks. Fresh fetch fires when `now + expiry_buffer >= cached_expires_at`. |
+| `auth.oauth2.<grant>.cache`          | `oauth2.go`. Cached access token at `state.<cache.store_in>` (auto-registered as a runtime string). Paired expiry timestamp at `state.<cache.store_in>_expires_at` as RFC 3339 (also auto-registered as a runtime string; slice 7 moved the slot out of the cursor namespace). `expiry_field` is rooted at `response.body.<path>` of the token endpoint's response; the parsed value is interpreted as integer seconds (RFC 6749 `expires_in`) with `string→int` / `string→Go-duration` fallbacks. Fresh fetch fires when `now + expiry_buffer >= cached_expires_at`. |
 | `auth.multi_mode`                    | `auth.go`. `applyMultiMode` evaluates each `branches[].when` predicate in declaration order, first match wins. `default.auth` fires when no branch matches. The validator forbids nested `multi_mode`. |
 
 ### 8.2 Requests
@@ -182,7 +182,7 @@ state reached so far. A negative value disables the cap (tests only).
 | `expect_status` (default 200)                    | `http.go`. |
 | `if:` predicate gating                           | `runner.go`. |
 | `on_status: skip \| fail \| empty_events`        | `runner.go`. |
-| `on_status: invalidate_cache`                    | `runner.go` + `oauth2.go`. Drops every OAuth2 token-cache slot reachable from `doc.Auth` (`state.<store_in>` + `cursor.__oauth2_<store_in>_expires_at`, including each branch of `auth.multi_mode`), then advances as if the page came back empty. When the active auth has no cache (or is non-OAuth2) the verb degrades to `empty_events` with a log line. |
+| `on_status: invalidate_cache`                    | `runner.go` + `oauth2.go` + `requestcache.go`. Drops every OAuth2 token-cache slot reachable from `doc.Auth` (`state.<store_in>` + `state.<store_in>_expires_at`, including each branch of `auth.multi_mode`) and every `requests[].cache` step-cache slot (`state.<store_in>` + `state.<store_in>_expires_at`), then advances as if the page came back empty. When the active auth has no cache (or is non-OAuth2) and no step cache fires either, the verb degrades to `empty_events` with a log line. |
 | `produces_events` explicit + implicit (last)     | `runner.go`. |
 | `produces_events` implicit for `async_job` role  | Last-declared role wins. |
 | `extract[]` body source + `target: extract`      | `extract.go`. |
