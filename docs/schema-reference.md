@@ -402,10 +402,8 @@ ExtractVar names a value to pull from a response.
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `Name` | `name` | `string` | no | Name is the destination key in the extract / cursor namespace. |
-| `Path` | `path` | `Path` | yes | Path is the body-relative locator (used when Source is "body" or unset). |
+| `From` | `from` | `Path` | no | From is the namespace-rooted Path locating the value to capture. Accepted roots: - response.body.<path> the active step's response body - response.header.<name> the active step's response headers - steps.<id>.body.<path> a labelled prior step's response body - steps.<id>.header.<name> a labelled prior step's response headers The runtime dispatches body-walk vs header-lookup based on the matched root rather than a side-channel discriminator. |
 | `Coerce` | `coerce` | `string` | yes | Coerce, when set, applies a format verb (rfc3339, unix_seconds, ...) to the extracted value before storing it. |
-| `Source` | `source` | `string` | yes | Source is "body" (default) or "header". |
-| `Header` | `header` | `string` | yes | Header is the response-header name; required when Source == "header". |
 | `Target` | `target` | `string` | yes | Target controls which namespace the extracted value lands in: "extract" (default) → extract.<name>, visible to subsequent steps in the same iteration and lost between iterations; "cursor" → cursor.<name>, auto-registers a cursor field that persists across iterations (use for multi-field cursors: worklists, freeze flags, rolling-max timestamps). |
 
 ## `FanOut`

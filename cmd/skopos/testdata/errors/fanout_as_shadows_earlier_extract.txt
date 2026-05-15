@@ -16,7 +16,7 @@ requests:
     path: /api/v1/incidents
     extract:
       - name: page_token
-        path: next
+        from: response.body.next
         target: extract
   - method: GET
     path:

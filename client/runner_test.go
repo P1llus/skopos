@@ -473,7 +473,7 @@ func TestEmptyEventsDoesNotBindStaleSteps(t *testing.T) {
 			},
 			Extract: []schema.ExtractVar{{
 				Name: "marker",
-				Path: mustPath("body_marker"),
+				From: mustPath("response.body.body_marker"),
 			}},
 		}},
 		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},

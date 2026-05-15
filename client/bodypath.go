@@ -9,6 +9,17 @@ import (
 	"github.com/p1llus/skopos/schema"
 )
 
+// pathParts returns the Path's segments, or nil when the path is empty.
+// Used by per-event sub-path walks (progress.{latest_event_timestamp,
+// max_event_field}.event_time.path) where the path is body-relative to
+// each event object — no namespace root to strip.
+func pathParts(p schema.Path) []string {
+	if p.IsEmpty() {
+		return nil
+	}
+	return p.Parts
+}
+
 // stripBodyRoot strips the body-root prefix from p and returns the
 // body-relative parts to walk plus the step id (or "" when the local
 // body is the target). The validator's body-rooted-Path contract feeds

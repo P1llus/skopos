@@ -15,7 +15,7 @@ requests:
     path: /api/v1/events
     extract:
       - name: tag
-        path: foo
+        from: response.body.foo
         coerce: not_a_verb
 response:
   decode: json

@@ -34,17 +34,15 @@ requests:
       since: {from_progress: latest_timestamp}
     extract:
       - name: next_partition_id
-        path: next_partition_id
+        from: response.body.next_partition_id
         target: cursor
         coerce: int
       - name: freeze_flag
-        # The body field is genuinely named "state" → emits a known false-
-        # positive namespace-root warning on every validate. The validator's
-        # warning text suggests using {parts: [...]} but the Path struct
-        # doesn't track the authoring form so the warning still fires;
-        # silencing it cleanly requires a schema change tracked under
-        # E-fixture-14 in REVIEW.md.
-        path: state.frozen
+        # The body field is genuinely named "state". With slice 3's
+        # namespace-rooted from: Path the prior namespace-shadow false-
+        # positive is gone — the response.body.<...> root makes the body
+        # locator unambiguous regardless of the field name underneath.
+        from: response.body.state.frozen
         target: cursor
         coerce: bool
 

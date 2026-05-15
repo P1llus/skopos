@@ -236,16 +236,14 @@ func TestExtract_BodyAndHeader_AndTargets(t *testing.T) {
 			Path:   ptrValue(vStr("/one")),
 			Extract: []schema.ExtractVar{
 				{
-					// body source, default target=extract.
-					Name:   "trace",
-					Source: "header",
-					Header: "X-Trace-Id",
+					// header source, default target=extract.
+					Name: "trace",
+					From: mustPath("response.header.X-Trace-Id"),
 				},
 				{
 					// body source, target=cursor.
 					Name:   "next",
-					Source: "body",
-					Path:   mustPath("next"),
+					From:   mustPath("response.body.next"),
 					Target: "cursor",
 				},
 			},

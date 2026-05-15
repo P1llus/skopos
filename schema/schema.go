@@ -283,16 +283,18 @@ type RequestCache struct {
 type ExtractVar struct {
 	// Name is the destination key in the extract / cursor namespace.
 	Name string `yaml:"name" json:"name"`
-	// Path is the body-relative locator (used when Source is "body" or
-	// unset).
-	Path Path `yaml:"path,omitempty" json:"path,omitempty"`
+	// From is the namespace-rooted Path locating the value to capture.
+	// Accepted roots:
+	//   - response.body.<path>     the active step's response body
+	//   - response.header.<name>   the active step's response headers
+	//   - steps.<id>.body.<path>   a labelled prior step's response body
+	//   - steps.<id>.header.<name> a labelled prior step's response headers
+	// The runtime dispatches body-walk vs header-lookup based on the
+	// matched root rather than a side-channel discriminator.
+	From Path `yaml:"from" json:"from"`
 	// Coerce, when set, applies a format verb (rfc3339, unix_seconds, ...)
 	// to the extracted value before storing it.
 	Coerce string `yaml:"coerce,omitempty" json:"coerce,omitempty"`
-	// Source is "body" (default) or "header".
-	Source string `yaml:"source,omitempty" json:"source,omitempty"`
-	// Header is the response-header name; required when Source == "header".
-	Header string `yaml:"header,omitempty" json:"header,omitempty"`
 	// Target controls which namespace the extracted value lands in:
 	// "extract" (default) → extract.<name>, visible to subsequent steps
 	// in the same iteration and lost between iterations; "cursor" →
@@ -777,5 +779,82 @@ func (c *CursorUpdateDirective) UnmarshalJSON(data []byte) error {
 	c.Kind = raw.Kind
 	c.Lookback = raw.Lookback
 	c.EventTime = raw.EventTime
+	return nil
+}
+
+// ---- ExtractVar codec ----
+//
+// Slice 3 collapsed the old (path | source/header) discriminator into one
+// namespace-rooted from: Path. Custom unmarshalers exist solely to surface a
+// precise parse-time error when an author leaves a deleted key behind —
+// without them, the lenient default decode silently drops the unknown key
+// and the validator surfaces a less useful "from is required" error.
+
+// extractVarRaw mirrors ExtractVar so the custom unmarshaler can defer to the
+// default decode without recursion.
+type extractVarRaw struct {
+	Name   string `yaml:"name"             json:"name"`
+	From   Path   `yaml:"from"             json:"from"`
+	Coerce string `yaml:"coerce,omitempty" json:"coerce,omitempty"`
+	Target string `yaml:"target,omitempty" json:"target,omitempty"`
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler. Only MappingNode is accepted.
+// The legacy keys path / source / header are rejected with a hint pointing
+// at the new from: form.
+func (e *ExtractVar) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("schema.ExtractVar at line %d: extract entry must be a map (name + from)", node.Line)
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		switch key.Value {
+		case "path":
+			return fmt.Errorf("schema.ExtractVar at line %d: extract.path was removed; use from: response.body.<path> (or response.header.<name>, or steps.<id>.{body|header}.<...> for a labelled prior step)", key.Line)
+		case "source":
+			return fmt.Errorf("schema.ExtractVar at line %d: extract.source was removed; use from: response.body.<path> for body extracts and from: response.header.<name> for header extracts", key.Line)
+		case "header":
+			return fmt.Errorf("schema.ExtractVar at line %d: extract.header was removed; use from: response.header.<name> (the header source is now encoded in the path root)", key.Line)
+		}
+	}
+	var raw extractVarRaw
+	if err := node.Decode(&raw); err != nil {
+		return fmt.Errorf("schema.ExtractVar at line %d: %w", node.Line, err)
+	}
+	e.Name = raw.Name
+	e.From = raw.From
+	e.Coerce = raw.Coerce
+	e.Target = raw.Target
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler. The legacy keys path / source /
+// header are rejected with a hint pointing at the new from: form.
+func (e *ExtractVar) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return fmt.Errorf("schema.ExtractVar: extract entry must be a JSON object")
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return fmt.Errorf("schema.ExtractVar: %w", err)
+	}
+	if _, ok := probe["path"]; ok {
+		return fmt.Errorf("schema.ExtractVar: extract.path was removed; use from: response.body.<path> (or response.header.<name>, or steps.<id>.{body|header}.<...> for a labelled prior step)")
+	}
+	if _, ok := probe["source"]; ok {
+		return fmt.Errorf("schema.ExtractVar: extract.source was removed; use from: response.body.<path> for body extracts and from: response.header.<name> for header extracts")
+	}
+	if _, ok := probe["header"]; ok {
+		return fmt.Errorf("schema.ExtractVar: extract.header was removed; use from: response.header.<name> (the header source is now encoded in the path root)")
+	}
+	var raw extractVarRaw
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("schema.ExtractVar: %w", err)
+	}
+	e.Name = raw.Name
+	e.From = raw.From
+	e.Coerce = raw.Coerce
+	e.Target = raw.Target
 	return nil
 }

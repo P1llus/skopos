@@ -659,24 +659,7 @@ func (v *validator) checkRequest(path string, req Request, namespace *ns) {
 		if ex.Name == "" {
 			v.errorf(ep+".name", "extract name is required")
 		}
-		switch ex.Source {
-		case "header":
-			if ex.Header == "" {
-				v.errorf(ep+".header", "header is required when source is 'header'")
-			}
-		case "body", "":
-			// extract[].path is a body-relative Path; structural shape is
-			// already enforced by Path's parser. Just require non-zero.
-			if ex.Path.IsEmpty() {
-				v.errorf(ep+".path", "path is required when source is 'body' (the default)")
-			} else if root := ex.Path.Root(); isNamespaceRoot(root) {
-				v.warnf(ep+".path",
-					fmt.Sprintf("extract.path %q starts with the namespace root %q, but the path is body-relative — it indexes into the response body, not the namespace", ex.Path.String(), root),
-					"extract[].path is body-relative; rename the body field or use {parts: [...]} to silence this warning")
-			}
-		default:
-			v.errorf(ep+".source", "source must be 'body' or 'header', got %q", ex.Source)
-		}
+		v.checkExtractFromPath(ep+".from", ex.From, namespace)
 		if ex.Coerce != "" && !validFormatVerb(ex.Coerce) {
 			v.errorf(ep+".coerce", "unknown coerce verb %q; want one of the format-verb set", ex.Coerce)
 		}
@@ -1048,12 +1031,11 @@ func (v *validator) checkError(path string, e ErrorBlock) {
 // ---- value reference checking ----
 
 // checkValue validates a Value within a namespace context.
-// allowBody indicates whether the contextual response roots are valid here:
-// the legacy "body.<path>" and the new "response.body.<path>" /
-// "response.header.<name>" forms. Both are gated by the same flag because
-// they resolve against the same call-site response context. Set true at
-// complete_when predicate sites; false everywhere else (extract.path,
-// top-level Value fields, etc.).
+// allowBody indicates whether the contextual response.* roots are valid
+// here ("response.body.<path>" / "response.header.<name>"). Set true at
+// complete_when predicate sites; false everywhere else (top-level Value
+// fields, request query/header/body maps, etc.). The legacy bare body.*
+// root was deleted in slice 2 and is rejected unconditionally.
 func (v *validator) checkValue(path string, val Value, namespace *ns, allowBody bool) {
 	if val.IsZero || val.LiteralString != nil || val.LiteralInt != nil || val.LiteralBool != nil {
 		return
@@ -1184,6 +1166,75 @@ func (v *validator) checkBodyRootedPath(path string, p Path, namespace *ns, allo
 		v.errorf(path,
 			"%q must be namespace-rooted; use response.body.%s (or steps.<id>.body.%s for a labelled prior step)",
 			p.String(), p.String(), p.String())
+	}
+}
+
+// checkExtractFromPath validates a requests[].extract[].from Path slot.
+//
+// Accepted shapes (a strict superset of checkBodyRootedPath — the from slot
+// also reaches headers via the symmetric *.header.<name> roots):
+//
+//   - response.body.<path>     the active step's response body
+//   - response.header.<name>   the active step's response headers
+//   - steps.<id>.body.<path>   a labelled prior step's response body
+//   - steps.<id>.header.<name> a labelled prior step's response headers
+//
+// stepBodies is consulted for the steps.<id>.* arms to verify the referenced
+// id is declared. The empty Path is rejected — the from slot is always
+// required (an extract that resolves to nothing has no purpose).
+func (v *validator) checkExtractFromPath(path string, p Path, namespace *ns) {
+	if p.IsEmpty() {
+		v.errorf(path, "is required; want response.body.<path>, response.header.<name>, or steps.<id>.{body|header}.<...>")
+		return
+	}
+	switch p.Parts[0] {
+	case "response":
+		if len(p.Parts) < 2 {
+			v.errorf(path, "ref %q: response ref requires a kind segment: response.body.<path> or response.header.<name>", p.String())
+			return
+		}
+		switch p.Parts[1] {
+		case "body":
+			if len(p.Parts) < 3 {
+				v.errorf(path, "ref %q: response.body root requires a sub-path segment: response.body.<path>", p.String())
+			}
+		case "header":
+			if len(p.Parts) < 3 {
+				v.errorf(path, "ref %q: response.header root requires a header name: response.header.<name>", p.String())
+			}
+		default:
+			v.errorf(path, "ref %q: response second segment must be \"body\" or \"header\" (got %q); only response.body.<path> and response.header.<name> are valid", p.String(), p.Parts[1])
+		}
+	case "steps":
+		if len(p.Parts) < 2 {
+			v.errorf(path, "ref %q: steps ref requires an id: steps.<id>.body.<path> or steps.<id>.header.<name>", p.String())
+			return
+		}
+		id := p.Parts[1]
+		if !namespace.hasStepBody(id) {
+			v.errorf(path, "ref %q: step %q has no id or has not been declared", p.String(), id)
+			return
+		}
+		if len(p.Parts) < 3 {
+			v.errorf(path, "ref %q: steps ref must include a kind segment: steps.%s.body.<path> or steps.%s.header.<name>", p.String(), id, id)
+			return
+		}
+		switch p.Parts[2] {
+		case "body":
+			if len(p.Parts) < 4 {
+				v.errorf(path, "ref %q: steps.<id>.body root requires a sub-path segment: steps.%s.body.<path>", p.String(), id)
+			}
+		case "header":
+			if len(p.Parts) < 4 {
+				v.errorf(path, "ref %q: steps.<id>.header ref requires a header name: steps.%s.header.<name>", p.String(), id)
+			}
+		default:
+			v.errorf(path, "ref %q: steps ref second segment must be \"body\" or \"header\" (got %q); only steps.<id>.body.<path> and steps.<id>.header.<name> are valid", p.String(), p.Parts[2])
+		}
+	default:
+		v.errorf(path,
+			"%q must be namespace-rooted; use response.body.<path>, response.header.<name>, or steps.<id>.{body|header}.<...> for a labelled prior step",
+			p.String())
 	}
 }
 
@@ -1467,7 +1518,8 @@ func (v *validator) checkSendAs(path, s string) {
 // ---- helpers ----
 
 // isNamespaceRoot reports whether s is one of the reserved namespace-root
-// names. Used by the extract.path namespace-shadow warning.
+// names. Used by checkPerEventPath to reject namespace-root prefixes on
+// per-event sub-paths.
 func isNamespaceRoot(s string) bool {
 	switch s {
 	case "state", "cursor", "extract", "steps", "item", "body", "response":

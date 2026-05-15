@@ -1,10 +1,16 @@
 # errors/extract_path_required_for_body_source — invalid spec; validate exits 1 with diagnostic
 # matching the substring tested by TestValidateErrors in
 # schema/fixtures_test.go.
+#
+# Slice 3 collapsed the path/source/header triple into a single from: Path.
+# An extract entry that omits `from:` now triggers "is required" against
+# the new field name; the file name keeps the legacy "path required" wording
+# for change-history continuity but the assertion below matches the new
+# message.
 
 ! exec skopos validate -i spec.yml
 ! stderr .
-stdout 'path is required'
+stdout 'requests\[0\]\.extract\[0\]\.from: error: is required'
 
 -- spec.yml --
 ir_version: "1"

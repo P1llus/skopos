@@ -35,8 +35,7 @@ requests:
     path: /session_cookie/login
     extract:
       - name: session_cookie
-        source: header
-        header: Set-Cookie
+        from: response.header.Set-Cookie
 
   - id: data
     method: GET

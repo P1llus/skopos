@@ -59,9 +59,8 @@ func TestSpecFixtures(t *testing.T) {
 					t.Fatalf("Parse(%s): %v", path, err)
 				}
 
-				// Validate. Warnings are allowed (e.g. multi_field_cursor.yml's
-				// extract.path namespace-shadow warning); only error-severity
-				// diagnostics fail the suite.
+				// Validate. Warnings are allowed (the suite filters them out);
+				// only error-severity diagnostics fail the suite.
 				diags := schema.Validate(doc)
 				errs := 0
 				for _, d := range diags {
@@ -1933,5 +1932,369 @@ progress:
 		if diags := validateErrs(t, src); len(diags) != 0 {
 			t.Errorf("bare per-event path should validate; got %+v", diags)
 		}
+	})
+}
+
+// TestSliceThreeExtractFromCollapse pins slice 3's collapse: ExtractVar's
+// path/source/header triple is gone; the codec rejects each leftover key
+// with a precise hint, the validator enforces the namespace-rooted from:
+// Path with body+header roots, and the legacy extract.path namespace-shadow
+// warning is deleted (the new from is fully namespace-rooted, so the
+// shadow case it warned about is gone).
+func TestSliceThreeExtractFromCollapse(t *testing.T) {
+	parseErr := func(t *testing.T, src string) error {
+		t.Helper()
+		_, err := schema.Parse([]byte(src))
+		return err
+	}
+
+	mustErrContain := func(t *testing.T, err error, needle string) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("expected parse error containing %q; got nil", needle)
+		}
+		if !strings.Contains(err.Error(), needle) {
+			t.Errorf("expected parse error containing %q; got %v", needle, err)
+		}
+	}
+
+	validateErrs := func(t *testing.T, src string) []schema.Diagnostic {
+		t.Helper()
+		doc, err := schema.Parse([]byte(src))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		var out []schema.Diagnostic
+		for _, d := range schema.Validate(doc) {
+			if d.Severity == "error" {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+
+	mustContain := func(t *testing.T, diags []schema.Diagnostic, needle string) {
+		t.Helper()
+		for _, d := range diags {
+			if strings.Contains(d.Message, needle) {
+				return
+			}
+		}
+		t.Errorf("expected diagnostic containing %q; got %+v", needle, diags)
+	}
+
+	// ---- legacy keys are rejected at parse time ----
+
+	t.Run("path_key_rejected_at_parse", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    extract:
+      - name: tag
+        path: tag
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		mustErrContain(t, parseErr(t, src), "extract.path was removed")
+	})
+
+	t.Run("source_key_rejected_at_parse", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    extract:
+      - name: etag
+        source: header
+        from: response.header.ETag
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		mustErrContain(t, parseErr(t, src), "extract.source was removed")
+	})
+
+	t.Run("header_key_rejected_at_parse", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    extract:
+      - name: etag
+        header: ETag
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		mustErrContain(t, parseErr(t, src), "extract.header was removed")
+	})
+
+	t.Run("path_key_rejected_in_json", func(t *testing.T) {
+		src := `{"ir_version":"1","auth":{"none":{}},"requests":[{"method":"GET","path":"/x","extract":[{"name":"t","path":"t"}]}],"response":{"decode":"json","events_at":"response.body.events"},"pagination":{"none":{}},"progress":{"stateless":{}}}`
+		mustErrContain(t, parseErr(t, src), "extract.path was removed")
+	})
+
+	// ---- new from: Path is required at validate time ----
+
+	t.Run("from_required", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    extract:
+      - name: tag
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, "is required")
+	})
+
+	t.Run("from_bare_dotted_rejected", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    extract:
+      - name: tag
+        from: tag
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, "must be namespace-rooted")
+	})
+
+	t.Run("from_namespace_root_state_rejected", func(t *testing.T) {
+		// state.<name> is a real namespace root but not a legal source for
+		// extract.from — the validator names the four allowed shapes.
+		src := `ir_version: "1"
+state:
+  fields:
+    seed: {type: string, default: "x"}
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    extract:
+      - name: tag
+        from: state.seed
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, "must be namespace-rooted")
+	})
+
+	// ---- accepted shapes ----
+
+	t.Run("response_body_from_accepted", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    extract:
+      - name: next
+        from: response.body.next_token
+        target: cursor
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  cursor_token:
+    token_at: response.body.next_token
+    send_as: query.cursor
+progress:
+  stateless: {}
+`
+		if diags := validateErrs(t, src); len(diags) != 0 {
+			t.Errorf("response.body.<path> should validate; got %+v", diags)
+		}
+	})
+
+	t.Run("response_header_from_accepted", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    extract:
+      - name: etag
+        from: response.header.ETag
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		if diags := validateErrs(t, src); len(diags) != 0 {
+			t.Errorf("response.header.<name> should validate; got %+v", diags)
+		}
+	})
+
+	t.Run("steps_id_body_from_accepted", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - id: probe
+    method: GET
+    path: /probe
+  - method: GET
+    path: /api/v1/events
+    extract:
+      - name: probe_marker
+        from: steps.probe.body.marker
+        target: cursor
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		if diags := validateErrs(t, src); len(diags) != 0 {
+			t.Errorf("steps.<id>.body.<path> should validate; got %+v", diags)
+		}
+	})
+
+	t.Run("steps_id_header_from_accepted", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - id: probe
+    method: HEAD
+    path: /probe
+  - method: GET
+    path: /api/v1/events
+    extract:
+      - name: etag
+        from: steps.probe.header.ETag
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		if diags := validateErrs(t, src); len(diags) != 0 {
+			t.Errorf("steps.<id>.header.<name> should validate; got %+v", diags)
+		}
+	})
+
+	// ---- bare-name segments under each root surface a precise message ----
+
+	t.Run("response_body_bare_root_rejected", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    extract:
+      - name: tag
+        from: response.body
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, "response.body root requires a sub-path segment")
+	})
+
+	t.Run("response_header_bare_root_rejected", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    extract:
+      - name: tag
+        from: response.header
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, "response.header root requires a header name")
+	})
+
+	t.Run("steps_id_unknown_rejected", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    extract:
+      - name: tag
+        from: steps.ghost.body.x
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, "has no id or has not been declared")
 	})
 }
