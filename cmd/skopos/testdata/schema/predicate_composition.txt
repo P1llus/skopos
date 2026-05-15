@@ -1,0 +1,84 @@
+# schema/predicate_composition — valid spec produces no diagnostics and exits 0
+# No testserver needed; validate performs static analysis only.
+
+exec skopos validate -i spec.yml
+! stderr .
+! stdout .
+
+-- spec.yml --
+ir_version: "1"
+
+# Exercises non-`eq`/`present` predicate verbs: and / or / not / lt / lte /
+# gt / gte / literal_bool. The fixture's scroll_id pagination terminates when
+# the server reports complete=true OR (page_count exceeded 50 AND we are
+# NOT in safe-mode).
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+    safe_mode:
+      type: bool
+      default: false
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  - method: GET
+    path: /api/v1/scroll
+    if:
+      and:
+        - literal_bool: true              # always-on; demonstrates the constant predicate primitive
+        - not:
+            eq:
+              path: state.safe_mode
+              equal: true
+        - present: state.api_key
+    query:
+      scroll: {from_pagination: scroll_id}
+
+response:
+  decode: json
+  events_at: events
+
+pagination:
+  scroll_id:
+    scroll_id_at: meta.next_scroll
+    send_as: query.scroll
+    complete_when:
+      or:
+        - eq:
+            path: body.meta.complete
+            equal: true
+        - and:
+            - gt:
+                path: body.meta.page_count
+                equal: 50
+            - lte:
+                path: body.meta.page_count
+                equal: 1000
+            - gte:
+                path: body.meta.page_count
+                equal: 50
+            - lt:
+                path: body.meta.error_count
+                equal: 1
+            - not:
+                eq:
+                  path: state.safe_mode
+                  equal: true
+
+progress:
+  stateless: {}
+
+error:
+  mode: standard

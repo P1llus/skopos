@@ -1,0 +1,73 @@
+# schema/etag_conditional_middle — valid spec produces no diagnostics and exits 0
+# No testserver needed; validate performs static analysis only.
+
+exec skopos validate -i spec.yml
+! stderr .
+! stdout .
+
+-- spec.yml --
+ir_version: "1"
+
+# Same ETag conditional pattern as etag_conditional.yml, but the conditional
+# step is in the MIDDLE of a three-step chain rather than the last. Skip
+# semantics apply identically: when the middle step's if-predicate is false
+# or it returns 304, {ref: steps.middle.body.<...>} resolves to a zero
+# Value; the final step's path uses {present: ...} guarding to handle that.
+#
+# The final step is marked produces_events: true; the middle step's body is
+# inspected only for the data path, never as the events source.
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    etag_check:
+      type: bool
+      default: true
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  none: {}
+
+requests:
+  - id: probe
+    method: GET
+    path: /api/v1/etag/probe
+
+  - id: middle
+    method: GET
+    path: /api/v1/etag/data
+    if:
+      eq:
+        path: state.etag_check
+        equal: true
+    on_status:
+      304: skip
+
+  - id: events
+    method: GET
+    path:
+      select:
+        branches:
+          - when:
+              present: steps.middle.body.next_path
+            value:
+              ref: steps.middle.body.next_path
+        default: /api/v1/etag/fallback
+    produces_events: true
+
+response:
+  decode: json
+  events_at: items
+
+pagination:
+  none: {}
+
+progress:
+  stateless: {}
+
+error:
+  mode: standard

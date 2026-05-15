@@ -1,0 +1,74 @@
+# schema/dual_mode_url_gov — valid spec produces no diagnostics and exits 0
+# No testserver needed; validate performs static analysis only.
+
+exec skopos validate -i spec.yml
+! stderr .
+! stdout .
+
+-- spec.yml --
+# NOTE: shares the auth × pagination × progress × decode tuple with
+# dual_mode_url_commercial.yml. This sibling pins the select branches arm
+# (state.gov_cloud=true); the commercial fixture pins the default arm.
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+    gov_cloud:
+      type: bool
+      default: true
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+# URL branch: gov_cloud=true fires the first branch (gov endpoint).
+# Default falls through to the commercial endpoint.
+requests:
+  - method: GET
+    url:
+      select:
+        branches:
+          - when:
+              eq:
+                path: state.gov_cloud
+                equal: true
+            value:
+              concat:
+                - {ref: state.url}
+                - /api/v1/events-gov
+        default:
+          concat:
+            - {ref: state.url}
+            - /api/v1/events-commercial
+    query:
+      since: {from_progress: latest_timestamp}
+
+response:
+  decode: json
+  events_at: events
+
+pagination:
+  none: {}
+
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: created_at
+
+error:
+  mode: standard

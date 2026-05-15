@@ -1,0 +1,75 @@
+# schema/multi_field_cursor — valid spec; surfaces a known body-relative
+# namespace-root warning on extract[1].path "state.frozen". The Go fixture
+# test (TestSpecFixtures) tolerates warning-severity diagnostics; only
+# error-severity diagnostics fail validation. Validate exits 0 and prints
+# the warning on stdout.
+
+exec skopos validate -i spec.yml
+! stderr .
+stdout 'warning: extract\.path "state\.frozen" starts with the namespace root "state", but the path is body-relative'
+
+-- spec.yml --
+ir_version: "1"
+
+# Multi-field cursor expressed via extract[].target: cursor.
+#
+# Drives a worklist API where each iteration:
+#   1. Reads the previous worklist top (cursor.next_partition_id, default 0)
+#      and rolling-max timestamp (cursor.last_timestamp).
+#   2. Calls /api/v1/segments?partition=<id>&since=<ts>.
+#   3. Captures next_partition_id (a server-supplied "where to resume") and
+#      a freeze_flag boolean back into the cursor namespace.
+#   4. last_timestamp is advanced by the latest_event_timestamp progress.
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  - method: GET
+    path: /api/v1/segments
+    query:
+      partition: {format: string, value: {ref: cursor.next_partition_id, default: 0}}
+      since: {from_progress: latest_timestamp}
+    extract:
+      - name: next_partition_id
+        path: next_partition_id
+        target: cursor
+        coerce: int
+      - name: freeze_flag
+        # The body field is genuinely named "state" → emits a known false-
+        # positive namespace-root warning on every validate. The validator's
+        # warning text suggests using {parts: [...]} but the Path struct
+        # doesn't track the authoring form so the warning still fires;
+        # silencing it cleanly requires a schema change tracked under
+        # E-fixture-14 in REVIEW.md.
+        path: state.frozen
+        target: cursor
+        coerce: bool
+
+response:
+  decode: json
+  events_at: events
+
+pagination:
+  none: {}
+
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: timestamp
+
+error:
+  mode: standard

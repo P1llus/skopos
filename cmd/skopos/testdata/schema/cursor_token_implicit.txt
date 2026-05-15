@@ -1,0 +1,60 @@
+# schema/cursor_token_implicit — valid spec produces no diagnostics and exits 0
+# No testserver needed; validate performs static analysis only.
+
+exec skopos validate -i spec.yml
+! stderr .
+! stdout .
+
+-- spec.yml --
+ir_version: "1"
+
+# Mirrors cursor_token.yml but omits the explicit
+# {from_pagination: token} value at query.cursor. The runner lowers
+# `pagination.cursor_token.send_as: query.cursor` into an auto-injection
+# at that slot on the producer step — implicit-form ergonomics, same
+# wire shape as the explicit-form template.
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  - method: GET
+    path: /api/v1/findings
+    query:
+      limit: {format: string, value: {ref: state.page_size}}
+
+response:
+  decode: json
+  events_at: findings
+
+pagination:
+  cursor_token:
+    token_at: next_cursor
+    send_as: query.cursor
+
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: created_at
+
+error:
+  mode: standard

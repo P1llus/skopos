@@ -1,0 +1,36 @@
+# errors/fanout_as_shadows_earlier_extract — invalid spec; validate exits 1 with diagnostic
+# matching the substring tested by TestValidateErrors in
+# schema/fixtures_test.go.
+
+! exec skopos validate -i spec.yml
+! stderr .
+stdout 'collides with an extract name in scope'
+
+-- spec.yml --
+ir_version: "1"
+auth:
+  none: {}
+requests:
+  - id: list
+    method: GET
+    path: /api/v1/incidents
+    extract:
+      - name: page_token
+        path: next
+        target: extract
+  - method: GET
+    path:
+      concat:
+        - /api/v1/incidents/
+        - {ref: page_token.id}
+        - /details
+    fan_out:
+      over: {ref: steps.list.body.incidents}
+      as: page_token
+response:
+  decode: json
+  events_at: events
+pagination:
+  none: {}
+progress:
+  stateless: {}

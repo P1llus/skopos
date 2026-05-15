@@ -1,0 +1,26 @@
+# errors/from_pagination_role_strategy_mismatch — invalid spec; validate exits 1 with diagnostic
+# matching the substring tested by TestValidateErrors in
+# schema/fixtures_test.go.
+
+! exec skopos validate -i spec.yml
+! stderr .
+stdout 'does not match the active pagination strategy'
+
+-- spec.yml --
+ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      cursor: {from_pagination: page}
+response:
+  decode: json
+  events_at: events
+pagination:
+  cursor_token:
+    token_at: next
+    send_as: query.cursor
+progress:
+  stateless: {}
