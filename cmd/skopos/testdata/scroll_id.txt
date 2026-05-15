@@ -1,0 +1,22 @@
+# scroll_id — scroll-and-keep-alive pagination
+# Boots the scroll_id scenario, runs one drain (3 pages: 2+2+1 events), and
+# asserts the trace and events match the golden.
+# The spec is loaded live from the embedded template.
+
+exec skopos template show -o spec.yml scroll_id
+replace spec.yml http://localhost:9999 $URL
+exec skopos run -i spec.yml --once --trace trace.jsonl --out events.jsonl
+normalize trace.jsonl
+cmp trace.jsonl want_trace.jsonl
+cmp events.jsonl want_events.jsonl
+
+-- want_trace.jsonl --
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","query":{"scroll":"<from_pagination:scroll_id>","since":"<from_progress:latest_timestamp>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 207 bytes, object-like","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/scroll_id/scroll"}
+{"elapsed":"<scrubbed>","iteration":2,"method":"GET","query":{"scroll":"<from_pagination:scroll_id>","since":"<from_progress:latest_timestamp>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 207 bytes, object-like","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/scroll_id/scroll"}
+{"elapsed":"<scrubbed>","iteration":3,"method":"GET","query":{"scroll":"<from_pagination:scroll_id>","since":"<from_progress:latest_timestamp>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 139 bytes, object-like","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/scroll_id/scroll"}
+-- want_events.jsonl --
+{"id":"evt-000001","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
+{"id":"evt-000002","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}
+{"id":"evt-000003","seq_num":3,"timestamp":"2026-01-01T00:00:02Z"}
+{"id":"evt-000004","seq_num":4,"timestamp":"2026-01-01T00:00:03Z"}
+{"id":"evt-000005","seq_num":5,"timestamp":"2026-01-01T00:00:04Z"}

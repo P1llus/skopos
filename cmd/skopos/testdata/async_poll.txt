@@ -1,0 +1,22 @@
+# async_poll — asynchronous job pattern: submit → poll → fetch
+# Boots the async_poll scenario, runs one drain (3 exchanges: POST submit,
+# GET status, GET results), and asserts the trace and events match the golden.
+# The spec is loaded live from the embedded template.
+
+exec skopos template show -o spec.yml async_poll
+replace spec.yml http://localhost:9999 $URL
+exec skopos run -i spec.yml --once --trace trace.jsonl --out events.jsonl
+normalize trace.jsonl
+cmp trace.jsonl want_trace.jsonl
+cmp events.jsonl want_events.jsonl
+
+-- want_trace.jsonl --
+{"elapsed":"<scrubbed>","iteration":1,"method":"POST","phase":"submit","request_body":"body 12 bytes, object-like","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>","Content-Type":"application/json"},"response_body":"body 27 bytes, object-like","started_at":"<scrubbed>","status":202,"step_id":"submit","url":"$URL_HOST/async_poll/exports"}
+{"elapsed":"<scrubbed>","iteration":2,"method":"GET","phase":"poll","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 90 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"poll","url":"$URL_HOST/async_poll/exports/exp-000001/status"}
+{"elapsed":"<scrubbed>","iteration":3,"method":"GET","phase":"fetch","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 347 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"fetch","url":"$URL_HOST/async_poll/results/exp-000001"}
+-- want_events.jsonl --
+{"id":"evt-000001","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
+{"id":"evt-000002","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}
+{"id":"evt-000003","seq_num":3,"timestamp":"2026-01-01T00:00:02Z"}
+{"id":"evt-000004","seq_num":4,"timestamp":"2026-01-01T00:00:03Z"}
+{"id":"evt-000005","seq_num":5,"timestamp":"2026-01-01T00:00:04Z"}

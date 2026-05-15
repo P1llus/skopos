@@ -1,0 +1,16 @@
+# simple_get_object — smallest end-to-end spec: one GET, no auth, no pagination
+# Boots the simple_get_object scenario, runs one drain, and asserts the
+# events JSONL and redacted trace JSONL match the golden.
+# The spec is loaded live from the embedded template.
+
+exec skopos template show -o spec.yml simple_get_object
+replace spec.yml http://localhost:9999 $URL
+exec skopos run -i spec.yml --once --trace trace.jsonl --out events.jsonl
+normalize trace.jsonl
+cmp trace.jsonl want_trace.jsonl
+cmp events.jsonl want_events.jsonl
+
+-- want_trace.jsonl --
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1"},"response_body":"body 67 bytes, object-like","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/simple_get_object/status"}
+-- want_events.jsonl --
+{"id":"evt-000001","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
