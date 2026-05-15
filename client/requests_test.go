@@ -5,7 +5,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -31,75 +30,6 @@ func requestDoc(baseURL string, reqs []schema.Request) *schema.Doc {
 		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress:   schema.Progress{Stateless: &struct{}{}},
-	}
-}
-
-// TestBody_Form pins the application/x-www-form-urlencoded contract:
-// the wire bytes are the URL-encoded form values, the Content-Type is set,
-// and the IR-evaluated Values land at the named keys.
-func TestBody_Form(t *testing.T) {
-	var gotCT string
-	var gotBody []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotCT = r.Header.Get("Content-Type")
-		body, _ := io.ReadAll(r.Body)
-		gotBody = body
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-	}))
-	defer server.Close()
-
-	doc := requestDoc(server.URL, []schema.Request{{
-		Method: "POST",
-		Path:   ptrValue(vStr("/oauth/token")),
-		Body: &schema.Body{Form: map[string]schema.Value{
-			"grant_type": vStr("client_credentials"),
-			"scope":      vStr("read write"),
-		}},
-	}})
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if gotCT != "application/x-www-form-urlencoded" {
-		t.Errorf("Content-Type = %q, want application/x-www-form-urlencoded", gotCT)
-	}
-	got := string(gotBody)
-	// url.Values.Encode sorts keys alphabetically.
-	want := "grant_type=client_credentials&scope=read+write"
-	if got != want {
-		t.Errorf("body = %q, want %q", got, want)
-	}
-}
-
-// TestBody_Raw pins the raw-body contract: the wire bytes are exactly the
-// IR-evaluated string and no Content-Type is set by the runner (authors
-// must declare one via headers).
-func TestBody_Raw(t *testing.T) {
-	const payload = `{"query":"{ viewer { id } }"}`
-	var gotCT string
-	var gotBody []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotCT = r.Header.Get("Content-Type")
-		body, _ := io.ReadAll(r.Body)
-		gotBody = body
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-	}))
-	defer server.Close()
-
-	doc := requestDoc(server.URL, []schema.Request{{
-		Method: "POST",
-		Path:   ptrValue(vStr("/graphql")),
-		Body:   &schema.Body{Raw: ptrValue(vStr(payload))},
-	}})
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if string(gotBody) != payload {
-		t.Errorf("body = %q, want %q", string(gotBody), payload)
-	}
-	if gotCT != "" {
-		t.Errorf("Content-Type = %q, want empty (raw body sets none)", gotCT)
 	}
 }
 

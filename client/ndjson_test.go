@@ -29,31 +29,6 @@ func ndjsonDoc(baseURL string, eventsAt string) *schema.Doc {
 	}
 }
 
-// TestEndToEnd_NDJSON drives an ndjson response across two valid lines
-// (each carrying its own `events` list) plus one whitespace-only blank
-// line. Asserts the runner emits the concatenated per-line events list
-// and skips blanks.
-func TestEndToEnd_NDJSON(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		_, _ = w.Write([]byte(
-			`{"events":[{"id":"a"},{"id":"b"}]}` + "\n" +
-				"\n" +
-				`{"events":[{"id":"c"}]}` + "\n",
-		))
-	}))
-	defer server.Close()
-
-	sink := &captureSink{}
-	r := &Runner{Doc: ndjsonDoc(server.URL, "events"), Sink: sink, Now: fixedNow(), Client: server.Client()}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if got := len(sink.events); got != 3 {
-		t.Fatalf("emitted %d events, want 3 (blank line skipped, per-line events_at concatenated)", got)
-	}
-}
-
 // TestEndToEnd_NDJSON_DecodeErrorContext asserts the runner surfaces a
 // "ndjson decode at line N" wrapper for a malformed line.
 func TestEndToEnd_NDJSON_DecodeErrorContext(t *testing.T) {

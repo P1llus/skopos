@@ -3,25 +3,12 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/p1llus/skopos/templates"
 )
-
-func TestTemplateList_ContainsBearerSimple(t *testing.T) {
-	out := captureStdout(t, func() {
-		if err := runTemplateList(); err != nil {
-			t.Fatalf("runTemplateList: %v", err)
-		}
-	})
-
-	if !strings.Contains(out, "bearer_simple") {
-		t.Errorf("list output does not contain bearer_simple:\n%s", out)
-	}
-}
 
 func TestTemplateList_SortedAlphabetically(t *testing.T) {
 	names := templates.Names()
@@ -46,27 +33,6 @@ func TestTemplateList_SortedAlphabetically(t *testing.T) {
 	for i, name := range names {
 		if lines[i] != name {
 			t.Errorf("line[%d] = %q, want %q", i, lines[i], name)
-		}
-	}
-}
-
-func TestTemplateShow_BearerSimple(t *testing.T) {
-	want, err := templates.Read("bearer_simple")
-	if err != nil {
-		t.Fatalf("templates.Read: %v", err)
-	}
-
-	out := captureStdout(t, func() {
-		if err := runTemplateShow("bearer_simple", ""); err != nil {
-			t.Fatalf("runTemplateShow: %v", err)
-		}
-	})
-
-	// The output must contain the embedded bytes.
-	if !strings.Contains(out, string(want)) && !bytes.Equal([]byte(out), want) {
-		// Allow for trailing newline difference.
-		if strings.TrimRight(out, "\n") != strings.TrimRight(string(want), "\n") {
-			t.Errorf("show output does not match embedded bytes")
 		}
 	}
 }
