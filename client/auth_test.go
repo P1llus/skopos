@@ -16,27 +16,6 @@ import (
 	"github.com/p1llus/skopos/schema"
 )
 
-// authDoc builds a minimal one-request Doc carrying the supplied Auth. The
-// shape mirrors bearerSimpleDoc but lets each §4.1 test pick the auth
-// variant under test.
-func authDoc(baseURL string, auth schema.Auth) *schema.Doc {
-	return &schema.Doc{
-		IRVersion: "1",
-		State: &schema.State{Fields: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: baseURL},
-		}},
-		Defaults: &schema.Defaults{BaseURL: vRef("state.url")},
-		Auth:     auth,
-		Requests: []schema.Request{{
-			Method: "GET",
-			Path:   ptrValue(vStr("/api/v1/events")),
-		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
-		Pagination: schema.Pagination{None: &struct{}{}},
-		Progress:   schema.Progress{Stateless: &struct{}{}},
-	}
-}
-
 // ---- oauth2 helpers ----
 
 // oauth2TokenServer constructs a token endpoint that returns the supplied
