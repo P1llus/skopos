@@ -269,9 +269,7 @@ CustomAuth sends a single custom header with an arbitrary value.
 _Defined in `schema/schema.go`._
 
 OAuth2Auth selects the OAuth2 grant type. Exactly one grant key must be
-present. jwt_bearer (RFC 7523) remains deferred until a portable signing
-Value form lands (RSA-SHA256 over a canonical claims set has no portable
-Value verb today).
+present.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
