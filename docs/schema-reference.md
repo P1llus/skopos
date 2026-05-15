@@ -470,7 +470,6 @@ CursorTokenPagination advances via an opaque cursor token in the response body.
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `TokenAt` | `token_at` | `Path` | no | TokenAt is the body path of the next-page cursor. |
-| `SendAs` | `send_as` | `string` | no | SendAs names where to send the cursor on subsequent requests: "query.<param>" or "header.<name>". |
 
 ## `PageNumberPagination`
 
@@ -524,7 +523,6 @@ ScrollIDPagination maintains a server-side scroll session.
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `ScrollIDAt` | `scroll_id_at` | `Path` | no | ScrollIDAt is the body path of the server-supplied scroll id. |
-| `SendAs` | `send_as` | `string` | no | SendAs names where to send the scroll id on subsequent requests: "query.<param>" or "header.<name>". |
 | `CompleteWhen` | `complete_when` | `*Predicate` | yes | CompleteWhen is an optional predicate evaluated against the producer body that terminates the scroll early. |
 
 ## `GraphQLRelayPagination`

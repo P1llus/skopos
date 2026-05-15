@@ -6,9 +6,8 @@
 # slot reads it back via {ref: cursor.next_url, default: <bootstrap-url>}
 # — first iteration hits the bootstrap URL, every subsequent iteration
 # follows whatever the previous page named, until the field is absent
-# (null or ""). Like link_header, this variant has no send_as
-# auto-injection: wiring cursor.next_url into the request is the
-# template's job.
+# (null or ""). Wiring cursor.next_url into the request is the template's
+# job.
 
 ir_version: "1"
 

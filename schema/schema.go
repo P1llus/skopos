@@ -375,9 +375,6 @@ type Pagination struct {
 type CursorTokenPagination struct {
 	// TokenAt is the body path of the next-page cursor.
 	TokenAt Path `yaml:"token_at" json:"token_at"`
-	// SendAs names where to send the cursor on subsequent requests:
-	// "query.<param>" or "header.<name>".
-	SendAs string `yaml:"send_as" json:"send_as"`
 }
 
 // PageNumberPagination advances by incrementing a page number query param.
@@ -417,9 +414,6 @@ type NextURLInBodyPagination struct {
 type ScrollIDPagination struct {
 	// ScrollIDAt is the body path of the server-supplied scroll id.
 	ScrollIDAt Path `yaml:"scroll_id_at" json:"scroll_id_at"`
-	// SendAs names where to send the scroll id on subsequent requests:
-	// "query.<param>" or "header.<name>".
-	SendAs string `yaml:"send_as" json:"send_as"`
 	// CompleteWhen is an optional predicate evaluated against the
 	// producer body that terminates the scroll early.
 	CompleteWhen *Predicate `yaml:"complete_when,omitempty" json:"complete_when,omitempty"`
@@ -856,5 +850,114 @@ func (e *ExtractVar) UnmarshalJSON(data []byte) error {
 	e.From = raw.From
 	e.Coerce = raw.Coerce
 	e.Target = raw.Target
+	return nil
+}
+
+// ---- CursorTokenPagination codec ----
+//
+// Slice 5 deleted the implicit `send_as` auto-injector. Custom unmarshalers
+// surface a precise parse-time error when an author leaves a deleted send_as
+// key behind — the default decode would silently drop the unknown field and
+// the runtime would quietly forget to wire the cursor.
+
+type cursorTokenPaginationRaw struct {
+	TokenAt Path `yaml:"token_at" json:"token_at"`
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler. Only MappingNode is accepted.
+// The legacy send_as key is rejected with a hint pointing at the explicit
+// {ref: cursor.token} request-slot form.
+func (c *CursorTokenPagination) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("schema.CursorTokenPagination at line %d: cursor_token requires the map form {token_at: ...}", node.Line)
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if key.Value == "send_as" {
+			return fmt.Errorf("schema.CursorTokenPagination at line %d: pagination.cursor_token.send_as was removed; wire the cursor explicitly in your request (e.g. query: {cursor: {ref: cursor.token, default: \"\"}})", key.Line)
+		}
+	}
+	var raw cursorTokenPaginationRaw
+	if err := node.Decode(&raw); err != nil {
+		return fmt.Errorf("schema.CursorTokenPagination at line %d: %w", node.Line, err)
+	}
+	c.TokenAt = raw.TokenAt
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler. The legacy send_as key is
+// rejected with the same hint as the YAML form.
+func (c *CursorTokenPagination) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return fmt.Errorf("schema.CursorTokenPagination: cursor_token requires the map form {token_at: ...}")
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return fmt.Errorf("schema.CursorTokenPagination: %w", err)
+	}
+	if _, ok := probe["send_as"]; ok {
+		return fmt.Errorf("schema.CursorTokenPagination: pagination.cursor_token.send_as was removed; wire the cursor explicitly in your request (e.g. query: {cursor: {ref: cursor.token, default: \"\"}})")
+	}
+	var raw cursorTokenPaginationRaw
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("schema.CursorTokenPagination: %w", err)
+	}
+	c.TokenAt = raw.TokenAt
+	return nil
+}
+
+// ---- ScrollIDPagination codec ----
+//
+// Mirror of CursorTokenPagination: slice 5 deleted the send_as auto-injector
+// and the codec rejects the legacy key at parse time with a migration hint.
+
+type scrollIDPaginationRaw struct {
+	ScrollIDAt   Path       `yaml:"scroll_id_at"             json:"scroll_id_at"`
+	CompleteWhen *Predicate `yaml:"complete_when,omitempty"  json:"complete_when,omitempty"`
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler. Only MappingNode is accepted.
+// The legacy send_as key is rejected with a hint pointing at the explicit
+// {ref: cursor.scroll_id} request-slot form.
+func (s *ScrollIDPagination) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("schema.ScrollIDPagination at line %d: scroll_id requires the map form {scroll_id_at: ...}", node.Line)
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if key.Value == "send_as" {
+			return fmt.Errorf("schema.ScrollIDPagination at line %d: pagination.scroll_id.send_as was removed; wire the cursor explicitly in your request (e.g. query: {scroll: {ref: cursor.scroll_id}} — omit default so the bootstrap iteration opens a fresh scroll)", key.Line)
+		}
+	}
+	var raw scrollIDPaginationRaw
+	if err := node.Decode(&raw); err != nil {
+		return fmt.Errorf("schema.ScrollIDPagination at line %d: %w", node.Line, err)
+	}
+	s.ScrollIDAt = raw.ScrollIDAt
+	s.CompleteWhen = raw.CompleteWhen
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler. The legacy send_as key is
+// rejected with the same hint as the YAML form.
+func (s *ScrollIDPagination) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return fmt.Errorf("schema.ScrollIDPagination: scroll_id requires the map form {scroll_id_at: ...}")
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return fmt.Errorf("schema.ScrollIDPagination: %w", err)
+	}
+	if _, ok := probe["send_as"]; ok {
+		return fmt.Errorf("schema.ScrollIDPagination: pagination.scroll_id.send_as was removed; wire the cursor explicitly in your request (e.g. query: {scroll: {ref: cursor.scroll_id}} — omit default so the bootstrap iteration opens a fresh scroll)")
+	}
+	var raw scrollIDPaginationRaw
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("schema.ScrollIDPagination: %w", err)
+	}
+	s.ScrollIDAt = raw.ScrollIDAt
+	s.CompleteWhen = raw.CompleteWhen
 	return nil
 }

@@ -44,7 +44,7 @@ requests:
   - method: GET
     path: /api/v1/findings
     query:
-      cursor: {ref: cursor.token}
+      cursor: {ref: cursor.token, default: ""}
       limit: {format: string, value: {ref: state.page_size}}
 
 response:
@@ -54,7 +54,6 @@ response:
 pagination:
   cursor_token:
     token_at: response.body.next_cursor
-    send_as: query.cursor
 
 progress:
   latest_event_timestamp:

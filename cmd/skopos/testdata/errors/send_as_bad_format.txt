@@ -1,10 +1,10 @@
-# errors/send_as_bad_format — invalid spec; validate exits 1 with diagnostic
-# matching the substring tested by TestValidateErrors in
-# schema/fixtures_test.go.
+# errors/send_as_bad_format — slice 5 deleted pagination.cursor_token.send_as
+# entirely. Authors who copy an old template see a precise parse-time error
+# pointing at the new explicit-wire form.
 
 ! exec skopos validate -i spec.yml
 ! stderr .
-stdout 'send_as must be'
+stdout 'send_as was removed'
 
 -- spec.yml --
 ir_version: "1"

@@ -32,7 +32,10 @@ requests:
   - method: GET
     path: /cursor_token/findings
     query:
-      cursor: {ref: cursor.token}
+      # Bootstrap iteration: cursor.token is unset → default "" reaches the
+      # wire as cursor= so the server starts a fresh cursor session.
+      # Subsequent iterations send the captured cursor token.
+      cursor: {ref: cursor.token, default: ""}
       limit: {format: string, value: {ref: state.page_size}}
 
 response:
@@ -42,7 +45,6 @@ response:
 pagination:
   cursor_token:
     token_at: response.body.next_cursor
-    send_as: query.cursor
 
 progress:
   latest_event_timestamp:

@@ -32,6 +32,9 @@ requests:
     path: /scroll_id/scroll
     query:
       since: {ref: cursor.last_timestamp}
+      # Bootstrap iteration: cursor.scroll_id is unset → the slot is
+      # omitted (no default) so the server opens a fresh scroll session.
+      # Subsequent iterations send the captured scroll id.
       scroll: {ref: cursor.scroll_id}
 
 response:
@@ -41,7 +44,6 @@ response:
 pagination:
   scroll_id:
     scroll_id_at: response.body.request_metadata.scroll
-    send_as: query.scroll
     complete_when:
       eq:
         path: response.body.request_metadata.complete

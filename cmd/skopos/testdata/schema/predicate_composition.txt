@@ -53,7 +53,6 @@ response:
 pagination:
   scroll_id:
     scroll_id_at: response.body.meta.next_scroll
-    send_as: query.scroll
     complete_when:
       or:
         - eq:

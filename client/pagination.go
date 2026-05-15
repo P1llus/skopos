@@ -11,6 +11,15 @@ import (
 	"github.com/p1llus/skopos/schema"
 )
 
+// Note on pagination send-back: every paginating template wires its cursor
+// explicitly into the producer step's request — `query: {cursor: {ref:
+// cursor.token, default: ""}}` for cursor_token, `query: {scroll: {ref:
+// cursor.scroll_id}}` for scroll_id, and the equivalent {ref: cursor.<name>}
+// declaration for every other variant. Slice 5 deleted the implicit
+// `send_as` auto-injector; the runtime no longer fabricates a query / header
+// slot from the active pagination strategy. The paginationPlan interface
+// below carries seed / advance only.
+
 // paginationPlan describes the active pagination strategy for one drain.
 // It has two responsibilities:
 //
@@ -76,44 +85,6 @@ type paginationPlan interface {
 	advance(s *scope, producerBody any, producerHeaders http.Header, events []any) (bool, error)
 }
 
-// autoInjectSlot describes a producer-step request slot the runtime should
-// auto-populate from scope.cursor[role] when the template omits an explicit
-// {ref: cursor.<role>} Value at that slot. The `send_as` field on the
-// pagination block is the canonical slot declaration; this struct is the
-// runtime lowering of that declaration into the request. cursor_token and
-// scroll_id are the only variants today that carry `send_as`.
-type autoInjectSlot struct {
-	kind string // "query" | "header"
-	name string // param / header name (case-insensitive for headers)
-	role string // scope.cursor key — "token" | "scroll_id"
-}
-
-// paginationAutoInjector is the optional half of the paginationPlan
-// interface implemented by strategies whose IR carries a `send_as` field
-// (cursor_token, scroll_id). The runner type-asserts to discover the slot
-// each iteration; plans that don't implement it produce no auto-injection
-// (link_header / next_url_in_body / page_number / offset / graphql_relay /
-// none all expose their cursor fields via cursor.<name> directly and need
-// no slot lowering).
-type paginationAutoInjector interface {
-	autoInjectSlot() autoInjectSlot
-}
-
-// parseSendAs splits the spec-defined "query.<param>" / "header.<name>"
-// form into kind + name. Empty kind means the input was neither — callers
-// treat that as "no auto-injection". The spec validator (checkSendAs)
-// rejects bad shapes at load time so a non-empty cfg.SendAs always parses
-// here; the empty-kind fallback exists to keep this helper total.
-func parseSendAs(s string) (kind, name string) {
-	if rest, ok := strings.CutPrefix(s, "query."); ok {
-		return "query", rest
-	}
-	if rest, ok := strings.CutPrefix(s, "header."); ok {
-		return "header", rest
-	}
-	return "", ""
-}
-
 // makePaginationPlan returns the driver for the document's active strategy.
 // Unsupported variants are explicit errors so authors know the runner needs
 // an additive PR or a code-emitting backend.
@@ -150,32 +121,14 @@ func (p *nonePagination) advance(*scope, any, http.Header, []any) (bool, error) 
 
 // ---- cursor_token ----
 //
-// send_as is the canonical slot declaration for the token. The runner
-// supports BOTH forms:
-//
-//   - Explicit: the template writes {ref: cursor.token} at the desired
-//     request slot (query.<param> or header.<name>). The cursor field is
-//     written by advance() after the first response; first-iteration
-//     {ref: cursor.token} resolves to nil (param skipped) unless the
-//     template adds {default: ""} for servers that require an explicit
-//     empty cursor.
-//   - Implicit: the template omits the {ref: cursor.token} Value. The
-//     runtime lowers send_as into an auto-injection at that slot on the
-//     producer step's request (see autoInjectSlot below + executeRequest
-//     in http.go). Templates that take this path get the same wire shape
-//     without the boilerplate.
-//
-// When the template declares the slot itself (explicit form), the runtime
-// skips auto-injection — the explicit Value wins. Detection is by IR
-// presence (req.Query / req.Headers carries the key), not by runtime value,
-// so a first-iteration nil token doesn't get double-handled.
+// The template wires {ref: cursor.token} at the request slot of its choice
+// (typically a query parameter). cursor.token is written by advance() after
+// the first response; the first iteration sees an absent cursor.token, so
+// {ref: cursor.token} resolves to nil and the slot is skipped — unless the
+// template adds {default: ""} for servers that require an explicit empty
+// cursor on the bootstrap request.
 type cursorTokenPagination struct {
 	cfg *schema.CursorTokenPagination
-}
-
-func (p *cursorTokenPagination) autoInjectSlot() autoInjectSlot {
-	kind, name := parseSendAs(p.cfg.SendAs)
-	return autoInjectSlot{kind: kind, name: name, role: "token"}
 }
 
 func (p *cursorTokenPagination) seed(*scope) {
@@ -535,9 +488,8 @@ func (p *nextURLInBodyPagination) advance(s *scope, body any, _ http.Header, _ [
 // scroll_id maintains a server-side scroll session: the first request opens
 // the session (the scroll_id slot is empty), and every response echoes a
 // scroll id at scroll_id_at that subsequent requests must replay verbatim.
-// Templates expose the id via {ref: cursor.scroll_id} in the slot named by
-// send_as (typically a query or header param), or omit it and rely on
-// auto-injection (see autoInjectSlot below). The first iteration's
+// Templates expose the id via {ref: cursor.scroll_id} at the request slot
+// of their choice (query or header). The first iteration's
 // {ref: cursor.scroll_id} resolves to nil; the runner skips nil values in
 // query / header encoding (http.go), so the bootstrap request goes out
 // without the param and the server opens a new session.
@@ -545,10 +497,10 @@ func (p *nextURLInBodyPagination) advance(s *scope, body any, _ http.Header, _ [
 // Termination:
 //
 //   - When complete_when is declared, it is evaluated against the producer
-//     body (body.<path> refs resolve against the just-decoded response).
-//     A true result ends the drain and clears cursor.scroll_id. This shape
-//     mirrors async_job.poll.complete_when — same predicate plumbing, same
-//     {body: ...} scope mechanic.
+//     body (response.body.<path> refs resolve against the just-decoded
+//     response). A true result ends the drain and clears cursor.scroll_id.
+//     This shape mirrors async_job.poll.complete_when — same predicate
+//     plumbing, same response-scope mechanic.
 //   - When complete_when is absent, the loop terminates as soon as
 //     scroll_id_at resolves to a zero Value (missing path, nil, or empty
 //     string). This matches the scroll-session contract: the server signals
@@ -557,30 +509,15 @@ func (p *nextURLInBodyPagination) advance(s *scope, body any, _ http.Header, _ [
 // On termination cursor.scroll_id is cleared so the next drain opens a
 // fresh session (mirrors the reset behaviour of cursor_token / offset /
 // page_number / link_header / next_url_in_body).
-//
-// send_as is the canonical slot declaration for the scroll id. As with
-// cursor_token, the runner supports BOTH forms (explicit
-// {ref: cursor.scroll_id} at the desired slot, OR implicit lowering of
-// send_as into a producer-step auto-injection). Detection is by IR
-// presence — explicit form is recognised when the template's req.Query /
-// req.Headers names the slot, and auto-injection is skipped for that
-// request. See autoInjectSlot below and the executeRequest implementation
-// in http.go.
 type scrollIDPagination struct {
 	cfg *schema.ScrollIDPagination
-}
-
-func (p *scrollIDPagination) autoInjectSlot() autoInjectSlot {
-	kind, name := parseSendAs(p.cfg.SendAs)
-	return autoInjectSlot{kind: kind, name: name, role: "scroll_id"}
 }
 
 func (p *scrollIDPagination) seed(*scope) {
 	// cursor.scroll_id is written by advance() after the first response —
 	// nothing to seed. First iteration: cursor.scroll_id is absent, so
-	// {ref: cursor.scroll_id} resolves to nil and the request's send_as
-	// slot (or explicit declaration) encodes no value (http.go skips nil
-	// query / header values).
+	// {ref: cursor.scroll_id} resolves to nil and the request's slot
+	// encodes no value (http.go skips nil query / header values).
 }
 
 func (p *scrollIDPagination) advance(s *scope, body any, headers http.Header, _ []any) (bool, error) {
@@ -690,12 +627,3 @@ func (p *graphQLRelayPagination) advance(s *scope, body any, _ http.Header, _ []
 	s.cursor[p.cfg.CursorVar] = got
 	return true, nil
 }
-
-// Note on send_as: authors can EITHER write {ref: cursor.<role>} at the
-// desired request slot (explicit form), OR rely on the runtime to
-// auto-inject the token into the slot named by send_as (implicit form). The
-// lowering lives in executeRequest (http.go): for the producer step the
-// runner reads the slot from autoInjectSlot, checks the template's
-// req.Query / req.Headers for an existing declaration of that key, and only
-// writes the value from scope.cursor[role] when the template did not
-// declare the slot itself.

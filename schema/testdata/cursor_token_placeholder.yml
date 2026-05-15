@@ -26,7 +26,7 @@ requests:
   - method: GET
     path: /api/v1/findings/keepalive
     query:
-      cursor: {ref: cursor.token}
+      cursor: {ref: cursor.token, default: ""}
       limit: {format: string, value: {ref: state.page_size}}
 
 # placeholder_event is emitted when the server returns an empty events list
@@ -45,7 +45,6 @@ response:
 pagination:
   cursor_token:
     token_at: response.body.next_cursor
-    send_as: query.cursor
 
 progress:
   stateless: {}

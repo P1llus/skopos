@@ -442,20 +442,6 @@ func (r *Runner) runIteration(
 	// cannot pick up an unrelated last-declared request as the producer.
 	lastIdx := len(r.Doc.Requests) - 1
 
-	// Discover the active strategy's implicit `send_as` slot once per
-	// iteration. Strategies without send_as (cursor_token / scroll_id are
-	// the only carriers today) don't implement the optional interface and
-	// inject stays nil — no auto-injection. The slot is passed to
-	// executeRequest ONLY for the producer step; non-producer requests
-	// (e.g. async_job submit / poll) never paginate.
-	var inject *autoInjectSlot
-	if pi, ok := pagination.(paginationAutoInjector); ok {
-		slot := pi.autoInjectSlot()
-		if slot.kind != "" {
-			inject = &slot
-		}
-	}
-
 	for i, req := range r.Doc.Requests {
 		if progress.shouldSkipForPhase(req, phase) {
 			continue
@@ -488,14 +474,7 @@ func (r *Runner) runIteration(
 		if r.Tracer != nil {
 			trace = &httpTrace{}
 		}
-		// Pass the auto-injection slot only for the producer step. Setup /
-		// extract-only steps never paginate, so they never receive the
-		// implicit-form lowering.
-		var reqInject *autoInjectSlot
-		if inject != nil && (req.ID == producerID || (implicitLast && i == lastIdx)) {
-			reqInject = inject
-		}
-		res, runErr := s.executeRequest(ctx, client, req, trace, reqInject)
+		res, runErr := s.executeRequest(ctx, client, req, trace)
 		if r.Tracer != nil {
 			r.Tracer.OnExchange(buildExchange(r.Doc, req, trace, runErr, iter, phase))
 		}
