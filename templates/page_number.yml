@@ -31,8 +31,8 @@ requests:
   - method: GET
     path: /page_number/findings
     query:
-      since: {from_progress: latest_timestamp}
-      page: {format: string, value: {from_pagination: page}}
+      since: {ref: cursor.last_timestamp}
+      page: {format: string, value: {ref: cursor.page}}
       page_size: {format: string, value: {ref: state.page_size}}
 
 response:

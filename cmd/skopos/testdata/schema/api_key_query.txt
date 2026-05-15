@@ -39,7 +39,7 @@ requests:
   - method: GET
     path: /v3/detections
     query:
-      created_after: {from_progress: latest_timestamp}
+      created_after: {ref: cursor.last_timestamp}
 
 response:
   decode: json

@@ -61,7 +61,7 @@ requests:
     method: GET
     path: /api/v1/incidents
     query:
-      page: {format: string, value: {from_pagination: page}}
+      page: {format: string, value: {ref: cursor.page}}
       limit: {format: string, value: {ref: state.list_page_size}}
 
   - id: detail

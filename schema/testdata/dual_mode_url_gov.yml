@@ -48,7 +48,7 @@ requests:
             - {ref: state.url}
             - /api/v1/events-commercial
     query:
-      since: {from_progress: latest_timestamp}
+      since: {ref: cursor.last_timestamp}
 
 response:
   decode: json

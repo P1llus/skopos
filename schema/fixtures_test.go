@@ -346,8 +346,6 @@ func TestValueCodecs(t *testing.T) {
 		{"now_formatted", `{format: rfc3339, value: {now: true, offset: "-1h"}}`},
 		{"concat", `{concat: ["/api/", {ref: state.url}, "/v1"]}`},
 		{"object", `{object: {key: value, n: 5, b: true}}`},
-		{"from_pagination", `{from_pagination: token}`},
-		{"from_progress", `{from_progress: latest_timestamp}`},
 		{"format", `{format: string, value: {ref: state.page_size}}`},
 		{"base64", `{base64: hello}`},
 		{"select_value", `{select: {branches: [{when: {literal_bool: true}, value: /gov}], default: /commercial}}`},
@@ -1229,12 +1227,11 @@ progress:
 		}
 	})
 
-	t.Run("from_progress_async_job_no_constraint", func(t *testing.T) {
-		// async_job is the graceful-fallback case for the from_progress
-		// role/strategy cross-check: cursor.last_timestamp may be provided
-		// by on_complete.cursor_update.kind, which the IR cannot resolve
-		// statically. {from_progress: latest_timestamp} must validate
-		// cleanly under async_job.
+	t.Run("async_job_last_timestamp_registered_by_on_complete", func(t *testing.T) {
+		// async_job exposes cursor.last_timestamp when
+		// on_complete.cursor_update.kind ∈ {use_now, latest_event_timestamp}.
+		// Templates that wire {ref: cursor.last_timestamp} into a request
+		// body must validate cleanly under async_job + use_now.
 		src := `ir_version: "1"
 auth:
   none: {}
@@ -1244,7 +1241,7 @@ requests:
     path: /api/v1/exports
     body:
       json:
-        since: {from_progress: latest_timestamp}
+        since: {ref: cursor.last_timestamp}
     expect_status: [202]
   - id: poll
     method: GET
@@ -1892,7 +1889,7 @@ requests:
   - method: GET
     path: /api/v1/events
     query:
-      since: {from_progress: max_seq}
+      since: {ref: cursor.last_timestamp}
 response:
   decode: json
   events_at: response.body.events
@@ -2296,5 +2293,337 @@ progress:
 `
 		diags := validateErrs(t, src)
 		mustContain(t, diags, "has no id or has not been declared")
+	})
+}
+
+// TestSliceFourFromPaginationProgressDeleted pins slice 4's deletion: the
+// {from_pagination: <role>} and {from_progress: <role>} discriminator keys
+// are gone from schema.Value. The codec rejects either key at parse time
+// (both YAML and JSON) with a hint pointing at the {ref: cursor.<name>}
+// replacement, and the cursor-namespace validator now catches the
+// role/strategy mismatches that the deleted role-membership helpers used
+// to flag (e.g. cursor.token under link_header).
+func TestSliceFourFromPaginationProgressDeleted(t *testing.T) {
+	mustErrContain := func(t *testing.T, err error, needle string) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("expected error containing %q; got nil", needle)
+		}
+		if !strings.Contains(err.Error(), needle) {
+			t.Errorf("expected error containing %q; got %v", needle, err)
+		}
+	}
+
+	validateErrs := func(t *testing.T, src string) []schema.Diagnostic {
+		t.Helper()
+		doc, err := schema.Parse([]byte(src))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		var out []schema.Diagnostic
+		for _, d := range schema.Validate(doc) {
+			if d.Severity == "error" {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+
+	mustContain := func(t *testing.T, diags []schema.Diagnostic, needle string) {
+		t.Helper()
+		for _, d := range diags {
+			if strings.Contains(d.Message, needle) {
+				return
+			}
+		}
+		t.Errorf("expected diagnostic containing %q; got %+v", needle, diags)
+	}
+
+	// ---- {from_pagination: <role>} / {from_progress: <role>} are now parse errors ----
+
+	t.Run("from_pagination_yaml_rejected_at_parse", func(t *testing.T) {
+		var v schema.Value
+		err := yaml.Unmarshal([]byte(`{from_pagination: token}`), &v)
+		mustErrContain(t, err, "from_pagination")
+		mustErrContain(t, err, "{ref: cursor.")
+	})
+
+	t.Run("from_progress_yaml_rejected_at_parse", func(t *testing.T) {
+		var v schema.Value
+		err := yaml.Unmarshal([]byte(`{from_progress: latest_timestamp}`), &v)
+		mustErrContain(t, err, "from_progress")
+		mustErrContain(t, err, "cursor.last_timestamp")
+	})
+
+	t.Run("from_pagination_json_rejected_at_parse", func(t *testing.T) {
+		var v schema.Value
+		err := json.Unmarshal([]byte(`{"from_pagination": "scroll_id"}`), &v)
+		mustErrContain(t, err, "from_pagination")
+		mustErrContain(t, err, "{ref: cursor.")
+	})
+
+	t.Run("from_progress_json_rejected_at_parse", func(t *testing.T) {
+		var v schema.Value
+		err := json.Unmarshal([]byte(`{"from_progress": "window_start"}`), &v)
+		mustErrContain(t, err, "from_progress")
+		mustErrContain(t, err, "cursor.window_start")
+	})
+
+	t.Run("from_pagination_in_full_doc_rejected_at_parse", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      cursor: {from_pagination: token}
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  cursor_token:
+    token_at: response.body.next
+    send_as: query.cursor
+progress:
+  stateless: {}
+`
+		_, err := schema.Parse([]byte(src))
+		mustErrContain(t, err, "from_pagination")
+		mustErrContain(t, err, "{ref: cursor.")
+	})
+
+	t.Run("from_progress_in_full_doc_rejected_at_parse", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      since: {from_progress: latest_timestamp}
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: ts
+`
+		_, err := schema.Parse([]byte(src))
+		mustErrContain(t, err, "from_progress")
+		mustErrContain(t, err, "cursor.last_timestamp")
+	})
+
+	// ---- positive coverage: the new {ref: cursor.<name>} shape resolves cleanly ----
+
+	t.Run("ref_cursor_token_accepted_under_cursor_token", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      cursor: {ref: cursor.token}
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  cursor_token:
+    token_at: response.body.next
+    send_as: query.cursor
+progress:
+  stateless: {}
+`
+		if diags := validateErrs(t, src); len(diags) != 0 {
+			t.Errorf("{ref: cursor.token} under cursor_token should validate; got %+v", diags)
+		}
+	})
+
+	t.Run("ref_cursor_offset_end_requires_batch_size", func(t *testing.T) {
+		// cursor.offset_end is registered only when batch_size is declared
+		// — the runtime contract is "offset_end = offset + batch_size, drop
+		// when batch_size is missing". Without batch_size the validator
+		// rejects {ref: cursor.offset_end}.
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      end: {format: string, value: {ref: cursor.offset_end}}
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  offset:
+    offset_param: offset
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, `cursor field "offset_end" is not provided`)
+	})
+
+	t.Run("ref_cursor_offset_end_accepted_with_batch_size", func(t *testing.T) {
+		src := `ir_version: "1"
+state:
+  fields:
+    page_size: {type: int, default: 10}
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      offset: {format: string, value: {ref: cursor.offset}}
+      end:    {format: string, value: {ref: cursor.offset_end}}
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  offset:
+    offset_param: offset
+    batch_size: {ref: state.page_size}
+progress:
+  stateless: {}
+`
+		if diags := validateErrs(t, src); len(diags) != 0 {
+			t.Errorf("{ref: cursor.offset_end} with batch_size should validate; got %+v", diags)
+		}
+	})
+
+	t.Run("ref_cursor_token_under_link_header_rejected", func(t *testing.T) {
+		// link_header registers cursor.next_link, NOT cursor.token. The
+		// cursor-namespace validator now flags the strategy mismatch the
+		// deleted validPaginationRole helper used to pin.
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      tok: {ref: cursor.token}
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  link_header:
+    rel: next
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, `cursor field "token" is not provided`)
+	})
+
+	t.Run("ref_cursor_window_start_under_latest_rejected", func(t *testing.T) {
+		// latest_event_timestamp registers cursor.last_timestamp, NOT the
+		// time_window-only cursor.window_start. The cursor-namespace
+		// validator now flags the strategy mismatch the deleted
+		// rolesForProgressStrategy helper used to pin.
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      since: {ref: cursor.window_start}
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: ts
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, `cursor field "window_start" is not provided`)
+	})
+
+	t.Run("ref_cursor_last_timestamp_under_async_job_use_now_accepted", func(t *testing.T) {
+		// async_job exposes cursor.last_timestamp when on_complete drives a
+		// timestamp write (use_now or latest_event_timestamp).
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - id: submit
+    method: POST
+    path: /api/v1/exports
+    body:
+      json:
+        since: {ref: cursor.last_timestamp}
+    expect_status: [202]
+  - id: poll
+    method: GET
+    path: /api/v1/status
+    produces_events: true
+response:
+  decode: json
+  events_at: response.body.items
+pagination:
+  none: {}
+progress:
+  async_job:
+    submit:
+      step: submit
+    poll:
+      step: poll
+      complete_when: {literal_bool: true}
+    on_complete:
+      cursor_update:
+        kind: use_now
+`
+		if diags := validateErrs(t, src); len(diags) != 0 {
+			t.Errorf("{ref: cursor.last_timestamp} under async_job + use_now should validate; got %+v", diags)
+		}
+	})
+
+	t.Run("ref_cursor_last_timestamp_under_async_job_stateless_rejected", func(t *testing.T) {
+		// stateless on_complete leaves cursor.last_timestamp untouched, so
+		// async_job + stateless does NOT register that cursor field — the
+		// validator catches a stray ref.
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - id: submit
+    method: POST
+    path: /api/v1/exports
+    body:
+      json:
+        since: {ref: cursor.last_timestamp}
+    expect_status: [202]
+  - id: poll
+    method: GET
+    path: /api/v1/status
+    produces_events: true
+response:
+  decode: json
+  events_at: response.body.items
+pagination:
+  none: {}
+progress:
+  async_job:
+    submit:
+      step: submit
+    poll:
+      step: poll
+      complete_when: {literal_bool: true}
+    on_complete:
+      cursor_update:
+        kind: stateless
+`
+		diags := validateErrs(t, src)
+		mustContain(t, diags, `cursor field "last_timestamp" is not provided`)
 	})
 }

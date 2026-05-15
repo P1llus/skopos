@@ -34,7 +34,7 @@ requests:
   - method: GET
     path: /api/v1/findings/keepalive
     query:
-      cursor: {from_pagination: token}
+      cursor: {ref: cursor.token}
       limit: {format: string, value: {ref: state.page_size}}
 
 # placeholder_event is emitted when the server returns an empty events list

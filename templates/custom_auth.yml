@@ -33,7 +33,7 @@ requests:
   - method: GET
     path: /custom_auth/events
     query:
-      since: {from_progress: latest_timestamp}
+      since: {ref: cursor.last_timestamp}
 
 response:
   decode: json

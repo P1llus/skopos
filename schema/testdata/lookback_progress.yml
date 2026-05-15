@@ -32,7 +32,7 @@ requests:
   - method: GET
     path: /api/v1/events
     query:
-      since: {from_progress: latest_timestamp}
+      since: {ref: cursor.last_timestamp}
 
 response:
   decode: json

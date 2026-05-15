@@ -732,8 +732,6 @@ YAML authoring rules:
 	{now: true, offset: "-1h", format: rfc3339} → Now
 	{concat: [<Value>, ...]}             → Concat
 	{select: {branches: [...], default: <Value>}} → Select
-	{from_pagination: token}             → FromPagination
-	{from_progress: latest_timestamp}    → FromProgress
 	{format: string, value: {ref: state.page_size}} → Format
 	{base64: {concat: [...]}}            → Base64
 	{list: [<Value>, ...]}               → List
@@ -756,8 +754,6 @@ strings; inner values still recurse as Values).
 | `Now` | _(custom codec)_ | `*NowValue` | yes | Now is the {now: true, offset?: <Value>} form. |
 | `Concat` | _(custom codec)_ | `[]Value` | no | Concat is the {concat: [<Value>, ...]} form: concatenate the resolved string representation of each element. |
 | `Select` | _(custom codec)_ | `*SelectValue` | yes | Select is the {select: {branches: [...], default: <Value>}} form. |
-| `FromPagination` | _(custom codec)_ | `string` | no | FromPagination is the {from_pagination: <role>} form (token, page, offset, offset_end, scroll_id, relay_cursor). |
-| `FromProgress` | _(custom codec)_ | `string` | no | FromProgress is the {from_progress: <role>} form (latest_timestamp, window_start, window_end). |
 | `Format` | _(custom codec)_ | `*FormatValue` | yes | Format is the {format: <verb>, value: <Value>} form: apply a format verb (rfc3339, unix_seconds, ...) to the inner value. |
 | `Base64` | _(custom codec)_ | `*Value` | yes | Base64 is the {base64: <Value>} form: base64-encode the resolved inner value. |
 | `List` | _(custom codec)_ | `[]Value` | no | List is the {list: [<Value>, ...]} form. |

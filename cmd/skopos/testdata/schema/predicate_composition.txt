@@ -44,7 +44,7 @@ requests:
               equal: true
         - present: state.api_key
     query:
-      scroll: {from_pagination: scroll_id}
+      scroll: {ref: cursor.scroll_id}
 
 response:
   decode: json

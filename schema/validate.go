@@ -72,13 +72,11 @@ func (v *validator) warnf(path, message, hint string) {
 // particular scope.
 type ns struct {
 	state              map[string]struct{} // declared state field names
-	cursor             map[string]struct{} // inferred cursor field names
-	extract            map[string]struct{} // available extract.<name> bindings
-	stepBodies         map[string]struct{} // available steps.<id> bindings
-	itemNamespace      string              // fan_out.as value active in this scope
-	oauthStoreIn       string              // auto-registered oauth2 cache state key
-	paginationStrategy string              // active strategy name (e.g. "cursor_token", "offset")
-	progressStrategy   string              // active progress strategy name (e.g. "latest_event_timestamp", "time_window")
+	cursor        map[string]struct{} // inferred cursor field names
+	extract       map[string]struct{} // available extract.<name> bindings
+	stepBodies    map[string]struct{} // available steps.<id> bindings
+	itemNamespace string              // fan_out.as value active in this scope
+	oauthStoreIn  string              // auto-registered oauth2 cache state key
 }
 
 func (n *ns) hasStateField(name string) bool {
@@ -113,12 +111,10 @@ func (v *validator) run(d *Doc) {
 	// (defaults, auth, requests, response, async_job) sees a fully-populated
 	// namespace.
 	namespace := &ns{
-		state:              make(map[string]struct{}),
-		cursor:             cursorSchema(d),
-		extract:            make(map[string]struct{}),
-		stepBodies:         make(map[string]struct{}),
-		paginationStrategy: paginationStrategy(d.Pagination),
-		progressStrategy:   progressStrategy(d.Progress),
+		state:      make(map[string]struct{}),
+		cursor:     cursorSchema(d),
+		extract:    make(map[string]struct{}),
+		stepBodies: make(map[string]struct{}),
 	}
 
 	// Snapshot author-declared state.fields keys before preregisterStateAndCursor
@@ -234,26 +230,6 @@ func implicitAsyncJobProducerStep(d *Doc) string {
 	}
 	if aj.Submit != nil {
 		return aj.Submit.Step
-	}
-	return ""
-}
-
-// progressStrategy returns the active progress strategy name, or "" when no
-// variant is set.
-func progressStrategy(p Progress) string {
-	switch {
-	case p.Stateless != nil:
-		return "stateless"
-	case p.LatestEventTimestamp != nil:
-		return "latest_event_timestamp"
-	case p.MaxEventField != nil:
-		return "max_event_field"
-	case p.UseNow != nil:
-		return "use_now"
-	case p.TimeWindow != nil:
-		return "time_window"
-	case p.AsyncJob != nil:
-		return "async_job"
 	}
 	return ""
 }
@@ -744,11 +720,11 @@ func (v *validator) checkFanOut(path string, f FanOut, namespace *ns) {
 }
 
 // checkFanOutOverForm rejects fan_out.over Values whose top-level form is
-// obviously not list-typed. Ref / Select / List / Concat / FromPagination /
-// FromProgress / IsZero are allowed (the actual list-ness is decided at
-// target lowering time when the runtime can see the resolved type), but
-// literal scalars, Now, Format, Base64, and Object can never produce a list
-// and are almost certainly an authoring error (e.g. `over: items` vs
+// obviously not list-typed. Ref / Select / List / Concat / IsZero are
+// allowed (the actual list-ness is decided at target lowering time when the
+// runtime can see the resolved type), but literal scalars, Now, Format,
+// Base64, and Object can never produce a list and are almost certainly an
+// authoring error (e.g. `over: items` vs
 // `over: {ref: steps.list.body.items}`).
 func (v *validator) checkFanOutOverForm(path string, val Value) {
 	switch {
@@ -1084,32 +1060,6 @@ func (v *validator) checkValue(path string, val Value, namespace *ns, allowBody 
 		for k, el := range val.Object {
 			v.checkValue(fmt.Sprintf("%s.object.%s", path, k), el, namespace, false)
 		}
-
-	case val.FromPagination != "":
-		if !validPaginationRole(val.FromPagination) {
-			v.errorf(path+".from_pagination", "unknown pagination role %q; want token|page|offset|offset_end|scroll_id|relay_cursor", val.FromPagination)
-			break
-		}
-		if expected := rolesForStrategy(namespace.paginationStrategy); expected != nil {
-			if !expected[val.FromPagination] {
-				v.errorf(path+".from_pagination",
-					"role %q does not match the active pagination strategy %q; expected one of %v",
-					val.FromPagination, namespace.paginationStrategy, sortedKeys(expected))
-			}
-		}
-
-	case val.FromProgress != "":
-		if !validProgressRole(val.FromProgress) {
-			v.errorf(path+".from_progress", "unknown progress role %q; want latest_timestamp|window_start|window_end", val.FromProgress)
-			break
-		}
-		if expected := rolesForProgressStrategy(namespace.progressStrategy); expected != nil {
-			if !expected[val.FromProgress] {
-				v.errorf(path+".from_progress",
-					"role %q does not match the active progress strategy %q; expected one of %v",
-					val.FromProgress, namespace.progressStrategy, sortedKeys(expected))
-			}
-		}
 	}
 }
 
@@ -1424,84 +1374,6 @@ func (v *validator) checkPredicate(path string, p Predicate, namespace *ns, allo
 	}
 }
 
-// validPaginationRole reports whether name is a recognised from_pagination role.
-func validPaginationRole(name string) bool {
-	switch name {
-	case "token", "page", "offset", "offset_end", "scroll_id", "relay_cursor":
-		return true
-	}
-	return false
-}
-
-// validProgressRole reports whether name is a recognised from_progress role.
-func validProgressRole(name string) bool {
-	switch name {
-	case "latest_timestamp", "window_start", "window_end":
-		return true
-	}
-	return false
-}
-
-// rolesForProgressStrategy returns the set of from_progress roles allowed by
-// the active progress strategy. Returns nil when no strategy-specific
-// restriction applies (async_job exposes cursor.last_timestamp via
-// on_complete.cursor_update.kind, which the IR cannot resolve statically;
-// targets that need a stricter check apply it at lowering time).
-func rolesForProgressStrategy(strategy string) map[string]bool {
-	switch strategy {
-	case "latest_event_timestamp", "max_event_field", "use_now":
-		return map[string]bool{"latest_timestamp": true}
-	case "time_window":
-		return map[string]bool{"window_start": true, "window_end": true}
-	case "stateless":
-		return map[string]bool{}
-	}
-	// async_job and unset strategies: graceful fallback, no constraint.
-	return nil
-}
-
-// rolesForStrategy returns the set of from_pagination roles allowed by the
-// active pagination strategy. Returns nil when no strategy-specific
-// restriction applies (e.g. "none", "link_header", "next_url_in_body" — these
-// either provide no role-form Values or only one).
-func rolesForStrategy(strategy string) map[string]bool {
-	switch strategy {
-	case "cursor_token":
-		return map[string]bool{"token": true}
-	case "page_number":
-		return map[string]bool{"page": true}
-	case "offset":
-		return map[string]bool{"offset": true, "offset_end": true}
-	case "scroll_id":
-		return map[string]bool{"scroll_id": true}
-	case "graphql_relay":
-		return map[string]bool{"relay_cursor": true}
-	case "none", "link_header", "next_url_in_body":
-		// These strategies expose no from_pagination role-form Value:
-		// link_header auto-provides cursor.next_link (a cursor namespace ref),
-		// next_url_in_body auto-extracts the next URL into cursor.next_url, and
-		// none has no pagination machinery. Return an empty map so any
-		// from_pagination ref surfaces "role does not match the active pagination
-		// strategy" instead of silently passing.
-		return map[string]bool{}
-	}
-	return nil
-}
-
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	// Stable order for deterministic error messages.
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1] > out[j]; j-- {
-			out[j-1], out[j] = out[j], out[j-1]
-		}
-	}
-	return out
-}
-
 // checkSendAs validates the "query.<param>" / "header.<name>" form used for
 // pagination send_as fields. Required: a non-empty value with a recognised
 // kind prefix.
@@ -1541,6 +1413,13 @@ func validFormatVerb(v string) bool {
 // cursorSchema returns the set of cursor field names that the active
 // pagination and progress strategies provide for doc d. Used by Validate to
 // reject {ref: cursor.<name>} for names no active strategy populates.
+//
+// The offset strategy registers "offset_end" only when batch_size is set,
+// matching offsetPagination.seed's runtime behaviour (offset_end = offset +
+// batch_size; absent without batch_size). async_job registers
+// "last_timestamp" whenever on_complete.cursor_update.kind drives a
+// timestamp write (use_now / latest_event_timestamp); the stateless kind
+// leaves the cursor untouched and so registers nothing.
 func cursorSchema(d *Doc) map[string]struct{} {
 	cs := make(map[string]struct{})
 
@@ -1553,6 +1432,9 @@ func cursorSchema(d *Doc) map[string]struct{} {
 		cs["page"] = struct{}{}
 	case p.Offset != nil:
 		cs["offset"] = struct{}{}
+		if p.Offset.BatchSize != nil {
+			cs["offset_end"] = struct{}{}
+		}
 	case p.LinkHeader != nil:
 		cs["next_link"] = struct{}{}
 	case p.NextURLInBody != nil:
@@ -1582,6 +1464,12 @@ func cursorSchema(d *Doc) map[string]struct{} {
 		if aj.Poll != nil {
 			for name := range aj.Poll.Extract {
 				cs[name] = struct{}{}
+			}
+		}
+		if aj.OnComplete != nil && aj.OnComplete.CursorUpdate != nil {
+			switch aj.OnComplete.CursorUpdate.Kind {
+			case "use_now", "latest_event_timestamp":
+				cs["last_timestamp"] = struct{}{}
 			}
 		}
 	}

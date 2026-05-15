@@ -44,7 +44,7 @@ requests:
   - method: GET
     path: /api/v1/findings
     query:
-      cursor: {from_pagination: token}
+      cursor: {ref: cursor.token}
       limit: {format: string, value: {ref: state.page_size}}
 
 response:

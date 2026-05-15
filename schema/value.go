@@ -26,8 +26,6 @@ import (
 //	{now: true, offset: "-1h", format: rfc3339} → Now
 //	{concat: [<Value>, ...]}             → Concat
 //	{select: {branches: [...], default: <Value>}} → Select
-//	{from_pagination: token}             → FromPagination
-//	{from_progress: latest_timestamp}    → FromProgress
 //	{format: string, value: {ref: state.page_size}} → Format
 //	{base64: {concat: [...]}}            → Base64
 //	{list: [<Value>, ...]}               → List
@@ -62,12 +60,6 @@ type Value struct {
 	Concat []Value
 	// Select is the {select: {branches: [...], default: <Value>}} form.
 	Select *SelectValue
-	// FromPagination is the {from_pagination: <role>} form (token, page,
-	// offset, offset_end, scroll_id, relay_cursor).
-	FromPagination string
-	// FromProgress is the {from_progress: <role>} form (latest_timestamp,
-	// window_start, window_end).
-	FromProgress string
 	// Format is the {format: <verb>, value: <Value>} form: apply a
 	// format verb (rfc3339, unix_seconds, ...) to the inner value.
 	Format *FormatValue
@@ -91,12 +83,20 @@ var valueDiscriminatorKeys = []string{
 	"now",
 	"concat",
 	"select",
-	"from_pagination",
-	"from_progress",
 	"format",
 	"base64",
 	"list",
 	"object",
+}
+
+// removedValueDiscriminatorKeys carries deleted discriminator keys whose
+// presence in a YAML/JSON Value mapping should surface a precise migration
+// hint instead of the generic "no recognised discriminator key" error.
+// pickValueDiscriminator consults this map after a no-match outcome so
+// authors who copy an old template see exactly which form replaced theirs.
+var removedValueDiscriminatorKeys = map[string]string{
+	"from_pagination": "{from_pagination: <role>} was removed in slice 4; use {ref: cursor.<name>} instead (e.g. {ref: cursor.token}, {ref: cursor.page}, {ref: cursor.offset}, {ref: cursor.scroll_id}, {ref: cursor.<cursor_var>} for graphql_relay)",
+	"from_progress":   "{from_progress: <role>} was removed in slice 4; use {ref: cursor.<name>} instead (latest_timestamp → cursor.last_timestamp; window_start → cursor.window_start; window_end → cursor.window_end)",
 }
 
 // valueVariantAllowedKeys names every map key that may appear alongside a
@@ -104,17 +104,15 @@ var valueDiscriminatorKeys = []string{
 // error: silent acceptance lets typos (e.g. {ref: state.x, defualt: "y"})
 // drop into the void.
 var valueVariantAllowedKeys = map[string]map[string]struct{}{
-	"literal_string":  {"literal_string": {}},
-	"ref":             {"ref": {}, "default": {}},
-	"now":             {"now": {}, "offset": {}},
-	"concat":          {"concat": {}},
-	"select":          {"select": {}},
-	"from_pagination": {"from_pagination": {}},
-	"from_progress":   {"from_progress": {}},
-	"format":          {"format": {}, "value": {}},
-	"base64":          {"base64": {}},
-	"list":            {"list": {}},
-	"object":          {"object": {}},
+	"literal_string": {"literal_string": {}},
+	"ref":            {"ref": {}, "default": {}},
+	"now":            {"now": {}, "offset": {}},
+	"concat":         {"concat": {}},
+	"select":         {"select": {}},
+	"format":         {"format": {}, "value": {}},
+	"base64":         {"base64": {}},
+	"list":           {"list": {}},
+	"object":         {"object": {}},
 }
 
 // checkValueSiblingKeys verifies that every key in keys is permitted alongside
@@ -308,26 +306,6 @@ func (v *Value) unmarshalYAMLMap(node *yaml.Node) error {
 		v.Select = &raw.Select
 		return nil
 
-	case "from_pagination":
-		var raw struct {
-			Role string `yaml:"from_pagination"`
-		}
-		if err := node.Decode(&raw); err != nil {
-			return fmt.Errorf("schema.Value from_pagination at line %d: %w", node.Line, err)
-		}
-		v.FromPagination = raw.Role
-		return nil
-
-	case "from_progress":
-		var raw struct {
-			Role string `yaml:"from_progress"`
-		}
-		if err := node.Decode(&raw); err != nil {
-			return fmt.Errorf("schema.Value from_progress at line %d: %w", node.Line, err)
-		}
-		v.FromProgress = raw.Role
-		return nil
-
 	case "format":
 		var raw struct {
 			Verb  string `yaml:"format"`
@@ -395,8 +373,6 @@ func valueVariants(v Value) (names []string, payloads []any) {
 	add("now", v.Now, v.Now != nil)
 	add("concat", v.Concat, len(v.Concat) > 0)
 	add("select", v.Select, v.Select != nil)
-	add("from_pagination", v.FromPagination, v.FromPagination != "")
-	add("from_progress", v.FromProgress, v.FromProgress != "")
 	add("format", v.Format, v.Format != nil)
 	add("base64", v.Base64, v.Base64 != nil)
 	add("list", v.List, v.List != nil)
@@ -434,7 +410,10 @@ func (v Value) IsAbsent() bool {
 }
 
 // pickValueDiscriminator returns the single Value discriminator key present in
-// keys, or an error when zero or more than one are present.
+// keys, or an error when zero or more than one are present. If keys contains a
+// removed-but-still-recognisable discriminator (see removedValueDiscriminatorKeys)
+// the error names the new replacement form so authors get a precise migration
+// hint rather than the generic "no recognised discriminator key" message.
 func pickValueDiscriminator(keys map[string]struct{}) (string, error) {
 	matches := make([]string, 0, 2)
 	for _, k := range valueDiscriminatorKeys {
@@ -444,9 +423,14 @@ func pickValueDiscriminator(keys map[string]struct{}) (string, error) {
 	}
 	switch len(matches) {
 	case 0:
+		for k := range keys {
+			if hint, ok := removedValueDiscriminatorKeys[k]; ok {
+				return "", fmt.Errorf("%s", hint)
+			}
+		}
 		return "", fmt.Errorf("no recognised discriminator key " +
-			"(want one of literal_string|ref|now|concat|select|from_pagination|" +
-			"from_progress|format|base64|list|object); wrap a literal map in {object: {...}}")
+			"(want one of literal_string|ref|now|concat|select|" +
+			"format|base64|list|object); wrap a literal map in {object: {...}}")
 	case 1:
 		return matches[0], nil
 	default:
@@ -502,12 +486,6 @@ func (v Value) MarshalYAML() (interface{}, error) {
 
 	case v.Select != nil:
 		return map[string]interface{}{"select": v.Select}, nil
-
-	case v.FromPagination != "":
-		return map[string]interface{}{"from_pagination": v.FromPagination}, nil
-
-	case v.FromProgress != "":
-		return map[string]interface{}{"from_progress": v.FromProgress}, nil
 
 	case v.Format != nil:
 		return map[string]interface{}{"format": v.Format.Verb, "value": v.Format.Value}, nil
@@ -637,22 +615,6 @@ func (v *Value) unmarshalJSONMap(data []byte) error {
 		v.Select = &s.Select
 		return nil
 
-	case "from_pagination":
-		var r string
-		if err := json.Unmarshal(raw["from_pagination"], &r); err != nil {
-			return fmt.Errorf("schema.Value.from_pagination: %w", err)
-		}
-		v.FromPagination = r
-		return nil
-
-	case "from_progress":
-		var r string
-		if err := json.Unmarshal(raw["from_progress"], &r); err != nil {
-			return fmt.Errorf("schema.Value.from_progress: %w", err)
-		}
-		v.FromProgress = r
-		return nil
-
 	case "format":
 		var f struct {
 			Verb  string `json:"format"`
@@ -746,18 +708,6 @@ func (v Value) MarshalJSON() ([]byte, error) {
 		}
 		return json.Marshal(selectOut{Select: v.Select})
 
-	case v.FromPagination != "":
-		type fpOut struct {
-			Role string `json:"from_pagination"`
-		}
-		return json.Marshal(fpOut{Role: v.FromPagination})
-
-	case v.FromProgress != "":
-		type fpOut struct {
-			Role string `json:"from_progress"`
-		}
-		return json.Marshal(fpOut{Role: v.FromProgress})
-
 	case v.Format != nil:
 		type fmtOut struct {
 			Verb  string `json:"format"`
@@ -811,7 +761,7 @@ func (v Value) MarshalJSON() ([]byte, error) {
 //   - Object map values
 //
 // Predicate.Eq.Path is checked the same way as a state.<name> Ref. Literal
-// scalars and FromPagination / FromProgress are never secret.
+// scalars are never secret.
 func IsSecret(d *Doc, v Value) bool {
 	switch {
 	case v.Ref != nil:

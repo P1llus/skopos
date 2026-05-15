@@ -32,7 +32,7 @@ requests:
   - method: GET
     path: /api_key_auth/detections
     query:
-      created_after: {from_progress: latest_timestamp}
+      created_after: {ref: cursor.last_timestamp}
 
 response:
   decode: json

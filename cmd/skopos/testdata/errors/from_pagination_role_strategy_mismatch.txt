@@ -1,10 +1,11 @@
-# errors/from_pagination_role_strategy_mismatch — invalid spec; validate exits 1 with diagnostic
-# matching the substring tested by TestValidateErrors in
-# schema/fixtures_test.go.
+# errors/from_pagination_role_strategy_mismatch — slice 4 deleted the
+# {from_pagination: <role>} discriminator; the same role/strategy mismatch is
+# now caught by the cursor-namespace validator (cursor.page is not provided by
+# pagination.cursor_token, which only registers cursor.token).
 
 ! exec skopos validate -i spec.yml
 ! stderr .
-stdout 'does not match the active pagination strategy'
+stdout 'cursor field "page" is not provided by the active pagination/progress strategy'
 
 -- spec.yml --
 ir_version: "1"
@@ -14,7 +15,7 @@ requests:
   - method: GET
     path: /api/v1/events
     query:
-      cursor: {from_pagination: page}
+      cursor: {ref: cursor.page}
 response:
   decode: json
   events_at: response.body.events

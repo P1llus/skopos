@@ -30,22 +30,23 @@ func TestNonePagination(t *testing.T) {
 	}
 }
 
-// TestCursorTokenPagination_SeedFirstIteration: cursor.token unset, so the
-// {from_pagination: token} role is absent. This is the first-page case.
+// TestCursorTokenPagination_SeedFirstIteration: cursor.token unset, so a
+// template's {ref: cursor.token} resolves to nil on the first page. seed
+// is a no-op for cursor_token after slice 4.
 func TestCursorTokenPagination_SeedFirstIteration(t *testing.T) {
 	p := &cursorTokenPagination{cfg: &schema.CursorTokenPagination{
 		TokenAt: mustPath("response.body.next_cursor"),
 	}}
 	s := newTestScope(t, nil, nil)
 	p.seed(s)
-	if _, ok := s.fromPagination["token"]; ok {
-		t.Errorf("first-iteration seed left a fromPagination[token]; expected absent")
+	if _, ok := s.cursor["token"]; ok {
+		t.Errorf("first-iteration seed wrote cursor.token; expected absent")
 	}
 }
 
 // TestCursorTokenPagination_AdvanceMid: token_at resolves to a non-zero
-// value → cursor.token is updated, wantMore=true. Next seed exposes that
-// token via fromPagination.
+// value → cursor.token is updated, wantMore=true. The next iteration's
+// {ref: cursor.token} reads the same map seed never touches.
 func TestCursorTokenPagination_AdvanceMid(t *testing.T) {
 	p := &cursorTokenPagination{cfg: &schema.CursorTokenPagination{
 		TokenAt: mustPath("response.body.next_cursor"),
@@ -65,8 +66,8 @@ func TestCursorTokenPagination_AdvanceMid(t *testing.T) {
 	}
 
 	p.seed(s)
-	if got := s.fromPagination["token"]; got != "tok-2" {
-		t.Errorf("fromPagination[token] = %v, want tok-2", got)
+	if got := s.cursor["token"]; got != "tok-2" {
+		t.Errorf("cursor.token after re-seed = %v, want tok-2 (seed must not clobber advance writes)", got)
 	}
 }
 
@@ -91,15 +92,13 @@ func TestCursorTokenPagination_AdvanceTerminate(t *testing.T) {
 	}
 }
 
-// TestPageNumberPagination_SeedFirstIteration: cursor.page absent ⇒ exposes
-// 1 and writes it back to cursor (so {from_pagination: page} renders "1").
+// TestPageNumberPagination_SeedFirstIteration: cursor.page absent ⇒ seed
+// writes int64(1) into the cursor so {ref: cursor.page} renders "1" on
+// the bootstrap iteration.
 func TestPageNumberPagination_SeedFirstIteration(t *testing.T) {
 	p := &pageNumberPagination{cfg: &schema.PageNumberPagination{}}
 	s := newTestScope(t, nil, nil)
 	p.seed(s)
-	if got := s.fromPagination["page"]; got != int64(1) {
-		t.Errorf("fromPagination[page] = %v, want 1", got)
-	}
 	if got := s.cursor["page"]; got != int64(1) {
 		t.Errorf("cursor.page = %v, want 1", got)
 	}
@@ -176,38 +175,36 @@ func TestPageNumberPagination_BatchSizeStopsShort(t *testing.T) {
 	}
 }
 
-// TestOffsetPagination_SeedFirstIteration: cursor.offset absent ⇒ exposes
-// 0 and writes it back to cursor (so {ref: cursor.offset} resolves the same
-// way {from_pagination: offset} does).
+// TestOffsetPagination_SeedFirstIteration: cursor.offset absent ⇒ seed
+// writes int64(0) so {ref: cursor.offset} renders "0" on the bootstrap.
+// offset_end is unset when batch_size is absent (cursorSchema rejects
+// {ref: cursor.offset_end} in that case).
 func TestOffsetPagination_SeedFirstIteration(t *testing.T) {
 	p := &offsetPagination{cfg: &schema.OffsetPagination{}}
 	s := newTestScope(t, nil, nil)
 	p.seed(s)
-	if got := s.fromPagination["offset"]; got != int64(0) {
-		t.Errorf("fromPagination[offset] = %v, want 0", got)
-	}
 	if got := s.cursor["offset"]; got != int64(0) {
 		t.Errorf("cursor.offset = %v, want 0", got)
 	}
-	// offset_end is unset when batch_size is absent.
-	if _, ok := s.fromPagination["offset_end"]; ok {
-		t.Errorf("fromPagination[offset_end] should be absent when batch_size unset")
+	if _, ok := s.cursor["offset_end"]; ok {
+		t.Errorf("cursor.offset_end should be absent when batch_size unset")
 	}
 }
 
 // TestOffsetPagination_SeedWithBatchSize_OffsetEnd: when batch_size is set,
-// seed exposes offset_end = offset + batch_size so APIs that take an
-// exclusive upper bound (e.g. ?from=N&to=N+50) can render the role.
+// seed writes offset_end = offset + batch_size into the cursor so APIs
+// that take an exclusive upper bound (e.g. ?from=N&to=N+50) can render
+// {ref: cursor.offset_end}.
 func TestOffsetPagination_SeedWithBatchSize_OffsetEnd(t *testing.T) {
 	bs := vInt(50)
 	p := &offsetPagination{cfg: &schema.OffsetPagination{BatchSize: &bs}}
 	s := newTestScope(t, nil, map[string]any{"offset": int64(100)})
 	p.seed(s)
-	if got := s.fromPagination["offset"]; got != int64(100) {
-		t.Errorf("fromPagination[offset] = %v, want 100", got)
+	if got := s.cursor["offset"]; got != int64(100) {
+		t.Errorf("cursor.offset = %v, want 100", got)
 	}
-	if got := s.fromPagination["offset_end"]; got != int64(150) {
-		t.Errorf("fromPagination[offset_end] = %v, want 150", got)
+	if got := s.cursor["offset_end"]; got != int64(150) {
+		t.Errorf("cursor.offset_end = %v, want 150", got)
 	}
 }
 
@@ -273,9 +270,9 @@ func TestUnsupportedPaginationVariants(t *testing.T) {
 }
 
 // TestLinkHeaderPagination_SeedFirstIteration: cursor.next_link absent ⇒
-// {from_pagination: next_link} resolves to nil so the template's
-// {ref: cursor.next_link, default: ...} branch wins. Mirrors the
-// cursor_token first-iteration shape.
+// {ref: cursor.next_link} resolves to nil so the template's
+// {ref: cursor.next_link, default: ...} branch wins. seed is a no-op for
+// link_header after slice 4.
 func TestLinkHeaderPagination_SeedFirstIteration(t *testing.T) {
 	p, err := newLinkHeaderPagination(&schema.LinkHeaderPagination{})
 	if err != nil {
@@ -283,14 +280,14 @@ func TestLinkHeaderPagination_SeedFirstIteration(t *testing.T) {
 	}
 	s := newTestScope(t, nil, nil)
 	p.seed(s)
-	if _, ok := s.fromPagination["next_link"]; ok {
-		t.Errorf("first-iteration seed left a fromPagination[next_link]; expected absent")
+	if _, ok := s.cursor["next_link"]; ok {
+		t.Errorf("first-iteration seed wrote cursor.next_link; expected absent")
 	}
 }
 
 // TestLinkHeaderPagination_AdvanceNext: Link header with rel="next" →
-// cursor.next_link captured, wantMore=true. Next seed surfaces it via
-// fromPagination.
+// cursor.next_link captured, wantMore=true. The next iteration's
+// {ref: cursor.next_link} reads the same map seed never touches.
 func TestLinkHeaderPagination_AdvanceNext(t *testing.T) {
 	p, err := newLinkHeaderPagination(&schema.LinkHeaderPagination{})
 	if err != nil {
@@ -314,8 +311,8 @@ func TestLinkHeaderPagination_AdvanceNext(t *testing.T) {
 	}
 
 	p.seed(s)
-	if got := s.fromPagination["next_link"]; got != want {
-		t.Errorf("fromPagination[next_link] = %v, want %q", got, want)
+	if got := s.cursor["next_link"]; got != want {
+		t.Errorf("cursor.next_link after re-seed = %v, want %q (seed must not clobber advance writes)", got, want)
 	}
 }
 
@@ -477,23 +474,23 @@ func TestLinkHeaderPagination_InvalidPatternRejectedAtConstruction(t *testing.T)
 }
 
 // TestNextURLInBodyPagination_SeedFirstIteration: cursor.next_url absent ⇒
-// {from_pagination: next_url} resolves to nil so the template's
-// {ref: cursor.next_url, default: ...} branch wins. Mirrors the
-// link_header first-iteration shape.
+// {ref: cursor.next_url} resolves to nil so the template's
+// {ref: cursor.next_url, default: ...} branch wins. seed is a no-op for
+// next_url_in_body after slice 4.
 func TestNextURLInBodyPagination_SeedFirstIteration(t *testing.T) {
 	p := &nextURLInBodyPagination{cfg: &schema.NextURLInBodyPagination{
 		NextURLAt: mustPath("response.body.paging.next"),
 	}}
 	s := newTestScope(t, nil, nil)
 	p.seed(s)
-	if _, ok := s.fromPagination["next_url"]; ok {
-		t.Errorf("first-iteration seed left a fromPagination[next_url]; expected absent")
+	if _, ok := s.cursor["next_url"]; ok {
+		t.Errorf("first-iteration seed wrote cursor.next_url; expected absent")
 	}
 }
 
 // TestNextURLInBodyPagination_AdvanceNext: a body carrying a non-empty
-// string at next_url_at → cursor.next_url captured, wantMore=true. Next
-// seed surfaces it via fromPagination.
+// string at next_url_at → cursor.next_url captured, wantMore=true. The
+// next iteration's {ref: cursor.next_url} reads the same map.
 func TestNextURLInBodyPagination_AdvanceNext(t *testing.T) {
 	p := &nextURLInBodyPagination{cfg: &schema.NextURLInBodyPagination{
 		NextURLAt: mustPath("response.body.paging.next"),
@@ -517,8 +514,8 @@ func TestNextURLInBodyPagination_AdvanceNext(t *testing.T) {
 	}
 
 	p.seed(s)
-	if got := s.fromPagination["next_url"]; got != want {
-		t.Errorf("fromPagination[next_url] = %v, want %q", got, want)
+	if got := s.cursor["next_url"]; got != want {
+		t.Errorf("cursor.next_url after re-seed = %v, want %q (seed must not clobber advance writes)", got, want)
 	}
 }
 
@@ -616,23 +613,23 @@ func TestNextURLInBodyPagination_AdvanceNonString(t *testing.T) {
 }
 
 // TestScrollIDPagination_SeedFirstIteration: cursor.scroll_id absent ⇒
-// {from_pagination: scroll_id} resolves to nil so the server opens a new
-// scroll session on the bootstrap request. Mirrors the cursor_token
-// first-iteration shape.
+// {ref: cursor.scroll_id} resolves to nil so the server opens a new
+// scroll session on the bootstrap request. seed is a no-op for scroll_id
+// after slice 4.
 func TestScrollIDPagination_SeedFirstIteration(t *testing.T) {
 	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
+		ScrollIDAt: mustPath("response.body.request_metadata.scroll"),
 	}}
 	s := newTestScope(t, nil, nil)
 	p.seed(s)
-	if _, ok := s.fromPagination["scroll_id"]; ok {
-		t.Errorf("first-iteration seed left a fromPagination[scroll_id]; expected absent")
+	if _, ok := s.cursor["scroll_id"]; ok {
+		t.Errorf("first-iteration seed wrote cursor.scroll_id; expected absent")
 	}
 }
 
 // TestScrollIDPagination_AdvanceNext: a body carrying a non-empty scroll id
-// at scroll_id_at → cursor.scroll_id captured, wantMore=true. Next seed
-// surfaces it via fromPagination.
+// at scroll_id_at → cursor.scroll_id captured, wantMore=true. The next
+// iteration's {ref: cursor.scroll_id} reads the same map.
 func TestScrollIDPagination_AdvanceNext(t *testing.T) {
 	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
 		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
@@ -655,8 +652,8 @@ func TestScrollIDPagination_AdvanceNext(t *testing.T) {
 	}
 
 	p.seed(s)
-	if got := s.fromPagination["scroll_id"]; got != "scroll-tok-2" {
-		t.Errorf("fromPagination[scroll_id] = %v, want scroll-tok-2", got)
+	if got := s.cursor["scroll_id"]; got != "scroll-tok-2" {
+		t.Errorf("cursor.scroll_id after re-seed = %v, want scroll-tok-2 (seed must not clobber advance writes)", got)
 	}
 }
 
@@ -744,7 +741,7 @@ func TestScrollIDPagination_AdvanceCompleteWhenTrue(t *testing.T) {
 
 // TestScrollIDPagination_AdvanceCompleteWhenFalse: complete_when not yet
 // satisfied → capture the fresh scroll id, signal wantMore=true. The fresh
-// id rides into the next iteration via fromPagination.
+// id rides into the next iteration via cursor.scroll_id.
 func TestScrollIDPagination_AdvanceCompleteWhenFalse(t *testing.T) {
 	complete := schema.Predicate{Eq: &schema.PredicateEq{
 		Path:  mustPath("response.body.request_metadata.complete"),
@@ -802,9 +799,9 @@ func TestScrollIDPagination_AdvanceBodyScopeIsolation(t *testing.T) {
 }
 
 // TestGraphQLRelayPagination_SeedFirstIteration: cursor.<cursor_var> absent ⇒
-// {from_pagination: relay_cursor} resolves to nil so the GraphQL variable
-// rides as null on the bootstrap request. Mirrors the cursor_token
-// first-iteration shape, but with an author-named cursor key.
+// {ref: cursor.<cursor_var>} resolves to nil so the GraphQL variable
+// rides as null on the bootstrap request. seed is a no-op for graphql_relay
+// after slice 4.
 func TestGraphQLRelayPagination_SeedFirstIteration(t *testing.T) {
 	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
 		HasNextPageAt: mustPath("response.body.data.issues.pageInfo.hasNextPage"),
@@ -813,14 +810,14 @@ func TestGraphQLRelayPagination_SeedFirstIteration(t *testing.T) {
 	}}
 	s := newTestScope(t, nil, nil)
 	p.seed(s)
-	if _, ok := s.fromPagination["relay_cursor"]; ok {
-		t.Errorf("first-iteration seed left a fromPagination[relay_cursor]; expected absent")
+	if _, ok := s.cursor["after"]; ok {
+		t.Errorf("first-iteration seed wrote cursor.after; expected absent")
 	}
 }
 
 // TestGraphQLRelayPagination_AdvanceNext: has_next_page=true + a non-empty
-// endCursor → cursor.<cursor_var> captured, wantMore=true. Next seed surfaces
-// it via fromPagination[relay_cursor].
+// endCursor → cursor.<cursor_var> captured, wantMore=true. The next
+// iteration's {ref: cursor.<cursor_var>} reads the same map.
 func TestGraphQLRelayPagination_AdvanceNext(t *testing.T) {
 	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
 		HasNextPageAt: mustPath("response.body.data.issues.pageInfo.hasNextPage"),
@@ -852,8 +849,8 @@ func TestGraphQLRelayPagination_AdvanceNext(t *testing.T) {
 	}
 
 	p.seed(s)
-	if got := s.fromPagination["relay_cursor"]; got != "Y3Vyc29yOjI=" {
-		t.Errorf("fromPagination[relay_cursor] = %v, want Y3Vyc29yOjI=", got)
+	if got := s.cursor["after"]; got != "Y3Vyc29yOjI=" {
+		t.Errorf("cursor.after after re-seed = %v, want Y3Vyc29yOjI= (seed must not clobber advance writes)", got)
 	}
 }
 
@@ -982,8 +979,8 @@ func TestGraphQLRelayPagination_AdvanceHonoursCustomCursorVar(t *testing.T) {
 	}
 
 	p.seed(s)
-	if got := s.fromPagination["relay_cursor"]; got != "u-2" {
-		t.Errorf("fromPagination[relay_cursor] = %v, want u-2", got)
+	if got := s.cursor["userCursor"]; got != "u-2" {
+		t.Errorf("cursor.userCursor after re-seed = %v, want u-2 (seed must not clobber advance writes)", got)
 	}
 }
 
@@ -1076,8 +1073,8 @@ func TestOffsetPagination_SeedLogsBatchSizeEvalFailure(t *testing.T) {
 	s.logger = log.New(&buf, "", 0)
 
 	p.seed(s)
-	if _, ok := s.fromPagination["offset_end"]; ok {
-		t.Errorf("seed left offset_end set after eval failure; expected dropped")
+	if _, ok := s.cursor["offset_end"]; ok {
+		t.Errorf("seed left cursor.offset_end set after eval failure; expected dropped")
 	}
 	if !strings.Contains(buf.String(), "pagination.offset.batch_size eval failed") {
 		t.Errorf("logger missing breadcrumb; got %q", buf.String())
@@ -1200,7 +1197,7 @@ func TestPaginationErrorLabels(t *testing.T) {
 // The §4.4 implicit-form contract: when a paginating strategy declares
 // `send_as: query.<param>` (or `header.<name>`), the runner auto-injects
 // the cursor at that slot on the producer step's request — authors don't
-// have to write the explicit {from_pagination: <role>} Value themselves.
+// have to write the explicit {ref: cursor.<name>} Value themselves.
 // Explicit form (template declares the slot) wins; the runner detects
 // explicit declaration by IR presence (req.Query[name] / req.Headers[name]
 // case-insensitive) and skips the auto-injection for that slot.
@@ -1291,7 +1288,7 @@ func TestQueryDeclared_ExactMatch(t *testing.T) {
 }
 
 // TestEndToEnd_CursorToken_ImplicitSendAs drives cursor_token across three
-// pages without an explicit {from_pagination: token} in req.Query — the
+// pages without an explicit {ref: cursor.token} in req.Query — the
 // runner must lower `send_as: query.cursor` into an auto-injection at the
 // producer-step query slot. Wire shape (page 0 bootstrap → page 2
 // termination) must match the explicit-form TestEndToEnd_CursorToken case
@@ -1356,7 +1353,7 @@ func TestEndToEnd_CursorToken_ImplicitSendAs(t *testing.T) {
 }
 
 // cursorTokenImplicitDoc mirrors cursorTokenDoc but OMITS the explicit
-// {from_pagination: token} value at query.cursor. The runner's `send_as`
+// {ref: cursor.token} value at query.cursor. The runner's `send_as`
 // auto-injection has to produce the same wire shape.
 func cursorTokenImplicitDoc(baseURL, token string) *schema.Doc {
 	return &schema.Doc{
@@ -1386,7 +1383,7 @@ func cursorTokenImplicitDoc(baseURL, token string) *schema.Doc {
 }
 
 // TestEndToEnd_ScrollID_ImplicitSendAs_Header drives scroll_id with
-// send_as=header.X-Scroll-ID (no explicit {from_pagination: scroll_id} in
+// send_as=header.X-Scroll-ID (no explicit {ref: cursor.scroll_id} in
 // the template). Asserts the header is absent on page 0 (bootstrap) and
 // echoed on pages 1-2 by the auto-injection. Exercises the header branch
 // of the implicit lowering AND the case-insensitive declared-slot check.

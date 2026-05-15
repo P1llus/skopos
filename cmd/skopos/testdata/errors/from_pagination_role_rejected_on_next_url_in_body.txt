@@ -1,10 +1,11 @@
-# errors/from_pagination_role_rejected_on_next_url_in_body — invalid spec; validate exits 1 with diagnostic
-# matching the substring tested by TestValidateErrors in
-# schema/fixtures_test.go.
+# errors/from_pagination_role_rejected_on_next_url_in_body — slice 4 deleted
+# the {from_pagination: <role>} discriminator; the cursor-namespace validator
+# now catches templates that ref a cursor field next_url_in_body doesn't
+# register (next_url_in_body only provides cursor.next_url).
 
 ! exec skopos validate -i spec.yml
 ! stderr .
-stdout 'does not match the active pagination strategy "next_url_in_body"'
+stdout 'cursor field "token" is not provided by the active pagination/progress strategy'
 
 -- spec.yml --
 ir_version: "1"
@@ -14,7 +15,7 @@ requests:
   - method: GET
     path: /api/v1/events
     query:
-      tok: {from_pagination: token}
+      tok: {ref: cursor.token}
 response:
   decode: json
   events_at: response.body.events

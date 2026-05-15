@@ -73,25 +73,27 @@ func (m *MemoryStore) Save(s Snapshot) error { m.snap = s; return nil }
 //     via the deferred store.Save in Runner.Drain.
 //
 //   - cursor:         PER-DRAIN, PERSISTED. Seeded once from Snapshot.Cursor
-//     in newScope. Mutated by pagination.advance + progress.advance + the
-//     async_job phase machine + extract[].target=cursor. Persisted whole on
-//     drain end (even on error) so the next drain resumes from the
-//     high-water mark. The schema is inferred from the document's active
-//     strategies — there's no central registry. The keys written by each
-//     strategy in the runner today:
+//     in newScope. Mutated by pagination.seed + pagination.advance +
+//     progress.seed + progress.advance + the async_job phase machine +
+//     extract[].target=cursor. Persisted whole on drain end (even on
+//     error) so the next drain resumes from the high-water mark. The
+//     schema is inferred from the document's active strategies — there's
+//     no central registry. The keys written by each strategy in the
+//     runner today:
 //
-//     pagination.cursor_token         "token"            (opaque server-supplied cursor)
-//     pagination.page_number          "page"             (1-based, increments by advance)
-//     pagination.offset               "offset"           (0-based; advances by batch_size or observed event count)
-//     pagination.link_header          "next_link"        (full next-page URL parsed from the Link header)
-//     pagination.next_url_in_body     "next_url"         (full next-page URL read from the producer body at next_url_at)
-//     pagination.scroll_id            "scroll_id"        (server-supplied scroll session id; cleared on complete_when termination)
-//     pagination.graphql_relay        <cursor_var>       (Relay endCursor; author-named via cfg.CursorVar — typically "after"; cleared when has_next_page=false)
-//     progress.latest_event_timestamp "last_timestamp"   (RFC 3339 string)
-//     progress.max_event_field        "last_timestamp"   (RFC 3339 string; advance walks events and picks the max value at cfg.EventTime.Path)
-//     progress.time_window            "window_start", "window_end" (formatted via cfg.Format — default rfc3339; advance slides window_start to the just-finished window_end)
-//     progress.use_now                "last_timestamp"   (advance writes s.now() - lookback; no events walk)
-//     progress.async_job              "phase"            ("submit" | "poll" | "fetch")
+//     pagination.cursor_token         "token"            (opaque server-supplied cursor; absent on first iteration — advance writes only when token_at returns a non-zero value, so {ref: cursor.token} resolves to nil and the slot is skipped on the bootstrap request)
+//     pagination.page_number          "page"             (1-based; seed defaults to 1 on first iteration, advance increments)
+//     pagination.offset               "offset"           (0-based; seed defaults to 0; advance bumps by batch_size or observed event count)
+//     pagination.offset (with batch)  "offset_end"       (offset + batch_size; seed writes alongside cursor.offset when batch_size is declared and evaluates cleanly)
+//     pagination.link_header          "next_link"        (full next-page URL parsed from the Link header; absent on first iteration so templates default to the bootstrap URL)
+//     pagination.next_url_in_body     "next_url"         (full next-page URL read from the producer body at next_url_at; absent on first iteration)
+//     pagination.scroll_id            "scroll_id"        (server-supplied scroll session id; absent on first iteration so the bootstrap request opens a new session; cleared on complete_when termination)
+//     pagination.graphql_relay        <cursor_var>       (Relay endCursor; author-named via cfg.CursorVar — typically "after"; absent on first iteration so the GraphQL variable rides as null; cleared when has_next_page=false)
+//     progress.latest_event_timestamp "last_timestamp"   (RFC 3339 string; seed pre-seeds initial.lookback on first drain, advance bumps to max(events))
+//     progress.max_event_field        "last_timestamp"   (RFC 3339 string; same code path as latest_event_timestamp)
+//     progress.time_window            "window_start", "window_end" (formatted via cfg.Format — default rfc3339; seed pins the window once per drain, advance slides window_start to the just-finished window_end)
+//     progress.use_now                "last_timestamp"   (advance writes s.now() - lookback; no events walk; seed leaves the cursor untouched)
+//     progress.async_job              "phase"            ("submit" | "poll" | "fetch"; seed defaults to firstPhase when absent)
 //     async_job.{submit,poll}.extract <author-named>     (auth tokens, job ids, etc.)
 //     async_job.on_complete=use_now   "last_timestamp"   (set at producer completion)
 //     async_job.on_complete=latest_event_timestamp "last_timestamp" (max value at cu.event_time.path inside the producer body's events list)
@@ -129,31 +131,25 @@ func (m *MemoryStore) Save(s Snapshot) error { m.snap = s; return nil }
 //     completed request whose req.ID is set. Resolves
 //     steps.<id>.header.<name> refs.
 //
-//   - fromPagination: PER-ITERATION. Reset by paginationPlan.seed at the
-//     top of every iteration.
-//
-//   - fromProgress:   PER-DRAIN. Seeded once by progressPlan.seed before
-//     the loop starts. NOT re-seeded per iteration — that would shift
-//     since=<...> mid-drain and cause every page after the first to query
-//     a moving window. The window-end advance happens once via
-//     progress.advance after the drain completes.
+// Note on pagination / progress signals: there is no separate
+// fromPagination / fromProgress map any more — pagination.seed and
+// progress.seed write directly into scope.cursor, and templates read those
+// values via {ref: cursor.<name>}. This collapses two namespaces into one
+// and matches the §1.6 design (the stable cursor.<role> names ARE the
+// progression signal). pagination.seed runs once per iteration before the
+// producer step's request bodies / queries are evaluated; progress.seed
+// runs once per drain so the window-start stays stable across pages.
 type scope struct {
-	doc     *schema.Doc
-	state   map[string]any
-	cursor  map[string]any
-	extract map[string]any
-	steps   map[string]any         // step id → decoded body
-	item    any                    // per-item binding when inside fan_out
-	body    any                    // active response context body (unused outside the predicate);
-	                               // resolves response.body.<path> via lookupBodyPath
-	responseHeaders http.Header    // active response context headers (mirrors body)
+	doc             *schema.Doc
+	state           map[string]any
+	cursor          map[string]any
+	extract         map[string]any
+	steps           map[string]any         // step id → decoded body
+	item            any                    // per-item binding when inside fan_out
+	body            any                    // active response context body (unused outside the predicate);
+	                                       // resolves response.body.<path> via lookupBodyPath
+	responseHeaders http.Header            // active response context headers (mirrors body)
 	stepHeaders     map[string]http.Header // step id → response headers
-
-	// Active pagination/progress signals exposed to Value via
-	// {from_pagination: ...} / {from_progress: ...}. Populated by the
-	// pagination + progress drivers each iteration before requests run.
-	fromPagination map[string]any
-	fromProgress   map[string]any
 
 	// nowFn is the clock; defaults to time.Now. Per-scope (not package
 	// global) so concurrent runners can use independent clocks.
@@ -175,15 +171,13 @@ func newScope(doc *schema.Doc, snap Snapshot, now func() time.Time) (*scope, err
 		now = time.Now
 	}
 	s := &scope{
-		doc:            doc,
-		state:          make(map[string]any),
-		cursor:         make(map[string]any),
-		extract:        make(map[string]any),
-		steps:          make(map[string]any),
-		stepHeaders:    make(map[string]http.Header),
-		fromPagination: make(map[string]any),
-		fromProgress:   make(map[string]any),
-		nowFn:          now,
+		doc:         doc,
+		state:       make(map[string]any),
+		cursor:      make(map[string]any),
+		extract:     make(map[string]any),
+		steps:       make(map[string]any),
+		stepHeaders: make(map[string]http.Header),
+		nowFn:       now,
 	}
 
 	// Seed state from defaults, overriding with snapshot writes.

@@ -37,7 +37,11 @@ requests:
     path: /async_poll_latest_ts/exports
     body:
       json:
-        since: {from_progress: latest_timestamp}
+        # default: "" preserves the historical wire shape on the first drain
+        # — without it, an absent cursor.last_timestamp would JSON-encode as
+        # null instead of the empty string the latest_event_timestamp branch
+        # used to always send via from_progress on the bootstrap iteration.
+        since: {ref: cursor.last_timestamp, default: ""}
     expect_status: [202]
 
   - id: poll

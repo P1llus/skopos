@@ -40,8 +40,6 @@ func vRefDefault(p string, d schema.Value) schema.Value {
 	return schema.Value{Ref: &schema.RefValue{Path: mustPath(p), Default: &d}}
 }
 func vConcat(parts ...schema.Value) schema.Value { return schema.Value{Concat: parts} }
-func vFromPag(name string) schema.Value          { return schema.Value{FromPagination: name} }
-func vFromProg(name string) schema.Value         { return schema.Value{FromProgress: name} }
 func vNow(offset *schema.Value) schema.Value {
 	return schema.Value{Now: &schema.NowValue{Offset: offset}}
 }
@@ -132,21 +130,21 @@ func TestEvalValue(t *testing.T) {
 		},
 
 		{
-			name:  "from_pagination_set",
-			setup: func(s *scope) { s.fromPagination["token"] = "tok-1" },
-			val:   vFromPag("token"),
-			want:  "tok-1",
+			name:   "ref_cursor_pagination_signal",
+			cursor: map[string]any{"token": "tok-1"},
+			val:    vRef("cursor.token"),
+			want:   "tok-1",
 		},
 		{
-			name: "from_pagination_unset_returns_nil",
-			val:  vFromPag("token"),
+			name: "ref_cursor_pagination_unset_returns_nil",
+			val:  vRef("cursor.token"),
 			want: nil,
 		},
 		{
-			name:  "from_progress_set",
-			setup: func(s *scope) { s.fromProgress["latest_timestamp"] = "2026-05-12T00:00:00Z" },
-			val:   vFromProg("latest_timestamp"),
-			want:  "2026-05-12T00:00:00Z",
+			name:   "ref_cursor_progress_signal",
+			cursor: map[string]any{"last_timestamp": "2026-05-12T00:00:00Z"},
+			val:    vRef("cursor.last_timestamp"),
+			want:   "2026-05-12T00:00:00Z",
 		},
 
 		{

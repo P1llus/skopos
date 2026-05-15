@@ -1,7 +1,7 @@
 ir_version: "1"
 
 # Mirrors cursor_token.yml but omits the explicit
-# {from_pagination: token} value at query.cursor. The runner lowers
+# {ref: cursor.token} value at query.cursor. The runner lowers
 # `pagination.cursor_token.send_as: query.cursor` into an auto-injection
 # at that slot on the producer step — implicit-form ergonomics, same
 # wire shape as the explicit-form template.

@@ -48,7 +48,7 @@ requests:
     method: GET
     path: /etag_conditional/data
     query:
-      page: {format: string, value: {from_pagination: page}}
+      page: {format: string, value: {ref: cursor.page}}
     if:
       eq:
         path: state.etag_check

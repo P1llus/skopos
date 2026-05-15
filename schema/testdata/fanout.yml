@@ -33,7 +33,7 @@ requests:
     method: GET
     path: /api/v1/incidents
     query:
-      since: {from_progress: latest_timestamp}
+      since: {ref: cursor.last_timestamp}
 
   - id: detail
     method: GET

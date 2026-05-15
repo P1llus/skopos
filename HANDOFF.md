@@ -146,133 +146,138 @@ moments:
 
 ### Slice number and title
 
-**Slice 4 — Delete `from_pagination` / `from_progress`.**
+**Slice 5 — Delete `send_as` auto-injection.**
 
 ### What this slice does
 
-Remove the two semantic-role Value variants from the IR. Templates
-that used `{from_pagination: <role>}` / `{from_progress: <role>}`
-flip to `{ref: cursor.<role>}`; the runtime stops maintaining the
-parallel `s.fromPagination` / `s.fromProgress` maps and seeds the
-same names directly into `scope.cursor`. The role-membership
-validator helpers (`validPaginationRole`, `validProgressRole`,
-`rolesForStrategy`, `rolesForProgressStrategy`) and the
-"explicit-wins" tiebreaker rule disappear — the existing
-"`cursor.<name>` must be provided by the active strategy" check in
-`cursorSchema` already covers the same ground. See
-`SCHEMA_DESIGN.md` §1.6 for the role-name → cursor-name mapping
-and §2 Slice 4 for the implementation outline.
+Remove `SendAs` from `CursorTokenPagination` and `ScrollIDPagination`
+and tear out the implicit-form auto-injector. After this slice the
+runner no longer fabricates a `query.<param>` / `header.<name>` slot
+on the producer step from the active pagination strategy — every
+template explicitly writes the cursor ref in its own `query:` /
+`headers:` / `body:` map (e.g. `cursor: {ref: cursor.token, default: ""}`
+for `cursor_token`; `X-Scroll-ID: {ref: cursor.scroll_id}` for
+`scroll_id`). The "explicit form wins" tiebreaker disappears with
+the auto-injector; per-template authoring is the only path. See
+`SCHEMA_DESIGN.md` §2 Slice 5 for the implementation outline and
+`§1.6` for the cursor-namespace names already in use after slice 4.
 
 ### Surfaces this slice touches
 
-- `schema/value.go` — delete the `FromPagination` and
-  `FromProgress` fields from `Value`; remove their entries from
-  `valueDiscriminatorKeys` / `valueVariantAllowedKeys`; drop the
-  YAML and JSON marshal / unmarshal arms (look for
-  `from_pagination` / `from_progress` literal strings); remove
-  any helper that materialises them (e.g. `Value.IsZero` /
-  `Variant` computations may need a follow-up).
-- `schema/validate.go` — delete the `case val.FromPagination`
-  and `case val.FromProgress` arms in `checkValue`; delete the
-  `validPaginationRole` / `validProgressRole` /
-  `rolesForStrategy` / `rolesForProgressStrategy` helpers and
-  any callers (`sortedKeys` is used only by these — drop it too
-  if no other call site survives).
-- `client/value.go` — delete the two evaluator arms that look
-  up `s.fromPagination[name]` / `s.fromProgress[name]`.
-- `client/state.go` — delete the `fromPagination` /
-  `fromProgress` maps from `scope` and their initialisation in
-  `newScope` (or wherever the scope is built); ensure no other
-  caller still references them.
-- `client/pagination.go` and `client/progress.go` — every site
-  that previously wrote into `s.fromPagination[<role>]` /
-  `s.fromProgress[<role>]` must instead write into
-  `s.cursor[<role>]` so the same name resolves through
-  `{ref: cursor.<role>}`. Be careful with first-iteration
-  semantics: `cursor.scroll_id` is intentionally unset until the
-  server returns a value (so the first request omits the param).
-  Mirror that "write only when the value is real" rule in any
-  arm you migrate.
-- `templates/*.yml` — every `{from_pagination: <role>}` /
-  `{from_progress: <role>}` in `query:` / `headers:` / `body:` /
-  `select.branches[].value` flips to `{ref: cursor.<role>}` (or
-  the per-strategy alias from §1.6 — e.g. `cursor.token`,
-  `cursor.last_timestamp`, `cursor.window_start`,
-  `cursor.window_end`, `cursor.<cursor_var>` for graphql_relay).
-  `grep -rn 'from_pagination\|from_progress' templates/` is the
-  inventory.
-- `schema/testdata/*.yml` — same rewrite. Several scroll/cursor
-  fixtures use `from_pagination`; offset/page-number ones use
-  `from_pagination: page` / `offset` etc.
-- `cmd/skopos/testdata/*.txt` — embedded YAML in testscript
-  fixtures. Both `errors/` (the
-  `from_pagination_role_*` / `from_progress_*` files) and any
-  `schema/` snapshot mentioning these keys. The
-  `from_pagination_role_*` / `from_progress_*` test fixtures
-  primarily existed to exercise the role-mismatch validator; if
-  the underlying check is gone, repurpose those tests (e.g. flip
-  to assert that the now-undeclared `cursor.<bogus>` ref is
-  caught by the cursor-namespace check, or delete them). Reset
-  any `stdout` substring assertions that pinned the role-mismatch
-  message.
+- `schema/schema.go` — delete `SendAs string` from
+  `CursorTokenPagination` and `ScrollIDPagination`. After this slice
+  `CursorTokenPagination` carries only `TokenAt Path`, and
+  `ScrollIDPagination` carries `ScrollIDAt Path` plus the optional
+  `CompleteWhen *Predicate`.
+- `schema/validate.go` — delete `checkSendAs` (and its callers in the
+  cursor_token / scroll_id branches of `checkPaginationStrategy`).
+  Drop the helper that parses `send_as` (e.g. `parseSendAs` if it
+  also lives schema-side; otherwise leave the runtime copy until
+  step 3 below kills it). Keep the cursor-namespace registration
+  (slice 4) intact — `cursor.token` / `cursor.scroll_id` remain
+  legitimate refs.
+- `client/pagination.go` — delete the `paginationAutoInjector`
+  interface, the `autoInjectSlot` type, every `(*<driver>)
+  autoInjectSlot()` method, and the `parseSendAs` helper. The
+  `paginationPlan` interface is unaffected (its `seed` / `advance`
+  / `phase` shape stays). Refresh the file's package-doc paragraph
+  on auto-injection — it goes away in this slice.
+- `client/http.go` — delete the `inject *autoInjectSlot` parameter
+  on `executeRequest`, the `queryDeclared` / `headerDeclared`
+  helpers (no remaining call sites once the auto-injection is
+  gone), and every "implicit `send_as` lowering" branch in
+  `executeRequest`. Update the function's doc comment.
+- `client/runner.go` — delete the `reqInject` plumbing that walks
+  the producer step's pagination plan and threads
+  `autoInjectSlot()` through `executeRequest`. `runIteration`
+  loses the call.
+- `templates/*.yml` — every template using
+  `pagination.cursor_token` or `pagination.scroll_id` must
+  declare the cursor explicitly in `query:` / `headers:`:
+  - `cursor_token.yml` — add
+    `query: {cursor: {ref: cursor.token, default: ""}}` (or whatever
+    matches the existing wire-shape: empty string on the bootstrap
+    iteration, the token thereafter).
+  - `oauth2_client_credentials.yml` (also `cursor_token`) — same
+    treatment.
+  - `scroll_id.yml` — add
+    `query: {scroll: {ref: cursor.scroll_id}}` (no `default: ""` —
+    the first iteration intentionally omits the param so the
+    server opens a fresh scroll).
+  - Anywhere else `send_as:` appears (grep `templates/` to be
+    sure).
+- `schema/testdata/*.yml` — same pattern: every fixture that
+  uses `cursor_token` / `scroll_id` with `send_as:` flips to an
+  explicit `query:` / `headers:` declaration. Round-trip
+  fixtures must stay byte-stable; if you delete a `send_as:`
+  line, regenerate the matching golden.
+- `cmd/skopos/testdata/*.txt` — the embedded YAML and trace
+  goldens for `cursor_token`, `scroll_id`, and any `send_as`-only
+  scenario. The "implicit send_as wins / explicit wins"
+  testscripts (under `errors/` if any) probably go away
+  entirely; those that remain need their YAML and trace lines
+  updated.
 - Tests:
-  - `schema/fixtures_test.go` — every inline YAML using
-    `{from_pagination: …}` / `{from_progress: …}` flips to
-    `{ref: cursor.<name>}`. Add a focused negative test:
-    `{from_pagination: token}` should now fail at parse time
-    (because the discriminator key is gone) — pin the new error
-    message. Same for `{from_progress: …}`. The
-    `TestSliceTwoBarePathsRejected.t.Run("max_event_field_…")`
-    helper has a `since: {from_progress: max_seq}` query — flip
-    that to `since: {ref: cursor.max_seq}` (or whatever the
-    fixture intends) so the test still exercises its target
-    assertion.
-  - `client/value_test.go` (and any other client test that
-    constructs `schema.Value{FromPagination: …}` /
-    `Value{FromProgress: …}` literals) — convert to
-    `Value{Ref: &schema.Ref{Path: mustPath("cursor.<name>")}}`.
-  - `client/pagination_test.go` / `client/progress_test.go` —
-    audit the assertions that checked `s.fromPagination[…]` /
-    `s.fromProgress[…]` and flip them to `s.cursor[…]`.
+  - `schema/fixtures_test.go` — flip every inline YAML that
+    used `send_as:` to the explicit query/header form. Add a
+    focused negative test: the codec must reject
+    `send_as: query.cursor` with an error that points at the new
+    "wire the cursor explicitly in your request" form.
+  - `client/pagination_test.go` — delete the
+    `TestParseSendAs`, `TestCursorTokenPagination_AutoInjectSlot`,
+    `TestScrollIDPagination_AutoInjectSlot`,
+    `TestHeaderDeclared_CaseInsensitive`,
+    `TestQueryDeclared_ExactMatch`,
+    `TestEndToEnd_CursorToken_ImplicitSendAs`,
+    `TestEndToEnd_ScrollID_ImplicitSendAs_Header`, and
+    `TestEndToEnd_CursorToken_ExplicitFormWinsOverAutoInject`
+    cases (the implicit / "explicit wins" contracts cease to
+    exist). Keep the regular `TestEndToEnd_CursorToken` case but
+    update the `cursorTokenDoc` / `scrollIDImplicitHeaderDoc`
+    helpers to wire the cursor explicitly in `req.Query` /
+    `req.Headers`.
+  - `client/http_test.go` (if it exists) — same audit on any
+    inject parameter.
+  - `client/runner_test.go` — `cursorTokenDoc` already wires
+    `query.cursor` explicitly to `vRef("cursor.token")` (after
+    slice 4) — confirm the wire-shape match still holds with the
+    `send_as` plumbing gone.
 
 ### Acceptance criteria
 
-1. `schema.Value` no longer carries `FromPagination` / `FromProgress`
-   fields. `valueDiscriminatorKeys` / `valueVariantAllowedKeys`
-   reflect 11 variants (literal_string, literal_int, literal_bool,
-   ref, now, concat, select, format, base64, list, object).
-2. The codec rejects YAML / JSON containing `from_pagination:` or
-   `from_progress:` with an error that names `{ref: cursor.<name>}`
-   as the replacement. Add a test for each.
-3. Pagination + progress drivers seed the cursor namespace
-   directly; `scope.fromPagination` / `scope.fromProgress` are
-   deleted (or, if you discover a non-trivial use, document why
-   they survive in this section before handing off).
-4. Every template / `schema/testdata` fixture / `cmd/skopos`
-   testscript uses `{ref: cursor.<name>}` for pagination and
-   progress signals. No leftover `from_pagination:` /
-   `from_progress:` strings anywhere except in the migration
-   tests that pin the parse rejection.
-5. Every template loads + validates + runs end-to-end against
-   the testserver and still produces the same events. Pay
-   particular attention to:
-   - `cursor_token.yml` (uses `{from_pagination: token}` today).
-   - `scroll_id.yml` (uses `{from_pagination: scroll_id}` —
-     first-iteration absent-value semantics).
-   - `page_number.yml`, `offset_pagination.yml`,
-     `next_url_in_body.yml`, GraphQL Relay templates.
-   - The progress side: `latest_event_timestamp` /
-     `max_event_field` / `time_window` / `use_now` templates that
-     read `{from_progress: …}` in their query.
+1. `schema.CursorTokenPagination` carries `TokenAt Path` only.
+   `schema.ScrollIDPagination` carries `ScrollIDAt Path` plus
+   `CompleteWhen *Predicate` only. No `SendAs` field on either.
+2. The codec rejects YAML / JSON containing `send_as:` under
+   either strategy with an error that names "wire the cursor
+   explicitly in your request" (or similar). Pin a test.
+3. `client/pagination.go` no longer exposes the
+   `paginationAutoInjector` interface, the `autoInjectSlot`
+   type, or `parseSendAs`. `client/http.go::executeRequest` has
+   no `inject` parameter and no implicit lowering branches.
+   `client/runner.go::runIteration` no longer threads any
+   pagination injection through `executeRequest`.
+4. Every template using `cursor_token` or `scroll_id` declares
+   the cursor explicitly in `query:` / `headers:`. `grep -rn
+   send_as templates/` returns nothing.
+5. Every template + fixture loads, validates, and runs
+   end-to-end against the testserver with the same wire
+   shape as before:
+   - `cursor_token.yml`: bootstrap iteration sends
+     `cursor=` (empty), subsequent iterations send the captured
+     token.
+   - `scroll_id.yml`: bootstrap iteration omits the `scroll`
+     query param, subsequent iterations carry the captured id.
+   - `oauth2_client_credentials.yml` (also `cursor_token`):
+     same shape as `cursor_token.yml`.
 6. `go test ./...` green; `go vet ./...` clean;
    `go run ./tools/gen-schema-doc -check` green (this slice
-   _does_ touch `schema.Value` — regenerate the doc, eyeball
-   the diff, lock it in).
+   touches exported schema types — regenerate the doc and lock
+   in the diff).
 7. `ir_version` stays `"1"`.
 
 ### Out of scope for this slice
 
-- Do not delete `send_as` — slice 5.
 - Do not rename `equal:` → `value:` — slice 6.
 - Do not move expiry slots out of `cursor.__…` — slice 7.
 - Do not touch `docs/`, `README.md`, `docs/schema-reference.md`
@@ -284,63 +289,53 @@ If any of those become unavoidable, **stop and ask**.
 
 ### Notes / open questions for this agent
 
-- **Slice 3 grounding (what landed in the previous commit).**
-  - `schema.ExtractVar` is now `{Name, From, Coerce, Target}`.
-    The codec rejects `path:` / `source:` / `header:` at parse
-    time via custom `UnmarshalYAML` / `UnmarshalJSON` on
-    `ExtractVar` — the same pattern as `CursorUpdateDirective`.
-    `extractVarRaw` exists solely so the custom unmarshaler can
-    defer to the default decode without recursion.
-  - `validator.checkExtractFromPath` enforces the four legal
-    roots on `from`: `response.body.<path>`,
-    `response.header.<name>`, `steps.<id>.body.<path>`,
-    `steps.<id>.header.<name>`. The slice-2-deferred extract
-    namespace-shadow warning is deleted; `isNamespaceRoot` lives
-    on only as a helper for `checkPerEventPath`.
-  - Runtime: `client/extract.go::scope.runExtracts` now calls
-    `scope.resolveExtractFrom`, which mirrors the four validator
-    arms (body via `lookupBodyPath`, header via `headerLookup`).
-    The old `pathParts` helper moved from `extract.go` to
-    `bodypath.go` because `progress.go::maxEventTime` still uses
-    it for per-event sub-paths.
-  - The new `TestSliceThreeExtractFromCollapse` tracks: parse-time
-    rejection of every removed key (YAML + JSON), validator
-    rejection of bare and namespace-mismatched `from`, plus
-    positive coverage for each of the four legal roots and
-    bare-root error messages.
-- **Codec strictness pattern.** Slice 3 added explicit
-  YAML/JSON unmarshalers to `ExtractVar` rather than turning on
-  `yaml.KnownFields(true)` globally — the rest of the codec
-  remains lenient on unknown keys. If slice 4 wants similar
-  strictness for `Value` (e.g. catching `from_pagination:` after
-  the variant key is gone) the cheapest path is to extend the
-  existing `Value.UnmarshalYAML` discriminator switch with
-  explicit "this key was removed" arms. The discriminator-keys
-  table (`valueDiscriminatorKeys`) is the single source of truth
-  for what's accepted; deleting the entries there should produce
-  a clean "unknown discriminator" error already, but a friendly
-  hint that points at `cursor.<name>` is much more useful.
+- **Slice 4 grounding (what landed in the previous commit).**
+  - `schema.Value` no longer carries `FromPagination` /
+    `FromProgress`. The codec rejects `from_pagination:` /
+    `from_progress:` keys with hints that name the
+    `cursor.<name>` replacement (per the
+    `removedValueDiscriminatorKeys` table in `schema/value.go`).
+  - `scope.fromPagination` / `scope.fromProgress` are gone.
+    Pagination + progress drivers write directly into
+    `scope.cursor`. The http auto-injector reads
+    `scope.cursor[role]` for `send_as` lowering — that's the
+    code you delete in slice 5.
+  - `cursorSchema` registers `cursor.offset_end` only when
+    `pagination.offset.batch_size` is set, and registers
+    `cursor.last_timestamp` for `async_job` only when
+    `on_complete.cursor_update.kind` is `use_now` or
+    `latest_event_timestamp`. Other strategy/role combinations
+    fail validation with the canonical "cursor field <name> is
+    not provided by the active pagination/progress strategy"
+    error.
+  - The first-drain wire shape for templates that used to send
+    `since=""` (`async_poll.yml`, `async_poll_latest_ts.yml`)
+    is preserved with explicit `default: ""` on the ref. If you
+    delete a `send_as` slot whose template currently relied on
+    the bootstrap "empty string" semantics, copy the same
+    `default: ""` pattern when adding the explicit `query:` /
+    `headers:` entry.
+- **Auto-injection wire-shape audit.** Before deleting the
+  injector, capture the on-the-wire shape of each
+  `cursor_token` / `scroll_id` template's bootstrap request
+  with the testserver. The "explicit wires it itself" templates
+  must reproduce that shape exactly. The
+  `TestEndToEnd_CursorToken` and `TestEndToEnd_ScrollID*`
+  end-to-end cases pin the byte-level shape today; if you
+  delete the implicit cases, keep at least one explicit
+  end-to-end case per strategy as the wire-shape regression
+  guard.
 - **Pre-existing `TestScripts/post_json_body` flake** still
-  reproduces (~2/5 runs). Confirmed unchanged by slice 3.
+  reproduces (~2/5 runs). Confirmed unchanged by slice 4.
   Continue to leave it for a future slice.
-- **Cursor first-iteration semantics.** When you migrate the
-  pagination drivers, double-check that `cursor.scroll_id`
-  stays absent on the very first iteration (the test server's
-  scroll endpoint depends on this — first request omits the
-  query param entirely). Same for `cursor.token` (first cursor
-  is the empty string by template-author choice today, but the
-  runner doesn't seed it). Migration is "write to `s.cursor`
-  only when the server actually returned a value", same shape
-  as today's `s.fromPagination` write.
 
 ### When you finish
 
-1. Update `SCHEMA_DESIGN.md` §5 with a "Slice 4 complete" row.
-2. Rewrite this "Current task" section for slice 5 using the
-   template at the bottom of this file. Slice 5 deletes
-   `pagination.cursor_token.send_as` / `pagination.scroll_id.send_as`
-   auto-injection (templates wire the cursor explicitly into
-   their request `query:` / `headers:` map).
+1. Update `SCHEMA_DESIGN.md` §5 with a "Slice 5 complete" row.
+2. Rewrite this "Current task" section for slice 6 using the
+   template at the bottom of this file. Slice 6 renames
+   `Predicate.Eq.Equal` (YAML/JSON tag `equal:`) to `value:`
+   across the IR, templates, fixtures, and docs.
 3. Commit. Don't push.
 
 ---

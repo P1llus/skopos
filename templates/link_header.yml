@@ -46,7 +46,7 @@ requests:
           - {ref: state.url}
           - /link_header/incidents
     query:
-      updated_after: {from_progress: latest_timestamp}
+      updated_after: {ref: cursor.last_timestamp}
       per_page: {format: string, value: {ref: state.page_size}}
 
 response:

@@ -25,10 +25,9 @@ import (
 // # Concurrency
 //
 // One Runner is one logical pull source. Drain mutates internal scope state
-// (cursor, extract, steps, fromPagination, fromProgress) and the deferred
-// store.Save reads what each iteration wrote. Calling Drain concurrently on
-// the same Runner WILL race on scope state and interleave events into Sink.
-// Don't do it.
+// (cursor, extract, steps) and the deferred store.Save reads what each
+// iteration wrote. Calling Drain concurrently on the same Runner WILL race
+// on scope state and interleave events into Sink. Don't do it.
 //
 // Fan-out across N pull sources is the caller's responsibility: build N
 // Runner values (each with its own *schema.Doc, Store, Sink) and call Drain on
@@ -42,13 +41,17 @@ import (
 // One Drain executes the following sequence:
 //
 //  1. store.Load → seed scope.state from the snapshot, merging IR defaults.
-//  2. progress.seed runs ONCE per drain. It pins {from_progress: <role>}
-//     signals (e.g. cursor.last_timestamp → since=<...>) so every page in
-//     this drain shares the same window-start. cursor.last_timestamp only
-//     advances at the END of the drain via progress.advance().
+//  2. progress.seed runs ONCE per drain. It pins the drain's window into
+//     scope.cursor (e.g. cursor.last_timestamp → since=<...> via
+//     {ref: cursor.last_timestamp}) so every page in this drain shares the
+//     same window-start. cursor.last_timestamp only advances at the END
+//     of the drain via progress.advance().
 //  3. For each iteration:
-//     a. pagination.seed populates {from_pagination: <role>} for THIS page
-//     (cursor.token / cursor.page change per page).
+//     a. pagination.seed updates per-iteration cursor fields
+//     (cursor.page, cursor.offset / cursor.offset_end) before this page's
+//     requests run; strategies whose cursor names are written by advance
+//     (cursor_token, scroll_id, link_header, next_url_in_body,
+//     graphql_relay) implement seed as a no-op.
 //     b. scope.extract and scope.steps reset — they are per-iteration bindings.
 //     c. Every request runs in declared order. extract[] writes hit extract
 //     (default) or cursor; step ids cache decoded bodies in scope.steps.
@@ -254,12 +257,13 @@ func (r *Runner) Drain(ctx context.Context) (retErr error) {
 		}
 	}()
 
-	// progress.seed runs ONCE per drain: it pins {from_progress: ...}
-	// signals (e.g. cursor.last_timestamp → since=<...>) so every page
-	// fetched during this drain uses the same window. cursor.last_timestamp
-	// only advances at the END of the drain via progress.advance(). The
-	// variant errors already carry a "progress.<variant>" prefix, so wrap
-	// here without re-prefixing "progress.seed:" to avoid double labels.
+	// progress.seed runs ONCE per drain: it pins the window into
+	// scope.cursor (e.g. cursor.last_timestamp → since=<...> via
+	// {ref: cursor.last_timestamp}) so every page fetched during this
+	// drain uses the same window. cursor.last_timestamp only advances at
+	// the END of the drain via progress.advance(). The variant errors
+	// already carry a "progress.<variant>" prefix, so wrap here without
+	// re-prefixing "progress.seed:" to avoid double labels.
 	if err := progress.seed(s); err != nil {
 		return err
 	}

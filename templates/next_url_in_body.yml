@@ -46,7 +46,7 @@ requests:
           - {ref: state.url}
           - /next_url_in_body/alerts
     query:
-      since: {from_progress: latest_timestamp}
+      since: {ref: cursor.last_timestamp}
       limit: {format: string, value: {ref: state.page_size}}
 
 response:

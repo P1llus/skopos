@@ -1,10 +1,10 @@
-# errors/from_progress_unknown_role — invalid spec; validate exits 1 with diagnostic
-# matching the substring tested by TestValidateErrors in
-# schema/fixtures_test.go.
+# errors/from_progress_unknown_role — slice 4 deleted the
+# {from_progress: <role>} discriminator; an unknown role name is now an
+# unknown cursor field name caught by the cursor-namespace validator.
 
 ! exec skopos validate -i spec.yml
 ! stderr .
-stdout 'unknown progress role'
+stdout 'cursor field "bogus" is not provided by the active pagination/progress strategy'
 
 -- spec.yml --
 ir_version: "1"
@@ -14,7 +14,7 @@ requests:
   - method: GET
     path: /api/v1/events
     query:
-      since: {from_progress: bogus}
+      since: {ref: cursor.bogus}
 response:
   decode: json
   events_at: response.body.events

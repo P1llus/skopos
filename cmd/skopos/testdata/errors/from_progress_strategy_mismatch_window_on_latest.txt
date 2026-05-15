@@ -1,10 +1,12 @@
-# errors/from_progress_strategy_mismatch_window_on_latest — invalid spec; validate exits 1 with diagnostic
-# matching the substring tested by TestValidateErrors in
-# schema/fixtures_test.go.
+# errors/from_progress_strategy_mismatch_window_on_latest — slice 4 deleted
+# the {from_progress: <role>} discriminator; the cursor-namespace validator
+# now catches templates that ref a cursor field latest_event_timestamp
+# doesn't register (it only provides cursor.last_timestamp, not the
+# time_window-only cursor.window_start).
 
 ! exec skopos validate -i spec.yml
 ! stderr .
-stdout 'does not match the active progress strategy'
+stdout 'cursor field "window_start" is not provided by the active pagination/progress strategy'
 
 -- spec.yml --
 ir_version: "1"
@@ -14,7 +16,7 @@ requests:
   - method: GET
     path: /api/v1/events
     query:
-      since: {from_progress: window_start}
+      since: {ref: cursor.window_start}
 response:
   decode: json
   events_at: response.body.events

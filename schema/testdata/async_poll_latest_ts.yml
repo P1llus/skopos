@@ -29,7 +29,7 @@ requests:
     path: /api/v1/exports
     body:
       json:
-        since: {from_progress: latest_timestamp}
+        since: {ref: cursor.last_timestamp}
     expect_status: [202]
 
   - id: poll

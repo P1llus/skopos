@@ -31,8 +31,8 @@ requests:
   - method: GET
     path: /scroll_id/scroll
     query:
-      since: {from_progress: latest_timestamp}
-      scroll: {from_pagination: scroll_id}
+      since: {ref: cursor.last_timestamp}
+      scroll: {ref: cursor.scroll_id}
 
 response:
   decode: json

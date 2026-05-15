@@ -43,8 +43,8 @@ type stepResult struct {
 // step and ONLY when the active pagination strategy carries `send_as`
 // (cursor_token / scroll_id). When set AND the template did NOT itself
 // declare the slot (req.Query / req.Headers key absent), executeRequest
-// writes scope.fromPagination[inject.role] into the slot — the implicit
-// form of `send_as`. See the paginationAutoInjector contract in pagination.go.
+// writes scope.cursor[inject.role] into the slot — the implicit form of
+// `send_as`. See the paginationAutoInjector contract in pagination.go.
 func (s *scope) executeRequest(ctx context.Context, client *http.Client, req schema.Request, trace *httpTrace, inject *autoInjectSlot) (*stepResult, error) {
 	u, err := s.buildURL(req)
 	if err != nil {
@@ -68,11 +68,11 @@ func (s *scope) executeRequest(ctx context.Context, client *http.Client, req sch
 	// Implicit `send_as` lowering for the query slot. Only fires when the
 	// caller flagged this as the producer step AND the template did NOT
 	// declare the slot key itself — detection is by IR presence
-	// (req.Query[name]) so a first-iteration nil cursor doesn't get
+	// (req.Query[name]) so a first-iteration absent cursor doesn't get
 	// double-handled. The explicit form (template declares the key) wins;
 	// the runtime skips auto-injection in that case.
 	if inject != nil && inject.kind == "query" && !queryDeclared(req, inject.name) {
-		if v, ok := s.fromPagination[inject.role]; ok && v != nil {
+		if v, ok := s.cursor[inject.role]; ok && v != nil {
 			q.Set(inject.name, toString(v))
 		}
 	}
@@ -126,7 +126,7 @@ func (s *scope) executeRequest(ctx context.Context, client *http.Client, req sch
 	// per RFC 7230 §3.2; http.CanonicalHeaderKey is the standard
 	// normalisation).
 	if inject != nil && inject.kind == "header" && !headerDeclared(req, inject.name) {
-		if v, ok := s.fromPagination[inject.role]; ok && v != nil {
+		if v, ok := s.cursor[inject.role]; ok && v != nil {
 			httpReq.Header.Set(inject.name, toString(v))
 		}
 	}

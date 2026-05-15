@@ -153,8 +153,8 @@ func TestRedactValue_ShapeOnly(t *testing.T) {
 	}{
 		{"zero", schema.Value{IsZero: true}, "<zero>"},
 		{"now", schema.Value{Now: &schema.NowValue{}}, "<now>"},
-		{"from_pagination", vFromPag("token"), "<from_pagination:token>"},
-		{"from_progress", vFromProg("latest_timestamp"), "<from_progress:latest_timestamp>"},
+		{"ref_cursor_token", vRef("cursor.token"), "<ref cursor.token>"},
+		{"ref_cursor_last_timestamp", vRef("cursor.last_timestamp"), "<ref cursor.last_timestamp>"},
 		{"format", vFormat("rfc3339", vRef("cursor.last_timestamp")), "<format:rfc3339>"},
 	}
 	for _, tc := range tests {

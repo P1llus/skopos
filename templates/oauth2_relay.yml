@@ -60,7 +60,7 @@ requests:
           }
         variables:
           object:
-            after: {from_pagination: relay_cursor}
+            after: {ref: cursor.after}
             first: {ref: state.page_size}
 
 response:

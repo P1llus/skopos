@@ -31,7 +31,7 @@ requests:
     path: /api/v1/segments
     query:
       partition: {format: string, value: {ref: cursor.next_partition_id, default: 0}}
-      since: {from_progress: latest_timestamp}
+      since: {ref: cursor.last_timestamp}
     extract:
       - name: next_partition_id
         from: response.body.next_partition_id

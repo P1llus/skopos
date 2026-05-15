@@ -348,7 +348,7 @@ func bearerSimpleDoc(baseURL, token string) *schema.Doc {
 			Method: "GET",
 			Path:   ptrValue(vStr("/api/v1/events")),
 			Query: map[string]schema.Value{
-				"since": vFromProg("latest_timestamp"),
+				"since": vRef("cursor.last_timestamp"),
 			},
 		}},
 		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
@@ -375,7 +375,7 @@ func cursorTokenDoc(baseURL, token string) *schema.Doc {
 			Method: "GET",
 			Path:   ptrValue(vStr("/api/v1/findings")),
 			Query: map[string]schema.Value{
-				"cursor": vFromPag("token"),
+				"cursor": vRef("cursor.token"),
 			},
 		}},
 		Response: schema.Response{Decode: "json", EventsAt: mustPath("response.body.findings")},

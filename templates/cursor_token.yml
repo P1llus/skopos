@@ -1,7 +1,7 @@
 # cursor_token — opaque cursor token pagination.
 #
 # Demonstrates: pagination.cursor_token. The server returns a cursor in the
-# response body; the next request echoes it back via {from_pagination: ...}.
+# response body; the next request echoes it back via {ref: cursor.token}.
 # Termination is implicit when the cursor field is absent.
 
 ir_version: "1"
@@ -32,7 +32,7 @@ requests:
   - method: GET
     path: /cursor_token/findings
     query:
-      cursor: {from_pagination: token}
+      cursor: {ref: cursor.token}
       limit: {format: string, value: {ref: state.page_size}}
 
 response:

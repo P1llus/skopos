@@ -30,7 +30,7 @@ func TestStatelessProgress(t *testing.T) {
 }
 
 // TestLatestTimestampProgress_SeedFirstRun: no cursor.last_timestamp + an
-// initial.lookback → fromProgress[latest_timestamp] is "now − lookback".
+// initial.lookback → cursor.last_timestamp is "now − lookback".
 func TestLatestTimestampProgress_SeedFirstRun(t *testing.T) {
 	p := &latestTimestampProgress{cfg: &schema.TimestampProgress{
 		EventTime: schema.EventTime{Path: mustPath("created_at")},
@@ -44,16 +44,13 @@ func TestLatestTimestampProgress_SeedFirstRun(t *testing.T) {
 	}
 	// fixedNow = 2026-05-12T12:00:00Z → 24h earlier = 2026-05-11T12:00:00Z
 	want := "2026-05-11T12:00:00Z"
-	if got := s.fromProgress["latest_timestamp"]; got != want {
-		t.Errorf("fromProgress[latest_timestamp] = %v, want %v", got, want)
-	}
 	if got := s.cursor["last_timestamp"]; got != want {
 		t.Errorf("cursor.last_timestamp = %v, want %v (initial-lookback persists)", got, want)
 	}
 }
 
 // TestLatestTimestampProgress_SeedResume: cursor.last_timestamp already
-// set → fromProgress mirrors it. Initial.lookback is NOT re-applied (the
+// set → seed leaves it alone. Initial.lookback is NOT re-applied (the
 // window-start must be stable across resumes).
 func TestLatestTimestampProgress_SeedResume(t *testing.T) {
 	p := &latestTimestampProgress{cfg: &schema.TimestampProgress{
@@ -66,8 +63,8 @@ func TestLatestTimestampProgress_SeedResume(t *testing.T) {
 	if err := p.seed(s); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if got := s.fromProgress["latest_timestamp"]; got != "2026-05-12T10:00:00Z" {
-		t.Errorf("fromProgress[latest_timestamp] = %v, want resume value", got)
+	if got := s.cursor["last_timestamp"]; got != "2026-05-12T10:00:00Z" {
+		t.Errorf("cursor.last_timestamp = %v, want resume value", got)
 	}
 }
 
@@ -266,11 +263,13 @@ func TestUseNowProgress_AdvanceWithoutLookback(t *testing.T) {
 	}
 }
 
-// TestUseNowProgress_SeedMirrorsExistingCursor: on resume seed mirrors the
-// existing cursor.last_timestamp into fromProgress[latest_timestamp]; on
-// first drain (no cursor) fromProgress is the empty string. use_now has no
-// initial.lookback, so seed never writes the cursor itself.
-func TestUseNowProgress_SeedMirrorsExistingCursor(t *testing.T) {
+// TestUseNowProgress_SeedIsNoOp: seed never touches the cursor for use_now
+// (no initial.lookback in the schema). The cursor.last_timestamp visible to
+// templates via {ref: cursor.last_timestamp} is whatever advance wrote on
+// the previous drain (or absent on the bootstrap). Templates that need an
+// explicit since="" on the bootstrap call out a {default: ""} branch on
+// the ref.
+func TestUseNowProgress_SeedIsNoOp(t *testing.T) {
 	p := &useNowProgress{cfg: &schema.UseNowProgress{}}
 
 	t.Run("resume", func(t *testing.T) {
@@ -278,8 +277,8 @@ func TestUseNowProgress_SeedMirrorsExistingCursor(t *testing.T) {
 		if err := p.seed(s); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		if got := s.fromProgress["latest_timestamp"]; got != "2026-05-12T10:00:00Z" {
-			t.Errorf("fromProgress[latest_timestamp] = %v, want resume value", got)
+		if got := s.cursor["last_timestamp"]; got != "2026-05-12T10:00:00Z" {
+			t.Errorf("cursor.last_timestamp = %v, want resume value preserved", got)
 		}
 	})
 
@@ -288,19 +287,17 @@ func TestUseNowProgress_SeedMirrorsExistingCursor(t *testing.T) {
 		if err := p.seed(s); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		if got := s.fromProgress["latest_timestamp"]; got != "" {
-			t.Errorf("fromProgress[latest_timestamp] = %v, want empty string on first drain", got)
-		}
 		if _, ok := s.cursor["last_timestamp"]; ok {
 			t.Errorf("seed wrote cursor.last_timestamp on first drain (use_now has no initial.lookback)")
 		}
 	})
 }
 
-// TestUseNowProgress_FromProgressResolvesNextDrain pins the multi-drain
-// shape: seed → advance → re-seed simulates the next drain; the second
-// seed's fromProgress[latest_timestamp] equals the advance-written value.
-func TestUseNowProgress_FromProgressResolvesNextDrain(t *testing.T) {
+// TestUseNowProgress_AdvancePersistsNextDrain pins the multi-drain shape:
+// seed → advance → re-seed simulates the next drain; the second seed
+// preserves the advance-written value (seed is a no-op, advance is the
+// only writer).
+func TestUseNowProgress_AdvancePersistsNextDrain(t *testing.T) {
 	lookback := vStr("5m")
 	p := &useNowProgress{cfg: &schema.UseNowProgress{Lookback: &lookback}}
 	s := newTestScope(t, nil, nil)
@@ -308,8 +305,8 @@ func TestUseNowProgress_FromProgressResolvesNextDrain(t *testing.T) {
 	if err := p.seed(s); err != nil {
 		t.Fatalf("seed-1: %v", err)
 	}
-	if got := s.fromProgress["latest_timestamp"]; got != "" {
-		t.Errorf("first-drain fromProgress = %v, want empty", got)
+	if _, ok := s.cursor["last_timestamp"]; ok {
+		t.Errorf("first-drain seed wrote cursor.last_timestamp; expected absent")
 	}
 	if err := p.advance(s, nil); err != nil {
 		t.Fatalf("advance: %v", err)
@@ -319,19 +316,17 @@ func TestUseNowProgress_FromProgressResolvesNextDrain(t *testing.T) {
 		t.Fatalf("advance wrote %v, want 2026-05-12T11:55:00Z", advanced)
 	}
 
-	// Re-seed (simulates the next Drain entering against the same scope).
 	if err := p.seed(s); err != nil {
 		t.Fatalf("seed-2: %v", err)
 	}
-	if got := s.fromProgress["latest_timestamp"]; got != advanced {
-		t.Errorf("drain-2 fromProgress[latest_timestamp] = %v, want previous advance %v", got, advanced)
+	if got := s.cursor["last_timestamp"]; got != advanced {
+		t.Errorf("drain-2 cursor.last_timestamp = %v, want previous advance %v (seed must not clobber)", got, advanced)
 	}
 }
 
 // TestMaxEventFieldProgress_SeedFirstRun: no cursor.last_timestamp + an
-// initial.lookback → fromProgress[latest_timestamp] is "now − lookback" AND
-// the cursor is seeded so the first since=<...> matches the persisted
-// high-water mark.
+// initial.lookback → seed writes "now − lookback" to cursor.last_timestamp
+// so the first since=<...> matches the persisted high-water mark.
 func TestMaxEventFieldProgress_SeedFirstRun(t *testing.T) {
 	p := &maxEventFieldProgress{cfg: &schema.TimestampProgress{
 		EventTime: schema.EventTime{Path: mustPath("created_at")},
@@ -345,16 +340,13 @@ func TestMaxEventFieldProgress_SeedFirstRun(t *testing.T) {
 	}
 	// fixedNow = 2026-05-12T12:00:00Z → 24h earlier = 2026-05-11T12:00:00Z.
 	want := "2026-05-11T12:00:00Z"
-	if got := s.fromProgress["latest_timestamp"]; got != want {
-		t.Errorf("fromProgress[latest_timestamp] = %v, want %v", got, want)
-	}
 	if got := s.cursor["last_timestamp"]; got != want {
 		t.Errorf("cursor.last_timestamp = %v, want %v (initial-lookback persists)", got, want)
 	}
 }
 
 // TestMaxEventFieldProgress_SeedResume: cursor.last_timestamp already set →
-// fromProgress mirrors it. initial.lookback is NOT re-applied (the
+// seed leaves it alone. initial.lookback is NOT re-applied (the
 // window-start must be stable across resumes).
 func TestMaxEventFieldProgress_SeedResume(t *testing.T) {
 	p := &maxEventFieldProgress{cfg: &schema.TimestampProgress{
@@ -367,8 +359,8 @@ func TestMaxEventFieldProgress_SeedResume(t *testing.T) {
 	if err := p.seed(s); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if got := s.fromProgress["latest_timestamp"]; got != "2026-05-12T10:00:00Z" {
-		t.Errorf("fromProgress[latest_timestamp] = %v, want resume value", got)
+	if got := s.cursor["last_timestamp"]; got != "2026-05-12T10:00:00Z" {
+		t.Errorf("cursor.last_timestamp = %v, want resume value preserved", got)
 	}
 }
 
@@ -532,7 +524,7 @@ func TestEndToEnd_MaxEventField(t *testing.T) {
 	}
 }
 
-// maxEventFieldDoc builds a minimal Doc: GET with since=<from_progress
+// maxEventFieldDoc builds a minimal Doc: GET with since={ref: cursor.last_timestamp
 // latest_timestamp> in the query, pagination.none, max_event_field with a 24h
 // initial lookback.
 func maxEventFieldDoc(baseURL string) *schema.Doc {
@@ -547,7 +539,7 @@ func maxEventFieldDoc(baseURL string) *schema.Doc {
 			Method: "GET",
 			Path:   ptrValue(vStr("/api/v1/events")),
 			Query: map[string]schema.Value{
-				"since": vFromProg("latest_timestamp"),
+				"since": vRef("cursor.last_timestamp"),
 			},
 		}},
 		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
@@ -560,8 +552,8 @@ func maxEventFieldDoc(baseURL string) *schema.Doc {
 }
 
 // TestTimeWindowProgress_SeedFirstDrain: no cursor → start = now() -
-// initial_offset, end = now(); both exposed via fromProgress AND persisted to
-// cursor under the configured format (default rfc3339).
+// initial_offset, end = now(); both written directly to cursor under the
+// configured format (default rfc3339).
 func TestTimeWindowProgress_SeedFirstDrain(t *testing.T) {
 	p := &timeWindowProgress{cfg: &schema.TimeWindowProgress{
 		InitialOffset: vStr("24h"),
@@ -573,14 +565,8 @@ func TestTimeWindowProgress_SeedFirstDrain(t *testing.T) {
 	// fixedNow = 2026-05-12T12:00:00Z; lookback 24h → 2026-05-11T12:00:00Z.
 	wantStart := "2026-05-11T12:00:00Z"
 	wantEnd := "2026-05-12T12:00:00Z"
-	if got := s.fromProgress["window_start"]; got != wantStart {
-		t.Errorf("fromProgress[window_start] = %v, want %v", got, wantStart)
-	}
-	if got := s.fromProgress["window_end"]; got != wantEnd {
-		t.Errorf("fromProgress[window_end] = %v, want %v", got, wantEnd)
-	}
 	if got := s.cursor["window_start"]; got != wantStart {
-		t.Errorf("cursor.window_start = %v, want %v (cursor must mirror fromProgress)", got, wantStart)
+		t.Errorf("cursor.window_start = %v, want %v", got, wantStart)
 	}
 	if got := s.cursor["window_end"]; got != wantEnd {
 		t.Errorf("cursor.window_end = %v, want %v", got, wantEnd)
@@ -603,12 +589,12 @@ func TestTimeWindowProgress_SeedResume(t *testing.T) {
 	if err := p.seed(s); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if got := s.fromProgress["window_start"]; got != "2026-05-12T09:00:00Z" {
-		t.Errorf("fromProgress[window_start] = %v, want carry-forward value", got)
+	if got := s.cursor["window_start"]; got != "2026-05-12T09:00:00Z" {
+		t.Errorf("cursor.window_start = %v, want carry-forward value", got)
 	}
 	// window_end refreshes against fixedNow (12:00Z), widening the window.
-	if got := s.fromProgress["window_end"]; got != "2026-05-12T12:00:00Z" {
-		t.Errorf("fromProgress[window_end] = %v, want fixedNow", got)
+	if got := s.cursor["window_end"]; got != "2026-05-12T12:00:00Z" {
+		t.Errorf("cursor.window_end = %v, want fixedNow", got)
 	}
 }
 
@@ -652,16 +638,16 @@ func TestTimeWindowProgress_AdvanceThenSeed_NextDrain(t *testing.T) {
 	// window_start is now what was window_end on drain-1 (fixedNow). On the
 	// same clock, the new window collapses to zero width — which is the
 	// correct "no time has passed, no new events" behaviour.
-	if got := s.fromProgress["window_start"]; got != "2026-05-12T12:00:00Z" {
-		t.Errorf("drain-2 fromProgress[window_start] = %v, want previous end %v", got, "2026-05-12T12:00:00Z")
+	if got := s.cursor["window_start"]; got != "2026-05-12T12:00:00Z" {
+		t.Errorf("drain-2 cursor.window_start = %v, want previous end %v", got, "2026-05-12T12:00:00Z")
 	}
-	if got := s.fromProgress["window_end"]; got != "2026-05-12T12:00:00Z" {
-		t.Errorf("drain-2 fromProgress[window_end] = %v, want fixedNow", got)
+	if got := s.cursor["window_end"]; got != "2026-05-12T12:00:00Z" {
+		t.Errorf("drain-2 cursor.window_end = %v, want fixedNow", got)
 	}
 }
 
 // TestTimeWindowProgress_Format_RFC3339Nano asserts the configured format
-// verb is applied to both the cursor and the fromProgress values.
+// verb is applied to the cursor values.
 func TestTimeWindowProgress_Format_RFC3339Nano(t *testing.T) {
 	p := &timeWindowProgress{cfg: &schema.TimeWindowProgress{
 		InitialOffset: vStr("1h"),
@@ -675,14 +661,14 @@ func TestTimeWindowProgress_Format_RFC3339Nano(t *testing.T) {
 	// the contract under test is "the format verb runs", so assert against
 	// the rendered form rather than spying on the verb.
 	wantStart := "2026-05-12T11:00:00Z"
-	if got := s.fromProgress["window_start"]; got != wantStart {
-		t.Errorf("fromProgress[window_start] = %v (%T), want %v", got, got, wantStart)
+	if got := s.cursor["window_start"]; got != wantStart {
+		t.Errorf("cursor.window_start = %v (%T), want %v", got, got, wantStart)
 	}
 }
 
 // TestTimeWindowProgress_Format_UnixSeconds verifies a numeric verb stores
-// int64s in both cursor and fromProgress so a body builder doing
-// {format: int, value: {from_progress: window_start}} sees a number.
+// int64s in the cursor so a body builder doing
+// {format: int, value: {ref: cursor.window_start}} sees a number.
 func TestTimeWindowProgress_Format_UnixSeconds(t *testing.T) {
 	p := &timeWindowProgress{cfg: &schema.TimeWindowProgress{
 		InitialOffset: vStr("1h"),
@@ -695,11 +681,11 @@ func TestTimeWindowProgress_Format_UnixSeconds(t *testing.T) {
 	// fixedNow = 2026-05-12T12:00:00Z → unix seconds = 1778587200.
 	const wantEndSec int64 = 1778587200
 	const wantStartSec int64 = wantEndSec - 3600
-	if got, ok := s.fromProgress["window_start"].(int64); !ok || got != wantStartSec {
-		t.Errorf("fromProgress[window_start] = %v (%T), want int64 %d", s.fromProgress["window_start"], s.fromProgress["window_start"], wantStartSec)
+	if got, ok := s.cursor["window_start"].(int64); !ok || got != wantStartSec {
+		t.Errorf("cursor.window_start = %v (%T), want int64 %d", s.cursor["window_start"], s.cursor["window_start"], wantStartSec)
 	}
-	if got, ok := s.fromProgress["window_end"].(int64); !ok || got != wantEndSec {
-		t.Errorf("fromProgress[window_end] = %v (%T), want int64 %d", s.fromProgress["window_end"], s.fromProgress["window_end"], wantEndSec)
+	if got, ok := s.cursor["window_end"].(int64); !ok || got != wantEndSec {
+		t.Errorf("cursor.window_end = %v (%T), want int64 %d", s.cursor["window_end"], s.cursor["window_end"], wantEndSec)
 	}
 }
 
@@ -717,18 +703,18 @@ func TestTimeWindowProgress_ForwardClockClamp(t *testing.T) {
 	if err := p.seed(s); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if got := s.fromProgress["window_start"]; got != "2026-05-12T13:00:00Z" {
-		t.Errorf("fromProgress[window_start] = %v, want carry-forward future timestamp", got)
+	if got := s.cursor["window_start"]; got != "2026-05-12T13:00:00Z" {
+		t.Errorf("cursor.window_start = %v, want carry-forward future timestamp", got)
 	}
-	if got := s.fromProgress["window_end"]; got != "2026-05-12T13:00:00Z" {
-		t.Errorf("fromProgress[window_end] = %v, want clamped-to-start", got)
+	if got := s.cursor["window_end"]; got != "2026-05-12T13:00:00Z" {
+		t.Errorf("cursor.window_end = %v, want clamped-to-start", got)
 	}
 }
 
 // TestEndToEnd_TimeWindow drives the time_window variant against a live
 // httptest server. Mirrors templates/post_json_body.yml: the
 // request is a POST whose JSON body carries from_date / to_date plucked
-// from {from_progress: window_start / window_end}. Two drains, asserting
+// from {ref: cursor.window_start / cursor.window_end}. Two drains, asserting
 // (a) drain-1 sends the initial [now-24h, now] window, (b) drain-2 sends
 // the resumed [previous-end, now] window after a clock tick, and (c) the
 // final snapshot carries window_start forward for the (hypothetical) third
@@ -812,7 +798,7 @@ func TestEndToEnd_TimeWindow(t *testing.T) {
 }
 
 // timeWindowDoc mirrors templates/post_json_body.yml: POST with
-// a JSON body whose from_date / to_date come from {from_progress: ...}.
+// a JSON body whose from_date / to_date come from {ref: cursor.window_*}.
 // Pagination is none so each drain runs exactly one iteration, keeping the
 // test focused on the time_window plumbing.
 func timeWindowDoc(baseURL string) *schema.Doc {
@@ -827,8 +813,8 @@ func timeWindowDoc(baseURL string) *schema.Doc {
 			Method: "POST",
 			Path:   ptrValue(vStr("/api/v1/search")),
 			Body: &schema.Body{JSON: map[string]schema.Value{
-				"from_date": vFromProg("window_start"),
-				"to_date":   vFromProg("window_end"),
+				"from_date": vRef("cursor.window_start"),
+				"to_date":   vRef("cursor.window_end"),
 			}},
 		}},
 		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
@@ -982,7 +968,7 @@ func TestAsyncJobProgress_OnCompleteLatestEventTimestamp_MissingEventTime(t *tes
 // fetch → on_complete loop against a live httptest server, asserting that
 // (a) the fetch body's max event timestamp lands in cursor.last_timestamp,
 // (b) the next drain's submit body carries that timestamp via
-// {from_progress: latest_timestamp}, and (c) the persisted snapshot mirrors
+// {ref: cursor.last_timestamp}, and (c) the persisted snapshot mirrors
 // the high-water mark.
 func TestEndToEnd_AsyncJob_LatestEventTimestamp(t *testing.T) {
 	var submitSinces []string
@@ -1086,7 +1072,7 @@ func asyncLatestEventTimestampDoc(baseURL string) *schema.Doc {
 				ID:           "submit",
 				Method:       "POST",
 				Path:         ptrValue(vStr("/api/v1/exports")),
-				Body:         &schema.Body{JSON: map[string]schema.Value{"since": vFromProg("latest_timestamp")}},
+				Body:         &schema.Body{JSON: map[string]schema.Value{"since": vRefDefault("cursor.last_timestamp", vStr(""))}},
 				ExpectStatus: []int{http.StatusAccepted},
 			},
 			{
