@@ -21,9 +21,9 @@ import (
 // expiry_buffer (or fetching a fresh token unconditionally when the grant
 // has no cache block).
 //
-// Supported grants: client_credentials and password_grant, both sharing the
-// <grant>.cache block (state.<store_in>; expiry tracked in
-// cursor.__oauth2_<store_in>_expires_at).
+// Each grant participates in the <grant>.cache slot: the access token
+// lives at state.<store_in>; its expiry timestamp at
+// cursor.__oauth2_<store_in>_expires_at.
 //
 // The token endpoint is fetched via the same *http.Client the runner uses
 // for the IR-described requests, so timeouts, transports, and proxies all

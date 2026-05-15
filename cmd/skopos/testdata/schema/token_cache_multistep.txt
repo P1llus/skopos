@@ -7,7 +7,8 @@ exec skopos validate -i spec.yml
 
 -- spec.yml --
 # auth.oauth2.client_credentials with cache, multi-step with fan_out.
-# Validator-surface coverage only: the runner does not yet execute fan_out.
+# Validator-surface fixture: exercises the OAuth2-cache + fan_out checks
+# in schema/validate.go without involving the runner.
 ir_version: "1"
 
 state:

@@ -110,8 +110,8 @@ func (m *MemoryStore) Save(s Snapshot) error { m.snap = s; return nil }
 //     authors who need cross-iteration access must extract a field into
 //     state or cursor.
 //
-//   - item:           PER-FAN-OUT-ITERATION (unused in v0). Reserved for
-//     fan_out's per-item binding.
+//   - item:           PER-FAN-OUT-ITERATION. Reserved for fan_out's
+//     per-item binding.
 //
 //   - body:           SCOPED to the complete_when predicate evaluation in
 //     async_job. Outside that narrow window the field is unset.
@@ -130,7 +130,7 @@ type scope struct {
 	cursor  map[string]any
 	extract map[string]any
 	steps   map[string]any // step id → decoded body
-	item    any            // per-item binding when inside fan_out (unused v0)
+	item    any            // per-item binding when inside fan_out
 	body    any            // active complete_when body (unused outside the predicate)
 
 	// Active pagination/progress signals exposed to Value via

@@ -6,8 +6,8 @@ exec skopos validate -i spec.yml
 ! stdout .
 
 -- spec.yml --
-# fan_out per-item iteration. Validator-surface coverage only — the runner
-# does not yet implement per-item request dispatch.
+# fan_out per-item iteration. Validator-surface fixture: exercises the
+# fan_out checks in schema/validate.go without involving the runner.
 ir_version: "1"
 
 state:

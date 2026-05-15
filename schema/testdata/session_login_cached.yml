@@ -2,8 +2,8 @@ ir_version: "1"
 
 # Custom JSON login → cached token reused across iterations via the
 # step-level requests[].cache block. The non-OAuth2 counterpart of
-# auth.oauth2.<grant>.cache. Validator-surface coverage only — the runner
-# does not yet honour requests[].cache.
+# auth.oauth2.<grant>.cache. Validator-surface fixture: exercises the
+# checks in schema/validate.go without involving the runner.
 
 state:
   fields:

@@ -8,8 +8,8 @@
 //	Iteration { fetch → extract_events → advance_cursor → emit }
 //
 // — that the in-process runner (the client package) executes directly.
-// The schema is data-only; a future code-generating backend could lower
-// the same *schema.Doc to a different runtime without changes to schema/.
+// The schema is data-only: it does not import the runtime, so any
+// alternative consumer of *schema.Doc is decoupled from changes here.
 //
 // The canonical schema version for this package is "1". Documents with any
 // other ir_version are rejected by [Load] and [Parse].

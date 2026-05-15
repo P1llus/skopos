@@ -66,6 +66,7 @@ func AllScenarios() []Scenario {
 		AsyncPollLatestTS(),
 		AsyncPollStateless(),
 		EtagConditionalMiddle(),
+		SessionLoginCached(),
 	}
 }
 

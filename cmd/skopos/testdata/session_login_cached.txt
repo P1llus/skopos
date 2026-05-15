@@ -1,0 +1,52 @@
+# session_login_cached — POST /login → cached token reused on drain 2.
+# Verifies the runner honours requests[].cache: drain 1 captures the
+# response's session_token into state.session_token + cursor's expiry stamp;
+# drain 2 reads the cached value within its expiry_buffer and SKIPS the
+# /login step entirely (only /events is traced).
+# The spec is loaded live from the embedded template. Both endpoints are
+# rewritten to the per-scenario prefix; localhost:9999 is replaced with $URL.
+
+exec skopos template show -o spec.yml session_login_cached
+replace spec.yml /api/v1/login /session_login_cached/login
+replace spec.yml /api/v1/events /session_login_cached/events
+replace spec.yml http://localhost:9999 $URL
+
+# Drain 1: cold cache. Both /login (cache miss → fetch) and /events traced.
+exec skopos run -i spec.yml --once --state state.json --trace trace1.jsonl --out events1.jsonl
+normalize trace1.jsonl
+cmp trace1.jsonl want_trace1.jsonl
+cmp events1.jsonl want_events1.jsonl
+
+# Drain 1 captured the issued token into state.session_token and paired it
+# with an expiry stamp at cursor.__step_session_token_expires_at.
+grep '"session_token": "session-token-0001"' state.json
+grep '__step_session_token_expires_at' state.json
+
+# Drain 2: warm cache. /login MUST NOT appear in the trace — only /events.
+exec skopos run -i spec.yml --once --state state.json --trace trace2.jsonl --out events2.jsonl
+normalize trace2.jsonl
+cmp trace2.jsonl want_trace2.jsonl
+cmp events2.jsonl want_events2.jsonl
+
+# Cached token was reused, NOT re-issued — the testserver's login counter
+# never advanced past 0001, so state.session_token stays "session-token-0001".
+grep '"session_token": "session-token-0001"' state.json
+! grep 'session-token-0002' state.json
+
+-- want_trace1.jsonl --
+{"elapsed":"<scrubbed>","iteration":1,"method":"POST","request_body":"body 47 bytes, object-like","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>","Content-Type":"application/json"},"response_body":"body 57 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"login","url":"$URL_HOST/session_login_cached/login"}
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 348 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"events","url":"$URL_HOST/session_login_cached/events"}
+-- want_events1.jsonl --
+{"id":"evt-000001","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
+{"id":"evt-000002","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}
+{"id":"evt-000003","seq_num":3,"timestamp":"2026-01-01T00:00:02Z"}
+{"id":"evt-000004","seq_num":4,"timestamp":"2026-01-01T00:00:03Z"}
+{"id":"evt-000005","seq_num":5,"timestamp":"2026-01-01T00:00:04Z"}
+-- want_trace2.jsonl --
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 349 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"events","url":"$URL_HOST/session_login_cached/events"}
+-- want_events2.jsonl --
+{"id":"evt-000006","seq_num":6,"timestamp":"2026-01-01T00:00:00Z"}
+{"id":"evt-000007","seq_num":7,"timestamp":"2026-01-01T00:00:01Z"}
+{"id":"evt-000008","seq_num":8,"timestamp":"2026-01-01T00:00:02Z"}
+{"id":"evt-000009","seq_num":9,"timestamp":"2026-01-01T00:00:03Z"}
+{"id":"evt-000010","seq_num":10,"timestamp":"2026-01-01T00:00:04Z"}
