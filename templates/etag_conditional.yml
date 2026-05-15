@@ -52,7 +52,7 @@ requests:
     if:
       eq:
         path: state.etag_check
-        equal: true
+        value: true
     on_status:
       304: skip
 

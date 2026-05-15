@@ -136,7 +136,7 @@ func TestAsyncJobProgress_FirstPhaseAndShouldSkip(t *testing.T) {
 func TestAsyncJobProgress_PhaseTransition(t *testing.T) {
 	completeWhen := schema.Predicate{Eq: &schema.PredicateEq{
 		Path:  mustPath("response.body.status"),
-		Equal: vStr("complete"),
+		Value: vStr("complete"),
 	}}
 	cfg := &schema.AsyncJobProgress{
 		Submit: &schema.AsyncSubmitStep{
@@ -845,7 +845,7 @@ func constNow(t *testing.T, s string) func() time.Time {
 func TestAsyncJobProgress_OnCompleteLatestEventTimestamp(t *testing.T) {
 	completeWhen := schema.Predicate{Eq: &schema.PredicateEq{
 		Path:  mustPath("response.body.status"),
-		Equal: vStr("complete"),
+		Value: vStr("complete"),
 	}}
 	cfg := &schema.AsyncJobProgress{
 		Submit: &schema.AsyncSubmitStep{Step: "submit"},
@@ -1058,7 +1058,7 @@ func TestEndToEnd_AsyncJob_LatestEventTimestamp(t *testing.T) {
 func asyncLatestEventTimestampDoc(baseURL string) *schema.Doc {
 	completeWhen := schema.Predicate{Eq: &schema.PredicateEq{
 		Path:  mustPath("response.body.status"),
-		Equal: vStr("complete"),
+		Value: vStr("complete"),
 	}}
 	return &schema.Doc{
 		IRVersion: "1",

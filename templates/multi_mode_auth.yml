@@ -36,14 +36,14 @@ auth:
       - when:
           eq:
             path: state.auth_mode
-            equal: bearer
+            value: bearer
         auth:
           bearer:
             token: {ref: state.api_key}
       - when:
           eq:
             path: state.auth_mode
-            equal: api_key
+            value: api_key
         auth:
           api_key:
             header: X-API-Key

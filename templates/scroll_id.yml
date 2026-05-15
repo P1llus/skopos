@@ -47,7 +47,7 @@ pagination:
     complete_when:
       eq:
         path: response.body.request_metadata.complete
-        equal: "true"
+        value: "true"
 
 progress:
   latest_event_timestamp:

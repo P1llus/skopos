@@ -87,9 +87,9 @@ func (s *scope) compare(verb string, pe *schema.PredicateEq) (bool, error) {
 	if !ok {
 		lhs = nil
 	}
-	rhs, err := s.evalValue(pe.Equal)
+	rhs, err := s.evalValue(pe.Value)
 	if err != nil {
-		return false, fmt.Errorf("%s.equal: %w", verb, err)
+		return false, fmt.Errorf("%s.value: %w", verb, err)
 	}
 
 	if verb == "eq" {
@@ -118,7 +118,7 @@ func (s *scope) compare(verb string, pe *schema.PredicateEq) (bool, error) {
 //
 // The rule is JSON-loose: reflect.DeepEqual matches first, and otherwise
 // both sides are coerced to their string representation and compared. This
-// lets authors write {eq: {path: body.flag, equal: "true"}} when the API
+// lets authors write {eq: {path: body.flag, value: "true"}} when the API
 // returns either bool true or string "true" — the scroll_id fixture relies
 // on this, and changing it later would break that template.
 //
@@ -128,7 +128,7 @@ func (s *scope) compare(verb string, pe *schema.PredicateEq) (bool, error) {
 //     to the empty string, the integer zero, or the boolean false. A
 //     missing field is always semantically distinct from a present zero —
 //     authors who want "missing OR zero" should use {or: [{not: present},
-//     {eq: ..., equal: 0}]}.
+//     {eq: ..., value: 0}]}.
 //   - reflect.DeepEqual handles same-type comparisons (string=="x",
 //     int64==int64, []any deep-walk). The string fallback only fires when
 //     types differ AND both sides round-trip through toString.

@@ -711,7 +711,7 @@ func TestScrollIDPagination_AdvanceMissingPath(t *testing.T) {
 func TestScrollIDPagination_AdvanceCompleteWhenTrue(t *testing.T) {
 	complete := schema.Predicate{Eq: &schema.PredicateEq{
 		Path:  mustPath("response.body.request_metadata.complete"),
-		Equal: vStr("true"),
+		Value: vStr("true"),
 	}}
 	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
 		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
@@ -745,7 +745,7 @@ func TestScrollIDPagination_AdvanceCompleteWhenTrue(t *testing.T) {
 func TestScrollIDPagination_AdvanceCompleteWhenFalse(t *testing.T) {
 	complete := schema.Predicate{Eq: &schema.PredicateEq{
 		Path:  mustPath("response.body.request_metadata.complete"),
-		Equal: vStr("true"),
+		Value: vStr("true"),
 	}}
 	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
 		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
@@ -1375,7 +1375,7 @@ func TestEndToEnd_ScrollID_Explicit_Header(t *testing.T) {
 func scrollIDExplicitHeaderDoc(baseURL, token string) *schema.Doc {
 	complete := schema.Predicate{Eq: &schema.PredicateEq{
 		Path:  mustPath("response.body.request_metadata.complete"),
-		Equal: vStr("true"),
+		Value: vStr("true"),
 	}}
 	return &schema.Doc{
 		IRVersion: "1",

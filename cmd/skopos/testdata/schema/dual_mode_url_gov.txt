@@ -46,7 +46,7 @@ requests:
           - when:
               eq:
                 path: state.gov_cloud
-                equal: true
+                value: true
             value:
               concat:
                 - {ref: state.url}

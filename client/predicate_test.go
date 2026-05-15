@@ -10,19 +10,19 @@ import (
 
 // helpers for building schema.Predicate forms tersely.
 func pEq(path string, rhs schema.Value) schema.Predicate {
-	return schema.Predicate{Eq: &schema.PredicateEq{Path: mustPath(path), Equal: rhs}}
+	return schema.Predicate{Eq: &schema.PredicateEq{Path: mustPath(path), Value: rhs}}
 }
 func pGt(path string, rhs schema.Value) schema.Predicate {
-	return schema.Predicate{Gt: &schema.PredicateEq{Path: mustPath(path), Equal: rhs}}
+	return schema.Predicate{Gt: &schema.PredicateEq{Path: mustPath(path), Value: rhs}}
 }
 func pLt(path string, rhs schema.Value) schema.Predicate {
-	return schema.Predicate{Lt: &schema.PredicateEq{Path: mustPath(path), Equal: rhs}}
+	return schema.Predicate{Lt: &schema.PredicateEq{Path: mustPath(path), Value: rhs}}
 }
 func pGte(path string, rhs schema.Value) schema.Predicate {
-	return schema.Predicate{Gte: &schema.PredicateEq{Path: mustPath(path), Equal: rhs}}
+	return schema.Predicate{Gte: &schema.PredicateEq{Path: mustPath(path), Value: rhs}}
 }
 func pLte(path string, rhs schema.Value) schema.Predicate {
-	return schema.Predicate{Lte: &schema.PredicateEq{Path: mustPath(path), Equal: rhs}}
+	return schema.Predicate{Lte: &schema.PredicateEq{Path: mustPath(path), Value: rhs}}
 }
 func pPresent(path string) schema.Predicate {
 	p := mustPath(path)
