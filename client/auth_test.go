@@ -576,7 +576,7 @@ func TestOnStatus_InvalidateCache_MultiMode_ClearsOAuth2Branch(t *testing.T) {
 		Auth: schema.Auth{MultiMode: &schema.MultiModeAuth{
 			Branches: []schema.AuthBranch{
 				{
-					When: schema.Predicate{Eq: &schema.PredicateEq{Path: mustPath("state.auth_mode"), Equal: vStr("oauth2")}},
+					When: schema.Predicate{Eq: &schema.PredicateEq{Path: mustPath("state.auth_mode"), Value: vStr("oauth2")}},
 					Auth: schema.Auth{OAuth2: &schema.OAuth2Auth{
 						ClientCredentials: &schema.ClientCredentialsGrant{
 							TokenURL:     vRef("state.token_url"),
@@ -587,7 +587,7 @@ func TestOnStatus_InvalidateCache_MultiMode_ClearsOAuth2Branch(t *testing.T) {
 					}},
 				},
 				{
-					When: schema.Predicate{Eq: &schema.PredicateEq{Path: mustPath("state.auth_mode"), Equal: vStr("static")}},
+					When: schema.Predicate{Eq: &schema.PredicateEq{Path: mustPath("state.auth_mode"), Value: vStr("static")}},
 					Auth: schema.Auth{Bearer: &schema.BearerAuth{Token: vRef("state.static_token")}},
 				},
 			},

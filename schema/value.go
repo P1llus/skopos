@@ -835,7 +835,7 @@ func predicateContainsSecret(d *Doc, p Predicate) bool {
 		if pe == nil {
 			continue
 		}
-		if isSecretStatePath(d, pe.Path) || IsSecret(d, pe.Equal) {
+		if isSecretStatePath(d, pe.Path) || IsSecret(d, pe.Value) {
 			return true
 		}
 	}

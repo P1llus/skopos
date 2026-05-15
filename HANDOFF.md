@@ -146,168 +146,155 @@ moments:
 
 ### Slice number and title
 
-**Slice 6 — Predicate `equal` → `value`.**
+**Slice 7 — Move expiry slots out of `cursor`.**
 
 ### What this slice does
 
-Rename the right-hand-side of the `{eq | gt | lt | gte | lte: {path,
-…}}` predicate shape from `equal:` to `value:`. The struct is
-shared across all five comparison verbs (it's `PredicateEq` in Go
-for historical reasons — `eq` was the first verb); reading
-`{gt: {path: state.x, equal: 5}}` as "x greater-than-equal 5" is
-actively misleading. The Go field name renames from `Equal` to
-`Value` (cleaner) and the YAML/JSON tag from `equal` to `value`.
-See `SCHEMA_DESIGN.md` §1.8 for the target shape and §2 Slice 6 for
-the implementation outline.
+Today the OAuth2 token cache and the per-request `requests[].cache`
+both stash their "fresh until" timestamp at a framework-internal
+key inside the `cursor` namespace (the leading `__` prefix marks
+it as "do not touch from a template"). That leaks a runtime
+implementation detail into the author-facing snapshot — `cursor.*`
+is supposed to be the template's pagination/progress state and
+nothing else. Slice 7 moves the expiry slot into the `state`
+namespace, paired with the token it describes, and auto-registers
+it as a runtime-mutability `string` field so the validator and
+the snapshot codec treat it as first-class state. After this
+slice the only keys under `cursor.*` are the template-visible
+pagination / progress signals.
 
-This is cosmetic-only on the runtime side (the type is unchanged —
-it's the same `Value` it always was) but every template, fixture,
-test, and doc example flips in lockstep.
+See `SCHEMA_DESIGN.md` §1.9 for the target shape and §2 Slice 7
+for the implementation outline.
 
 ### Surfaces this slice touches
 
-- `schema/predicate.go` — rename `PredicateEq.Equal` to
-  `PredicateEq.Value`. Flip the YAML/JSON tags from
-  `equal` to `value`. The leading comment-block in the file shows
-  the five `{eq | gt | lt | gte | lte: {path, equal: …}}` examples
-  — those flip too. The `PredicateEq` doc comment and the inline
-  Go comment that calls out the historical naming need a quick
-  refresh (the historical naming reason becomes "renamed in slice
-  6"). Add codec rejection for the legacy `equal:` key with a
-  precise migration hint (`equal: was renamed to value: in slice 6`
-  or similar). Mirror the slice-3/4/5 pattern: a `<type>Raw`
-  shadow struct plus custom `UnmarshalYAML` / `UnmarshalJSON` that
-  reject `equal:` at parse time before the default decode runs.
-- `schema/validate.go` — every reference to `.Equal` becomes
-  `.Value`. Two call sites today: `checkPredicate`'s `Eq` arm
-  reads `p.Eq.Equal` for secret/coerce checks. Walk
-  `validate.go` and rewrite.
-- `schema/value.go` — `predicateContainsSecret(d, p)` walks
-  `p.Eq.Equal`; rename to `p.Eq.Value`. Same in
-  `IsSecret`-adjacent code. Audit the whole file for `.Equal`
-  references on `PredicateEq` values.
-- `client/predicate.go` — runtime predicate evaluation reads
-  `p.Eq.Equal` to evaluate the right-hand side. Rename.
-- `client/value.go` / `client/redact.go` — any code that walks
-  predicates touches the rename.
-- `templates/*.yml` — every template with an `eq: / gt: / lt: /
-  gte: / lte:` block. Grep `templates/` for `equal:` and flip each
-  occurrence. The verbs appear in `complete_when`, `if`, request
-  predicates, async-job `complete_when`, scroll_id `complete_when`,
-  etc.
-- `schema/testdata/*.yml` — same pattern. Round-trip fixtures must
-  stay byte-stable; if you flip an `equal:` to `value:`, the
-  golden needs the same flip.
-- `cmd/skopos/testdata/*.txt` — every embedded YAML in the schema /
-  errors goldens. Both the spec snippets and the diagnostic
-  messages may reference `equal`; flip both. Look out for
-  diagnostic strings ("eq.equal is required" or similar) that
-  would point at the new tag name.
-- Tests:
-  - `schema/fixtures_test.go` — flip every inline YAML
-    occurrence. Add a focused negative test
-    (`TestSliceSixEqualRenamedToValue` or similar): the codec must
-    reject `{eq: {path: …, equal: …}}` at parse time with an
-    error that names `value:` as the replacement. Mirror the
-    `TestSliceFour…` / `TestSliceFive…` shape — YAML + JSON,
-    struct-level + full-doc, plus a positive case that the new
-    `value:` form validates cleanly.
-  - `client/predicate_test.go` — every `Equal:` literal in a
-    `schema.PredicateEq` struct flips to `Value:`. Same for any
-    helper that constructs a predicate.
-  - `client/runner_test.go`, `client/pagination_test.go`,
-    `client/value_test.go`, etc. — grep for `Equal:` in struct
-    literals; rename. The test for the new
-    `TestEndToEnd_ScrollID_Explicit_Header` (slice 5) constructs
-    a `PredicateEq{Equal: vStr("true")}` — that becomes
-    `Value: vStr("true")`.
-- `docs/schema-reference.md` regenerates via
-  `go run ./tools/gen-schema-doc` since the struct field name
-  changed. Run the doc-gen and lock in the diff (the broader
-  doc cleanup is still slice 8 — keep the gen-schema-doc output
-  the only `docs/` change in this commit).
+- `client/oauth2.go` — every read/write against
+  `cursor[__oauth2_<store_in>_expires_at]` moves to
+  `state[<store_in>_expires_at]`. The cache helper that calls
+  through (look for the helper that resolves the expiry slot
+  given a `TokenCache.StoreIn`) needs to switch namespace. Audit
+  the file for both "token store" and "expiry store" call sites.
+- `client/requestcache.go` — same rename for the per-request
+  token cache. The `RequestCache` helper computes the expiry slot
+  key from `store_in`; flip the namespace there.
+- `client/state.go` — the auto-registration helper that today
+  injects the `__*_expires_at` slot into the cursor schema needs
+  to register it under the state schema instead (string,
+  runtime). The cursor schema's per-strategy slot table loses the
+  expiry slots entirely; the state schema picks them up.
+- `client/runner.go` — if there's any seed/snapshot wiring that
+  pre-populates the cursor with `__*_expires_at` keys it needs to
+  move to the state init path.
+- `schema/schema.go` / `schema/validate.go` — `cursorSchema`
+  registers any `cursor.__*` slots; remove those registrations.
+  The validator's `cache.store_in` collision check today rejects
+  declaring the token state name twice; extend it to also reject
+  an author declaring `<store_in>_expires_at` in `state.fields`
+  when a cache block is present. The state-schema builder
+  (`stateSchema`) gains an auto-registration arm that adds
+  `<store_in>_expires_at` as runtime / string for every
+  `requests[].cache.store_in` and every `auth.oauth2.cache.store_in`
+  (whichever the rest of the codebase already centralises through).
+- `schema/fixtures_test.go` — any inline YAML or struct literal
+  that reads `cursor.__…` flips to `state.<store_in>_expires_at`.
+  Add a focused `TestSliceSevenExpirySlotsMoved` mirroring
+  TestSliceFive / TestSliceSix: positive — a `cache: {store_in:
+  oauth2_token}` block validates with `state.oauth2_token_expires_at`
+  auto-registered; negative — declaring
+  `state.fields.oauth2_token_expires_at` alongside the same cache
+  is a validator collision; negative — `cursor.__oauth2_token_expires_at`
+  is no longer a valid ref (the validator reports "unknown cursor
+  field").
+- `client/requestcache_test.go` / `client/auth_test.go` — every
+  test that pokes at `__*_expires_at` flips to the new state
+  slot name. Run after the schema move to confirm the runtime
+  reads + writes consistently.
+- `cmd/skopos/testdata/state/*.json` (or wherever the snapshot
+  goldens live — `grep -rn '__.*expires_at' cmd/skopos/testdata/`
+  to find them) — regenerate any snapshot golden that captured
+  a token-cache expiry under the old key.
+- `schema/testdata/oauth2_relay.yml` — if it pins the expiry
+  key explicitly, flip; otherwise the change is internal.
+- `docs/schema-reference.md` regenerates if any exported struct
+  or YAML tag changes. The broader runtime-doc cleanup (stores,
+  runtime, snapshot table) is still slice 8 — keep `docs/`
+  changes to the gen-schema-doc output in this commit.
 
 ### Acceptance criteria
 
-1. `PredicateEq` carries a `Value Value` field (Go name and YAML/
-   JSON tag both `value`). No `Equal` field, no `equal` tag.
-2. The codec rejects YAML / JSON containing `equal:` under any
-   predicate verb with an error that names `value:` as the
-   replacement. Pin a test.
-3. Every template uses `value:` under predicate verbs.
-   `grep -rn 'equal:' templates/` returns nothing.
-4. Every fixture + golden uses `value:`. Round-trip stays
-   byte-stable.
-5. `go test ./...` green; `go vet ./...` clean;
-   `go run ./tools/gen-schema-doc -check` green.
+1. No `cursor.__*` keys remain in `client/`, `schema/`,
+   templates, fixtures, or goldens. `grep -rn 'cursor\.__\|"__.*expires_at"'`
+   returns nothing under those trees.
+2. `state.<store_in>_expires_at` is auto-registered as a runtime
+   `string` state field whenever an OAuth2 or request cache block
+   declares `store_in: <name>`. A test pins the auto-registration.
+3. The validator's `cache.store_in` collision check also rejects
+   an author-declared `state.fields.<store_in>_expires_at` (or
+   equivalent — the rejection message names the colliding cache).
+4. `go test ./...` green; `go vet ./...` clean;
+   `go run ./tools/gen-schema-doc -check` green;
+   `go test -tags integration ./cmd/skopos/...` green.
+5. Smoke-test `oauth2_client_credentials`, `oauth2_relay`, and
+   `session_login_cached` (the templates that exercise a token
+   cache) end-to-end against the testserver. `snapshot.json` (or
+   whatever the runtime persists) shows the expiry under
+   `state.*` not `cursor.*`.
 6. `ir_version` stays `"1"`.
 
 ### Out of scope for this slice
 
-- Do not rename the Go type `PredicateEq` itself (it serves as
-  the shared `{path, value}` shape for eq / gt / lt / gte / lte).
-  The plan calls that a cosmetic Go rename that can land
-  alongside slice 6 or separately — keep it separate to keep this
-  slice tight.
-- Do not move expiry slots out of `cursor.__…` — slice 7.
-- Do not touch `docs/` beyond `schema-reference.md` regeneration
-  — broader doc cleanup is slice 8.
+- Do not touch any author-facing cursor slot — only the
+  framework-internal `__*_expires_at` keys move. `cursor.token`,
+  `cursor.scroll_id`, `cursor.page`, etc. all stay where they are.
+- Do not rewrite `docs/runtime.md` / `docs/stores.md` beyond what
+  the rename forces — broader doc cleanup is slice 8.
 - Do not collapse `state` and `cursor` — slice 9 (deferred).
 
 If any of those become unavoidable, **stop and ask**.
 
 ### Notes / open questions for this agent
 
-- **Slice 5 grounding (what landed in the previous commit).**
-  - `schema.CursorTokenPagination` and `schema.ScrollIDPagination`
-    no longer carry `SendAs`. The codec rejects leftover
-    `send_as:` keys at parse time with hints pointing at the
-    explicit-wire form.
-  - `client/pagination.go` no longer exposes the
-    `paginationAutoInjector` interface, the `autoInjectSlot`
-    type, or `parseSendAs`. `client/http.go::executeRequest` has
-    no `inject` parameter and no implicit lowering branches.
-    `client/runner.go::runIteration` no longer threads any
-    pagination injection through `executeRequest`.
-  - `templates/cursor_token.yml` and
-    `templates/oauth2_client_credentials.yml` wire
-    `query.cursor: {ref: cursor.token, default: ""}` so the
-    bootstrap iteration still sends `cursor=` (empty);
-    `templates/scroll_id.yml` wires
-    `query.scroll: {ref: cursor.scroll_id}` (no default — the
-    bootstrap iteration omits the slot so the server opens a
-    fresh scroll). The pattern to copy when a slice-6 fixture
-    needs `default: ""` on the bootstrap wire shape.
-  - The `cursor_token_implicit` fixture + golden were deleted in
-    slice 5 (the implicit form ceased to exist). End-to-end
-    runtime tests `TestEndToEnd_CursorToken_Explicit` /
-    `TestEndToEnd_ScrollID_Explicit_Header` replace the deleted
-    implicit / explicit-wins triad. The
-    `TestEndToEnd_ScrollID_Explicit_Header` doc constructs a
-    `PredicateEq{Equal: vStr("true")}` — that will flip to
-    `Value: vStr("true")` in slice 6.
-- **`PredicateEq` is shared across five verbs.** Don't get
-  fooled by the Go type name into thinking the rename only
-  affects `eq:`. Every `{gt | lt | gte | lte | eq: {path, equal}}`
-  block in every template / fixture / test / doc needs the rename.
+- **Slice 6 grounding (what landed in the previous commit).**
+  - `schema.PredicateEq` now carries a `Value Value` field
+    (Go name) with `yaml:"value" json:"value"` tags. The legacy
+    `Equal` field and `equal:` tag are gone.
+  - `PredicateEq` has custom `UnmarshalYAML` /
+    `UnmarshalJSON` (the shadow-struct pattern from slice 3–5)
+    that reject the legacy `equal:` key at parse time with
+    `"predicate eq.equal was renamed to eq.value in slice 6
+    (shared across eq / gt / lt / gte / lte); use value: instead"`.
+    The const lives at `schema/predicate.go::predicateEqEqualRenamedHint`
+    if you need to reference it from a slice-7 test.
+  - Every template, every `schema/testdata/*.yml`, and every
+    `cmd/skopos/testdata/{schema,errors}/*.txt` now uses
+    `value:` under predicate verbs.
+  - Validator path strings ended `.eq.equal` / `.gt.equal` etc.
+    today; they read `.eq.value` / `.gt.value` after slice 6.
+    If any slice-7 validator error message embeds a path-string
+    pointing at a predicate site, follow the new convention.
+- **`auth.multi_mode` token caches.** The OAuth2 branch of
+  `multi_mode_auth.yml` doesn't currently use a cache, but if
+  slice 7 needs to construct a test with a cache *under*
+  multi-mode (e.g. to verify the auto-register fires per
+  branch), the predicate verb in `auth_test.go` has already
+  flipped — copy `PredicateEq{Path: …, Value: vStr("…")}`
+  from there, not the old `Equal:` form.
 - **Codec rejection wording.** The HANDOFF / SCHEMA_DESIGN.md
-  voice is "X was renamed in slice <N>; use Y instead". Mirror the
-  slice-3 / -4 / -5 hint shape so the migration hints stay
-  consistent.
+  voice is "X was renamed in slice <N>; use Y instead". Mirror
+  the slice-3 / -4 / -5 / -6 hint shape if you add any new
+  parse-time hints in slice 7 (e.g. if you reject a leftover
+  `cursor.__*_expires_at` reference).
 - **Pre-existing `TestScripts/post_json_body` flake** still
-  reproduces (~2/5 runs). Confirmed unchanged by slice 5.
+  reproduces (~2/5 runs). Confirmed unchanged by slice 6.
   Continue to leave it for a future slice.
 
 ### When you finish
 
-1. Update `SCHEMA_DESIGN.md` §5 with a "Slice 6 complete" row.
-2. Rewrite this "Current task" section for slice 7 using the
-   template at the bottom of this file. Slice 7 moves the
-   framework-internal expiry slots (`cursor.__oauth2_<store_in>_expires_at`
-   and `cursor.__step_<store_in>_expires_at`) out of the cursor
-   namespace and into `state.<store_in>_expires_at`, paired with
-   the token they describe. See `SCHEMA_DESIGN.md` §1.9 and §2
-   Slice 7 for the target shape.
+1. Update `SCHEMA_DESIGN.md` §5 with a "Slice 7 complete" row.
+2. Rewrite this "Current task" section for slice 8 using the
+   template at the bottom of this file. Slice 8 is the broader
+   doc / `schema-reference.md` cleanup — see `SCHEMA_DESIGN.md`
+   §2 Slice 8 for the target.
 3. Commit. Don't push.
 
 ---

@@ -41,7 +41,7 @@ requests:
         - not:
             eq:
               path: state.safe_mode
-              equal: true
+              value: true
         - present: state.api_key
     query:
       scroll: {ref: cursor.scroll_id}
@@ -57,24 +57,24 @@ pagination:
       or:
         - eq:
             path: response.body.meta.complete
-            equal: true
+            value: true
         - and:
             - gt:
                 path: response.body.meta.page_count
-                equal: 50
+                value: 50
             - lte:
                 path: response.body.meta.page_count
-                equal: 1000
+                value: 1000
             - gte:
                 path: response.body.meta.page_count
-                equal: 50
+                value: 50
             - lt:
                 path: response.body.meta.error_count
-                equal: 1
+                value: 1
             - not:
                 eq:
                   path: state.safe_mode
-                  equal: true
+                  value: true
 
 progress:
   stateless: {}

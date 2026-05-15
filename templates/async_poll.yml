@@ -83,7 +83,7 @@ progress:
       complete_when:
         eq:
           path: response.body.status
-          equal: complete
+          value: complete
       extract:
         result_url: {from: response.body.result_url}
     fetch:

@@ -249,14 +249,14 @@ func TestEvalValueSelect(t *testing.T) {
 	bearerBranch := schema.SelectBranch{
 		When: schema.Predicate{Eq: &schema.PredicateEq{
 			Path:  mustPath("state.mode"),
-			Equal: vStr("bearer"),
+			Value: vStr("bearer"),
 		}},
 		Value: vStr("bearer-path"),
 	}
 	apikeyBranch := schema.SelectBranch{
 		When: schema.Predicate{Eq: &schema.PredicateEq{
 			Path:  mustPath("state.mode"),
-			Equal: vStr("api_key"),
+			Value: vStr("api_key"),
 		}},
 		Value: vStr("apikey-path"),
 	}

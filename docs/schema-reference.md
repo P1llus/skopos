@@ -107,11 +107,11 @@ It is a discriminated union — exactly one form is active.
 
 Forms:
 
-	{eq:  {path: cursor.phase,  equal: "submit"}}
-	{gt:  {path: cursor.page,   equal: {ref: state.total_pages}}}
-	{lt:  {path: cursor.page,   equal: {ref: state.total_pages}}}
-	{gte: {path: state.retries, equal: 3}}
-	{lte: {path: state.retries, equal: 3}}
+	{eq:  {path: cursor.phase,  value: "submit"}}
+	{gt:  {path: cursor.page,   value: {ref: state.total_pages}}}
+	{lt:  {path: cursor.page,   value: {ref: state.total_pages}}}
+	{gte: {path: state.retries, value: 3}}
+	{lte: {path: state.retries, value: 3}}
 	{present: state.etag}
 	{and: [{eq: ...}, {present: ...}]}
 	{or:  [{eq: ...}, {eq: ...}]}
@@ -126,11 +126,11 @@ must surface a lowering error rather than silently coercing.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `Eq` | _(custom codec)_ | `*PredicateEq` | yes | Eq is the {eq: {path, equal}} form: equality comparison. |
-| `Gt` | _(custom codec)_ | `*PredicateEq` | yes | Gt is the {gt: {path, equal}} form: greater-than comparison. |
-| `Lt` | _(custom codec)_ | `*PredicateEq` | yes | Lt is the {lt: {path, equal}} form: less-than comparison. |
-| `Gte` | _(custom codec)_ | `*PredicateEq` | yes | Gte is the {gte: {path, equal}} form: greater-than-or-equal. |
-| `Lte` | _(custom codec)_ | `*PredicateEq` | yes | Lte is the {lte: {path, equal}} form: less-than-or-equal. |
+| `Eq` | _(custom codec)_ | `*PredicateEq` | yes | Eq is the {eq: {path, value}} form: equality comparison. |
+| `Gt` | _(custom codec)_ | `*PredicateEq` | yes | Gt is the {gt: {path, value}} form: greater-than comparison. |
+| `Lt` | _(custom codec)_ | `*PredicateEq` | yes | Lt is the {lt: {path, value}} form: less-than comparison. |
+| `Gte` | _(custom codec)_ | `*PredicateEq` | yes | Gte is the {gte: {path, value}} form: greater-than-or-equal. |
+| `Lte` | _(custom codec)_ | `*PredicateEq` | yes | Lte is the {lte: {path, value}} form: less-than-or-equal. |
 | `Present` | _(custom codec)_ | `*Path` | yes | Present is the {present: <path>} form: true when the path resolves to a non-nil value. |
 | `And` | _(custom codec)_ | `[]Predicate` | no | And is the {and: [...]} form: conjunction over its sub-predicates. |
 | `Or` | _(custom codec)_ | `[]Predicate` | no | Or is the {or: [...]} form: disjunction over its sub-predicates. |
@@ -141,15 +141,16 @@ must surface a lowering error rather than silently coercing.
 
 _Defined in `schema/predicate.go`._
 
-PredicateEq is the {<verb>: {path: <Path>, equal: <Value>}} shape, shared
-by eq / gt / lt / gte / lte. The field name "Equal" is historical (eq was
-the first verb) and reads as "the right-hand-side Value" for the
-comparison verbs.
+PredicateEq is the {<verb>: {path: <Path>, value: <Value>}} shape, shared
+by eq / gt / lt / gte / lte. The Go type name keeps the "Eq" prefix for
+historical reasons (eq was the first verb to use this shape); the right-
+hand-side field is named Value (renamed from Equal in slice 6) so the
+shape reads naturally under the ordered verbs too.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `Path` | `path` | `Path` | no | Path is the left-hand-side namespace-rooted locator. |
-| `Equal` | `equal` | `Value` | no | Equal is the right-hand-side Value compared against Path. |
+| `Value` | `value` | `Value` | no | Value is the right-hand-side Value compared against Path. |
 
 ## `Doc`
 

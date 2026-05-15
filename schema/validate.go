@@ -1335,23 +1335,23 @@ func (v *validator) checkPredicate(path string, p Predicate, namespace *ns, allo
 	switch {
 	case p.Eq != nil:
 		v.checkPathRef(path+".eq.path", p.Eq.Path, namespace, allowBody)
-		v.checkValue(path+".eq.equal", p.Eq.Equal, namespace, false)
+		v.checkValue(path+".eq.value", p.Eq.Value, namespace, false)
 
 	case p.Gt != nil:
 		v.checkPathRef(path+".gt.path", p.Gt.Path, namespace, allowBody)
-		v.checkValue(path+".gt.equal", p.Gt.Equal, namespace, false)
+		v.checkValue(path+".gt.value", p.Gt.Value, namespace, false)
 
 	case p.Lt != nil:
 		v.checkPathRef(path+".lt.path", p.Lt.Path, namespace, allowBody)
-		v.checkValue(path+".lt.equal", p.Lt.Equal, namespace, false)
+		v.checkValue(path+".lt.value", p.Lt.Value, namespace, false)
 
 	case p.Gte != nil:
 		v.checkPathRef(path+".gte.path", p.Gte.Path, namespace, allowBody)
-		v.checkValue(path+".gte.equal", p.Gte.Equal, namespace, false)
+		v.checkValue(path+".gte.value", p.Gte.Value, namespace, false)
 
 	case p.Lte != nil:
 		v.checkPathRef(path+".lte.path", p.Lte.Path, namespace, allowBody)
-		v.checkValue(path+".lte.equal", p.Lte.Equal, namespace, false)
+		v.checkValue(path+".lte.value", p.Lte.Value, namespace, false)
 
 	case p.Present != nil:
 		v.checkPathRef(path+".present", *p.Present, namespace, allowBody)

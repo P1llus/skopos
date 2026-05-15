@@ -381,7 +381,7 @@ func TestPredicateCodecs(t *testing.T) {
 		name string
 		yaml string
 	}{
-		{"eq", `{eq: {path: state.auth_mode, equal: bearer}}`},
+		{"eq", `{eq: {path: state.auth_mode, value: bearer}}`},
 		{"present", `{present: state.etag}`},
 		{"and", `{and: [{literal_bool: true}, {literal_bool: false}]}`},
 		{"or", `{or: [{literal_bool: true}, {literal_bool: false}]}`},
@@ -458,7 +458,7 @@ func TestCodecRegressions(t *testing.T) {
 
 	t.Run("predicate_multi_discriminator_rejected", func(t *testing.T) {
 		var p schema.Predicate
-		err := yaml.Unmarshal([]byte(`{eq: {path: state.x, equal: 1}, present: state.x}`), &p)
+		err := yaml.Unmarshal([]byte(`{eq: {path: state.x, value: 1}, present: state.x}`), &p)
 		if err == nil {
 			t.Fatalf("expected error for multi-key Predicate, got: %+v", p)
 		}
@@ -611,7 +611,7 @@ func TestCodecRegressions(t *testing.T) {
 
 	t.Run("predicate_eq_unknown_sibling_rejected", func(t *testing.T) {
 		var p schema.Predicate
-		err := yaml.Unmarshal([]byte(`{eq: {path: state.x, equal: 1}, prseent: state.x}`), &p)
+		err := yaml.Unmarshal([]byte(`{eq: {path: state.x, value: 1}, prseent: state.x}`), &p)
 		if err == nil {
 			t.Fatalf("expected error for eq+typo sibling, got: %+v", p)
 		}
@@ -813,11 +813,11 @@ func TestCodecRegressions(t *testing.T) {
 	})
 
 	// review-03: predicate comparison verbs (gt/lt/gte/lte) share the
-	// {path, equal} shape with eq and must round-trip byte-identically.
+	// {path, value} shape with eq and must round-trip byte-identically.
 	for _, verb := range []string{"gt", "lt", "gte", "lte"} {
 		verb := verb
 		t.Run("predicate_"+verb+"_roundtrip_yaml", func(t *testing.T) {
-			src := "{" + verb + ": {path: cursor.page, equal: 100}}"
+			src := "{" + verb + ": {path: cursor.page, value: 100}}"
 			var p schema.Predicate
 			if err := yaml.Unmarshal([]byte(src), &p); err != nil {
 				t.Fatalf("unmarshal: %v", err)
@@ -844,7 +844,7 @@ func TestCodecRegressions(t *testing.T) {
 		})
 
 		t.Run("predicate_"+verb+"_roundtrip_json", func(t *testing.T) {
-			src := `{"` + verb + `":{"path":"cursor.page","equal":100}}`
+			src := `{"` + verb + `":{"path":"cursor.page","value":100}}`
 			var p schema.Predicate
 			if err := json.Unmarshal([]byte(src), &p); err != nil {
 				t.Fatalf("unmarshal: %v", err)
@@ -1079,7 +1079,7 @@ requests:
     if:
       gt:
         path: state.threshold
-        equal: 0
+        value: 0
 response:
   decode: json
   events_at: response.body.events
@@ -1354,7 +1354,7 @@ pagination:
     complete_when:
       eq:
         path: response.body.done
-        equal: true
+        value: true
 progress:
   stateless: {}
 `
@@ -1412,7 +1412,7 @@ progress:
       complete_when:
         eq:
           path: response.body.status
-          equal: "complete"
+          value: "complete"
     on_complete:
       cursor_update:
         kind: use_now
@@ -1533,7 +1533,7 @@ pagination:
     complete_when:
       eq:
         path: response.other.x
-        equal: true
+        value: true
 progress:
   stateless: {}
 `
@@ -1602,7 +1602,7 @@ pagination:
     complete_when:
       eq:
         path: body.done
-        equal: true
+        value: true
 progress:
   stateless: {}
 `
@@ -1712,7 +1712,7 @@ pagination:
     complete_when:
       eq:
         path: body.done
-        equal: true
+        value: true
 progress:
   stateless: {}
 `
@@ -2743,6 +2743,108 @@ progress:
 		}
 		if len(errs) != 0 {
 			t.Errorf("explicit cursor wire should validate; got %+v", errs)
+		}
+	})
+}
+
+// TestSliceSixEqualRenamedToValue pins the slice-6 contract: the predicate
+// PredicateEq right-hand-side YAML/JSON tag is renamed from `equal:` to
+// `value:`. The codec rejects the legacy `equal:` key at parse time with a
+// migration hint pointing at the new tag, and the positive case round-trips
+// cleanly via the renamed field.
+func TestSliceSixEqualRenamedToValue(t *testing.T) {
+	mustErrContain := func(t *testing.T, err error, needle string) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("expected error containing %q; got nil", needle)
+		}
+		if !strings.Contains(err.Error(), needle) {
+			t.Errorf("expected error containing %q; got %v", needle, err)
+		}
+	}
+
+	// Each comparison verb shares the PredicateEq shape; legacy `equal:` is
+	// rejected under every verb with the same migration hint.
+	verbs := []string{"eq", "gt", "lt", "gte", "lte"}
+
+	for _, verb := range verbs {
+		verb := verb
+		t.Run(verb+"_legacy_equal_yaml_rejected_at_parse", func(t *testing.T) {
+			var p schema.Predicate
+			src := "{" + verb + ": {path: state.x, equal: 1}}"
+			err := yaml.Unmarshal([]byte(src), &p)
+			mustErrContain(t, err, "equal was renamed")
+			mustErrContain(t, err, "use value:")
+		})
+
+		t.Run(verb+"_legacy_equal_json_rejected_at_parse", func(t *testing.T) {
+			var p schema.Predicate
+			src := `{"` + verb + `":{"path":"state.x","equal":1}}`
+			err := json.Unmarshal([]byte(src), &p)
+			mustErrContain(t, err, "equal was renamed")
+			mustErrContain(t, err, "use value:")
+		})
+	}
+
+	// Struct-level codec also rejects `equal:` directly on PredicateEq.
+	t.Run("predicate_eq_struct_legacy_equal_yaml_rejected_at_parse", func(t *testing.T) {
+		var pe schema.PredicateEq
+		err := yaml.Unmarshal([]byte(`{path: state.x, equal: 1}`), &pe)
+		mustErrContain(t, err, "equal was renamed")
+		mustErrContain(t, err, "use value:")
+	})
+
+	t.Run("predicate_eq_struct_legacy_equal_json_rejected_at_parse", func(t *testing.T) {
+		var pe schema.PredicateEq
+		err := json.Unmarshal([]byte(`{"path":"state.x","equal":1}`), &pe)
+		mustErrContain(t, err, "equal was renamed")
+		mustErrContain(t, err, "use value:")
+	})
+
+	// Full-doc rejection: a predicate inside a complete spec is also caught
+	// at parse time before validation runs.
+	t.Run("legacy_equal_in_full_doc_rejected_at_parse", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    if:
+      eq:
+        path: state.mode
+        equal: "active"
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		_, err := schema.Parse([]byte(src))
+		mustErrContain(t, err, "equal was renamed")
+		mustErrContain(t, err, "use value:")
+	})
+
+	// Positive case: a predicate written with the new `value:` tag parses
+	// cleanly under every comparison verb, validates without diagnostics,
+	// and the runtime-facing PredicateEq.Value field carries the right Value.
+	t.Run("new_value_tag_accepted", func(t *testing.T) {
+		for _, verb := range verbs {
+			var p schema.Predicate
+			src := "{" + verb + ": {path: state.x, value: 1}}"
+			if err := yaml.Unmarshal([]byte(src), &p); err != nil {
+				t.Fatalf("%s: parse new value tag: %v", verb, err)
+			}
+			_, payload := p.Variant()
+			pe, ok := payload.(*schema.PredicateEq)
+			if !ok || pe == nil {
+				t.Fatalf("%s: expected *PredicateEq payload, got %T", verb, payload)
+			}
+			if pe.Value.LiteralInt == nil || *pe.Value.LiteralInt != 1 {
+				t.Errorf("%s: PredicateEq.Value did not round-trip the literal 1; got %+v", verb, pe.Value)
+			}
 		}
 	})
 }
