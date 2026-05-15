@@ -1,0 +1,84 @@
+# etag_conditional_middle — conditional middle step in a 3-step chain.
+# state.etag_check defaults to true so the middle step runs and returns
+# {"next_path": "/etag_conditional_middle/events"}. The final step's
+# select.branches arm picks steps.middle.body.next_path (present) and
+# fetches /etag_conditional_middle/events for the event payload. Only the
+# final step is marked produces_events: true — middle body is consulted
+# for the path only.
+
+replace spec.yml /api/v1/etag/probe /etag_conditional_middle/probe
+replace spec.yml /api/v1/etag/data /etag_conditional_middle/data
+replace spec.yml /api/v1/etag/fallback /etag_conditional_middle/fallback
+replace spec.yml http://localhost:9999 $URL
+exec skopos run -i spec.yml --once --trace trace.jsonl --out events.jsonl
+normalize trace.jsonl
+cmp trace.jsonl want_trace.jsonl
+cmp events.jsonl want_events.jsonl
+
+-- spec.yml --
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    etag_check:
+      type: bool
+      default: true
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  none: {}
+
+requests:
+  - id: probe
+    method: GET
+    path: /api/v1/etag/probe
+
+  - id: middle
+    method: GET
+    path: /api/v1/etag/data
+    if:
+      eq:
+        path: state.etag_check
+        equal: true
+    on_status:
+      304: skip
+
+  - id: events
+    method: GET
+    path:
+      select:
+        branches:
+          - when:
+              present: steps.middle.body.next_path
+            value:
+              ref: steps.middle.body.next_path
+        default: /api/v1/etag/fallback
+    produces_events: true
+
+response:
+  decode: json
+  events_at: items
+
+pagination:
+  none: {}
+
+progress:
+  stateless: {}
+
+error:
+  mode: standard
+-- want_trace.jsonl --
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1"},"response_body":"body 3 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"probe","url":"$URL_HOST/etag_conditional_middle/probe"}
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1"},"response_body":"body 48 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"middle","url":"$URL_HOST/etag_conditional_middle/data"}
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1"},"response_body":"body 347 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"events","url":"$URL_HOST/etag_conditional_middle/events"}
+-- want_events.jsonl --
+{"id":"evt-000001","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
+{"id":"evt-000002","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}
+{"id":"evt-000003","seq_num":3,"timestamp":"2026-01-01T00:00:02Z"}
+{"id":"evt-000004","seq_num":4,"timestamp":"2026-01-01T00:00:03Z"}
+{"id":"evt-000005","seq_num":5,"timestamp":"2026-01-01T00:00:04Z"}

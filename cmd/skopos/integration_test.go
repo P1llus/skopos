@@ -65,6 +65,7 @@ func TestScripts(t *testing.T) {
 				"expand":     cmdExpand,
 				"normalize":  cmdNormalize,
 				"replace":    cmdReplace,
+				"chomp":      cmdChomp,
 			},
 		}
 	}
@@ -175,6 +176,37 @@ func cmdReplace(ts *testscript.TestScript, neg bool, args []string) {
 	newVal := os.Expand(args[2], ts.Getenv)
 	result := strings.ReplaceAll(string(data), args[1], newVal)
 	ts.Check(os.WriteFile(path, []byte(result), 0o644))
+}
+
+// cmdChomp strips a single trailing newline from a file, in place. txtar
+// parsers always normalise a trailing newline onto every embedded file
+// (golang.org/x/tools/txtar's findFileMarker.fixNL helper), but a few of
+// the runtime artefacts skopos writes are deliberately not newline-
+// terminated — notably the state file (client/filestore.go trims the
+// trailing newline that json.Encoder.Encode appends). Use chomp on the
+// golden side before cmp so the comparison stays byte-exact:
+//
+//	exec skopos run -i spec.yml --state state.json
+//	chomp want_state.json
+//	cmp state.json want_state.json
+//
+// Usage:
+//
+//	chomp file
+func cmdChomp(ts *testscript.TestScript, neg bool, args []string) {
+	if neg {
+		ts.Fatalf("unsupported: ! chomp")
+	}
+	if len(args) != 1 {
+		ts.Fatalf("usage: chomp file")
+	}
+	path := ts.MkAbs(args[0])
+	data, err := os.ReadFile(path)
+	ts.Check(err)
+	if n := len(data); n > 0 && data[n-1] == '\n' {
+		data = data[:n-1]
+	}
+	ts.Check(os.WriteFile(path, data, 0o644))
 }
 
 // cmdNormalize scrubs volatile fields out of JSONL files so golden comparisons
