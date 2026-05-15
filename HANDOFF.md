@@ -146,196 +146,168 @@ moments:
 
 ### Slice number and title
 
-**Slice 5 — Delete `send_as` auto-injection.**
+**Slice 6 — Predicate `equal` → `value`.**
 
 ### What this slice does
 
-Remove `SendAs` from `CursorTokenPagination` and `ScrollIDPagination`
-and tear out the implicit-form auto-injector. After this slice the
-runner no longer fabricates a `query.<param>` / `header.<name>` slot
-on the producer step from the active pagination strategy — every
-template explicitly writes the cursor ref in its own `query:` /
-`headers:` / `body:` map (e.g. `cursor: {ref: cursor.token, default: ""}`
-for `cursor_token`; `X-Scroll-ID: {ref: cursor.scroll_id}` for
-`scroll_id`). The "explicit form wins" tiebreaker disappears with
-the auto-injector; per-template authoring is the only path. See
-`SCHEMA_DESIGN.md` §2 Slice 5 for the implementation outline and
-`§1.6` for the cursor-namespace names already in use after slice 4.
+Rename the right-hand-side of the `{eq | gt | lt | gte | lte: {path,
+…}}` predicate shape from `equal:` to `value:`. The struct is
+shared across all five comparison verbs (it's `PredicateEq` in Go
+for historical reasons — `eq` was the first verb); reading
+`{gt: {path: state.x, equal: 5}}` as "x greater-than-equal 5" is
+actively misleading. The Go field name renames from `Equal` to
+`Value` (cleaner) and the YAML/JSON tag from `equal` to `value`.
+See `SCHEMA_DESIGN.md` §1.8 for the target shape and §2 Slice 6 for
+the implementation outline.
+
+This is cosmetic-only on the runtime side (the type is unchanged —
+it's the same `Value` it always was) but every template, fixture,
+test, and doc example flips in lockstep.
 
 ### Surfaces this slice touches
 
-- `schema/schema.go` — delete `SendAs string` from
-  `CursorTokenPagination` and `ScrollIDPagination`. After this slice
-  `CursorTokenPagination` carries only `TokenAt Path`, and
-  `ScrollIDPagination` carries `ScrollIDAt Path` plus the optional
-  `CompleteWhen *Predicate`.
-- `schema/validate.go` — delete `checkSendAs` (and its callers in the
-  cursor_token / scroll_id branches of `checkPaginationStrategy`).
-  Drop the helper that parses `send_as` (e.g. `parseSendAs` if it
-  also lives schema-side; otherwise leave the runtime copy until
-  step 3 below kills it). Keep the cursor-namespace registration
-  (slice 4) intact — `cursor.token` / `cursor.scroll_id` remain
-  legitimate refs.
-- `client/pagination.go` — delete the `paginationAutoInjector`
-  interface, the `autoInjectSlot` type, every `(*<driver>)
-  autoInjectSlot()` method, and the `parseSendAs` helper. The
-  `paginationPlan` interface is unaffected (its `seed` / `advance`
-  / `phase` shape stays). Refresh the file's package-doc paragraph
-  on auto-injection — it goes away in this slice.
-- `client/http.go` — delete the `inject *autoInjectSlot` parameter
-  on `executeRequest`, the `queryDeclared` / `headerDeclared`
-  helpers (no remaining call sites once the auto-injection is
-  gone), and every "implicit `send_as` lowering" branch in
-  `executeRequest`. Update the function's doc comment.
-- `client/runner.go` — delete the `reqInject` plumbing that walks
-  the producer step's pagination plan and threads
-  `autoInjectSlot()` through `executeRequest`. `runIteration`
-  loses the call.
-- `templates/*.yml` — every template using
-  `pagination.cursor_token` or `pagination.scroll_id` must
-  declare the cursor explicitly in `query:` / `headers:`:
-  - `cursor_token.yml` — add
-    `query: {cursor: {ref: cursor.token, default: ""}}` (or whatever
-    matches the existing wire-shape: empty string on the bootstrap
-    iteration, the token thereafter).
-  - `oauth2_client_credentials.yml` (also `cursor_token`) — same
-    treatment.
-  - `scroll_id.yml` — add
-    `query: {scroll: {ref: cursor.scroll_id}}` (no `default: ""` —
-    the first iteration intentionally omits the param so the
-    server opens a fresh scroll).
-  - Anywhere else `send_as:` appears (grep `templates/` to be
-    sure).
-- `schema/testdata/*.yml` — same pattern: every fixture that
-  uses `cursor_token` / `scroll_id` with `send_as:` flips to an
-  explicit `query:` / `headers:` declaration. Round-trip
-  fixtures must stay byte-stable; if you delete a `send_as:`
-  line, regenerate the matching golden.
-- `cmd/skopos/testdata/*.txt` — the embedded YAML and trace
-  goldens for `cursor_token`, `scroll_id`, and any `send_as`-only
-  scenario. The "implicit send_as wins / explicit wins"
-  testscripts (under `errors/` if any) probably go away
-  entirely; those that remain need their YAML and trace lines
-  updated.
+- `schema/predicate.go` — rename `PredicateEq.Equal` to
+  `PredicateEq.Value`. Flip the YAML/JSON tags from
+  `equal` to `value`. The leading comment-block in the file shows
+  the five `{eq | gt | lt | gte | lte: {path, equal: …}}` examples
+  — those flip too. The `PredicateEq` doc comment and the inline
+  Go comment that calls out the historical naming need a quick
+  refresh (the historical naming reason becomes "renamed in slice
+  6"). Add codec rejection for the legacy `equal:` key with a
+  precise migration hint (`equal: was renamed to value: in slice 6`
+  or similar). Mirror the slice-3/4/5 pattern: a `<type>Raw`
+  shadow struct plus custom `UnmarshalYAML` / `UnmarshalJSON` that
+  reject `equal:` at parse time before the default decode runs.
+- `schema/validate.go` — every reference to `.Equal` becomes
+  `.Value`. Two call sites today: `checkPredicate`'s `Eq` arm
+  reads `p.Eq.Equal` for secret/coerce checks. Walk
+  `validate.go` and rewrite.
+- `schema/value.go` — `predicateContainsSecret(d, p)` walks
+  `p.Eq.Equal`; rename to `p.Eq.Value`. Same in
+  `IsSecret`-adjacent code. Audit the whole file for `.Equal`
+  references on `PredicateEq` values.
+- `client/predicate.go` — runtime predicate evaluation reads
+  `p.Eq.Equal` to evaluate the right-hand side. Rename.
+- `client/value.go` / `client/redact.go` — any code that walks
+  predicates touches the rename.
+- `templates/*.yml` — every template with an `eq: / gt: / lt: /
+  gte: / lte:` block. Grep `templates/` for `equal:` and flip each
+  occurrence. The verbs appear in `complete_when`, `if`, request
+  predicates, async-job `complete_when`, scroll_id `complete_when`,
+  etc.
+- `schema/testdata/*.yml` — same pattern. Round-trip fixtures must
+  stay byte-stable; if you flip an `equal:` to `value:`, the
+  golden needs the same flip.
+- `cmd/skopos/testdata/*.txt` — every embedded YAML in the schema /
+  errors goldens. Both the spec snippets and the diagnostic
+  messages may reference `equal`; flip both. Look out for
+  diagnostic strings ("eq.equal is required" or similar) that
+  would point at the new tag name.
 - Tests:
-  - `schema/fixtures_test.go` — flip every inline YAML that
-    used `send_as:` to the explicit query/header form. Add a
-    focused negative test: the codec must reject
-    `send_as: query.cursor` with an error that points at the new
-    "wire the cursor explicitly in your request" form.
-  - `client/pagination_test.go` — delete the
-    `TestParseSendAs`, `TestCursorTokenPagination_AutoInjectSlot`,
-    `TestScrollIDPagination_AutoInjectSlot`,
-    `TestHeaderDeclared_CaseInsensitive`,
-    `TestQueryDeclared_ExactMatch`,
-    `TestEndToEnd_CursorToken_ImplicitSendAs`,
-    `TestEndToEnd_ScrollID_ImplicitSendAs_Header`, and
-    `TestEndToEnd_CursorToken_ExplicitFormWinsOverAutoInject`
-    cases (the implicit / "explicit wins" contracts cease to
-    exist). Keep the regular `TestEndToEnd_CursorToken` case but
-    update the `cursorTokenDoc` / `scrollIDImplicitHeaderDoc`
-    helpers to wire the cursor explicitly in `req.Query` /
-    `req.Headers`.
-  - `client/http_test.go` (if it exists) — same audit on any
-    inject parameter.
-  - `client/runner_test.go` — `cursorTokenDoc` already wires
-    `query.cursor` explicitly to `vRef("cursor.token")` (after
-    slice 4) — confirm the wire-shape match still holds with the
-    `send_as` plumbing gone.
+  - `schema/fixtures_test.go` — flip every inline YAML
+    occurrence. Add a focused negative test
+    (`TestSliceSixEqualRenamedToValue` or similar): the codec must
+    reject `{eq: {path: …, equal: …}}` at parse time with an
+    error that names `value:` as the replacement. Mirror the
+    `TestSliceFour…` / `TestSliceFive…` shape — YAML + JSON,
+    struct-level + full-doc, plus a positive case that the new
+    `value:` form validates cleanly.
+  - `client/predicate_test.go` — every `Equal:` literal in a
+    `schema.PredicateEq` struct flips to `Value:`. Same for any
+    helper that constructs a predicate.
+  - `client/runner_test.go`, `client/pagination_test.go`,
+    `client/value_test.go`, etc. — grep for `Equal:` in struct
+    literals; rename. The test for the new
+    `TestEndToEnd_ScrollID_Explicit_Header` (slice 5) constructs
+    a `PredicateEq{Equal: vStr("true")}` — that becomes
+    `Value: vStr("true")`.
+- `docs/schema-reference.md` regenerates via
+  `go run ./tools/gen-schema-doc` since the struct field name
+  changed. Run the doc-gen and lock in the diff (the broader
+  doc cleanup is still slice 8 — keep the gen-schema-doc output
+  the only `docs/` change in this commit).
 
 ### Acceptance criteria
 
-1. `schema.CursorTokenPagination` carries `TokenAt Path` only.
-   `schema.ScrollIDPagination` carries `ScrollIDAt Path` plus
-   `CompleteWhen *Predicate` only. No `SendAs` field on either.
-2. The codec rejects YAML / JSON containing `send_as:` under
-   either strategy with an error that names "wire the cursor
-   explicitly in your request" (or similar). Pin a test.
-3. `client/pagination.go` no longer exposes the
-   `paginationAutoInjector` interface, the `autoInjectSlot`
-   type, or `parseSendAs`. `client/http.go::executeRequest` has
-   no `inject` parameter and no implicit lowering branches.
-   `client/runner.go::runIteration` no longer threads any
-   pagination injection through `executeRequest`.
-4. Every template using `cursor_token` or `scroll_id` declares
-   the cursor explicitly in `query:` / `headers:`. `grep -rn
-   send_as templates/` returns nothing.
-5. Every template + fixture loads, validates, and runs
-   end-to-end against the testserver with the same wire
-   shape as before:
-   - `cursor_token.yml`: bootstrap iteration sends
-     `cursor=` (empty), subsequent iterations send the captured
-     token.
-   - `scroll_id.yml`: bootstrap iteration omits the `scroll`
-     query param, subsequent iterations carry the captured id.
-   - `oauth2_client_credentials.yml` (also `cursor_token`):
-     same shape as `cursor_token.yml`.
-6. `go test ./...` green; `go vet ./...` clean;
-   `go run ./tools/gen-schema-doc -check` green (this slice
-   touches exported schema types — regenerate the doc and lock
-   in the diff).
-7. `ir_version` stays `"1"`.
+1. `PredicateEq` carries a `Value Value` field (Go name and YAML/
+   JSON tag both `value`). No `Equal` field, no `equal` tag.
+2. The codec rejects YAML / JSON containing `equal:` under any
+   predicate verb with an error that names `value:` as the
+   replacement. Pin a test.
+3. Every template uses `value:` under predicate verbs.
+   `grep -rn 'equal:' templates/` returns nothing.
+4. Every fixture + golden uses `value:`. Round-trip stays
+   byte-stable.
+5. `go test ./...` green; `go vet ./...` clean;
+   `go run ./tools/gen-schema-doc -check` green.
+6. `ir_version` stays `"1"`.
 
 ### Out of scope for this slice
 
-- Do not rename `equal:` → `value:` — slice 6.
+- Do not rename the Go type `PredicateEq` itself (it serves as
+  the shared `{path, value}` shape for eq / gt / lt / gte / lte).
+  The plan calls that a cosmetic Go rename that can land
+  alongside slice 6 or separately — keep it separate to keep this
+  slice tight.
 - Do not move expiry slots out of `cursor.__…` — slice 7.
-- Do not touch `docs/`, `README.md`, `docs/schema-reference.md`
-  beyond what `gen-schema-doc` regenerates automatically — that
-  cleanup is slice 8.
+- Do not touch `docs/` beyond `schema-reference.md` regeneration
+  — broader doc cleanup is slice 8.
 - Do not collapse `state` and `cursor` — slice 9 (deferred).
 
 If any of those become unavoidable, **stop and ask**.
 
 ### Notes / open questions for this agent
 
-- **Slice 4 grounding (what landed in the previous commit).**
-  - `schema.Value` no longer carries `FromPagination` /
-    `FromProgress`. The codec rejects `from_pagination:` /
-    `from_progress:` keys with hints that name the
-    `cursor.<name>` replacement (per the
-    `removedValueDiscriminatorKeys` table in `schema/value.go`).
-  - `scope.fromPagination` / `scope.fromProgress` are gone.
-    Pagination + progress drivers write directly into
-    `scope.cursor`. The http auto-injector reads
-    `scope.cursor[role]` for `send_as` lowering — that's the
-    code you delete in slice 5.
-  - `cursorSchema` registers `cursor.offset_end` only when
-    `pagination.offset.batch_size` is set, and registers
-    `cursor.last_timestamp` for `async_job` only when
-    `on_complete.cursor_update.kind` is `use_now` or
-    `latest_event_timestamp`. Other strategy/role combinations
-    fail validation with the canonical "cursor field <name> is
-    not provided by the active pagination/progress strategy"
-    error.
-  - The first-drain wire shape for templates that used to send
-    `since=""` (`async_poll.yml`, `async_poll_latest_ts.yml`)
-    is preserved with explicit `default: ""` on the ref. If you
-    delete a `send_as` slot whose template currently relied on
-    the bootstrap "empty string" semantics, copy the same
-    `default: ""` pattern when adding the explicit `query:` /
-    `headers:` entry.
-- **Auto-injection wire-shape audit.** Before deleting the
-  injector, capture the on-the-wire shape of each
-  `cursor_token` / `scroll_id` template's bootstrap request
-  with the testserver. The "explicit wires it itself" templates
-  must reproduce that shape exactly. The
-  `TestEndToEnd_CursorToken` and `TestEndToEnd_ScrollID*`
-  end-to-end cases pin the byte-level shape today; if you
-  delete the implicit cases, keep at least one explicit
-  end-to-end case per strategy as the wire-shape regression
-  guard.
+- **Slice 5 grounding (what landed in the previous commit).**
+  - `schema.CursorTokenPagination` and `schema.ScrollIDPagination`
+    no longer carry `SendAs`. The codec rejects leftover
+    `send_as:` keys at parse time with hints pointing at the
+    explicit-wire form.
+  - `client/pagination.go` no longer exposes the
+    `paginationAutoInjector` interface, the `autoInjectSlot`
+    type, or `parseSendAs`. `client/http.go::executeRequest` has
+    no `inject` parameter and no implicit lowering branches.
+    `client/runner.go::runIteration` no longer threads any
+    pagination injection through `executeRequest`.
+  - `templates/cursor_token.yml` and
+    `templates/oauth2_client_credentials.yml` wire
+    `query.cursor: {ref: cursor.token, default: ""}` so the
+    bootstrap iteration still sends `cursor=` (empty);
+    `templates/scroll_id.yml` wires
+    `query.scroll: {ref: cursor.scroll_id}` (no default — the
+    bootstrap iteration omits the slot so the server opens a
+    fresh scroll). The pattern to copy when a slice-6 fixture
+    needs `default: ""` on the bootstrap wire shape.
+  - The `cursor_token_implicit` fixture + golden were deleted in
+    slice 5 (the implicit form ceased to exist). End-to-end
+    runtime tests `TestEndToEnd_CursorToken_Explicit` /
+    `TestEndToEnd_ScrollID_Explicit_Header` replace the deleted
+    implicit / explicit-wins triad. The
+    `TestEndToEnd_ScrollID_Explicit_Header` doc constructs a
+    `PredicateEq{Equal: vStr("true")}` — that will flip to
+    `Value: vStr("true")` in slice 6.
+- **`PredicateEq` is shared across five verbs.** Don't get
+  fooled by the Go type name into thinking the rename only
+  affects `eq:`. Every `{gt | lt | gte | lte | eq: {path, equal}}`
+  block in every template / fixture / test / doc needs the rename.
+- **Codec rejection wording.** The HANDOFF / SCHEMA_DESIGN.md
+  voice is "X was renamed in slice <N>; use Y instead". Mirror the
+  slice-3 / -4 / -5 hint shape so the migration hints stay
+  consistent.
 - **Pre-existing `TestScripts/post_json_body` flake** still
-  reproduces (~2/5 runs). Confirmed unchanged by slice 4.
+  reproduces (~2/5 runs). Confirmed unchanged by slice 5.
   Continue to leave it for a future slice.
 
 ### When you finish
 
-1. Update `SCHEMA_DESIGN.md` §5 with a "Slice 5 complete" row.
-2. Rewrite this "Current task" section for slice 6 using the
-   template at the bottom of this file. Slice 6 renames
-   `Predicate.Eq.Equal` (YAML/JSON tag `equal:`) to `value:`
-   across the IR, templates, fixtures, and docs.
+1. Update `SCHEMA_DESIGN.md` §5 with a "Slice 6 complete" row.
+2. Rewrite this "Current task" section for slice 7 using the
+   template at the bottom of this file. Slice 7 moves the
+   framework-internal expiry slots (`cursor.__oauth2_<store_in>_expires_at`
+   and `cursor.__step_<store_in>_expires_at`) out of the cursor
+   namespace and into `state.<store_in>_expires_at`, paired with
+   the token they describe. See `SCHEMA_DESIGN.md` §1.9 and §2
+   Slice 7 for the target shape.
 3. Commit. Don't push.
 
 ---

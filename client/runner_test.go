@@ -381,7 +381,6 @@ func cursorTokenDoc(baseURL, token string) *schema.Doc {
 		Response: schema.Response{Decode: "json", EventsAt: mustPath("response.body.findings")},
 		Pagination: schema.Pagination{CursorToken: &schema.CursorTokenPagination{
 			TokenAt: mustPath("response.body.next_cursor"),
-			SendAs:  "query.cursor",
 		}},
 		Progress: schema.Progress{
 			LatestEventTimestamp: &schema.TimestampProgress{

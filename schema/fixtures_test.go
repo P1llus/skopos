@@ -1351,7 +1351,6 @@ response:
 pagination:
   scroll_id:
     scroll_id_at: response.body.scroll
-    send_as: query.scroll_id
     complete_when:
       eq:
         path: response.body.done
@@ -1377,7 +1376,6 @@ response:
 pagination:
   scroll_id:
     scroll_id_at: response.body.scroll
-    send_as: query.scroll_id
     complete_when:
       present: response.header.X-Done
 progress:
@@ -1532,7 +1530,6 @@ response:
 pagination:
   scroll_id:
     scroll_id_at: response.body.scroll
-    send_as: query.scroll_id
     complete_when:
       eq:
         path: response.other.x
@@ -1602,7 +1599,6 @@ response:
 pagination:
   scroll_id:
     scroll_id_at: response.body.scroll
-    send_as: query.scroll_id
     complete_when:
       eq:
         path: body.done
@@ -1693,7 +1689,6 @@ response:
 pagination:
   cursor_token:
     token_at: next_cursor
-    send_as: query.cursor
 progress:
   stateless: {}
 `
@@ -1714,7 +1709,6 @@ response:
 pagination:
   scroll_id:
     scroll_id_at: response.body.scroll
-    send_as: query.scroll_id
     complete_when:
       eq:
         path: body.done
@@ -2142,7 +2136,6 @@ response:
 pagination:
   cursor_token:
     token_at: response.body.next_token
-    send_as: query.cursor
 progress:
   stateless: {}
 `
@@ -2384,7 +2377,6 @@ response:
 pagination:
   cursor_token:
     token_at: response.body.next
-    send_as: query.cursor
 progress:
   stateless: {}
 `
@@ -2434,7 +2426,6 @@ response:
 pagination:
   cursor_token:
     token_at: response.body.next
-    send_as: query.cursor
 progress:
   stateless: {}
 `
@@ -2625,5 +2616,133 @@ progress:
 `
 		diags := validateErrs(t, src)
 		mustContain(t, diags, `cursor field "last_timestamp" is not provided`)
+	})
+}
+
+// TestSliceFiveSendAsDeleted pins the slice-5 contract: `send_as:` under
+// pagination.cursor_token / pagination.scroll_id is rejected at parse time
+// with a precise hint pointing at the new explicit-wire form. After this
+// slice the runner no longer fabricates a query / header slot from the
+// active pagination strategy — templates wire the cursor themselves.
+func TestSliceFiveSendAsDeleted(t *testing.T) {
+	mustErrContain := func(t *testing.T, err error, needle string) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("expected error containing %q; got nil", needle)
+		}
+		if !strings.Contains(err.Error(), needle) {
+			t.Errorf("expected error containing %q; got %v", needle, err)
+		}
+	}
+
+	t.Run("cursor_token_send_as_yaml_rejected_at_parse", func(t *testing.T) {
+		var p schema.CursorTokenPagination
+		err := yaml.Unmarshal([]byte(`{token_at: response.body.next, send_as: query.cursor}`), &p)
+		mustErrContain(t, err, "send_as was removed")
+		mustErrContain(t, err, "wire the cursor explicitly")
+	})
+
+	t.Run("scroll_id_send_as_yaml_rejected_at_parse", func(t *testing.T) {
+		var p schema.ScrollIDPagination
+		err := yaml.Unmarshal([]byte(`{scroll_id_at: response.body.scroll, send_as: header.X-Scroll-ID}`), &p)
+		mustErrContain(t, err, "send_as was removed")
+		mustErrContain(t, err, "wire the cursor explicitly")
+	})
+
+	t.Run("cursor_token_send_as_json_rejected_at_parse", func(t *testing.T) {
+		var p schema.CursorTokenPagination
+		err := json.Unmarshal([]byte(`{"token_at": "response.body.next", "send_as": "query.cursor"}`), &p)
+		mustErrContain(t, err, "send_as was removed")
+		mustErrContain(t, err, "wire the cursor explicitly")
+	})
+
+	t.Run("scroll_id_send_as_json_rejected_at_parse", func(t *testing.T) {
+		var p schema.ScrollIDPagination
+		err := json.Unmarshal([]byte(`{"scroll_id_at": "response.body.scroll", "send_as": "header.X-Scroll-ID"}`), &p)
+		mustErrContain(t, err, "send_as was removed")
+		mustErrContain(t, err, "wire the cursor explicitly")
+	})
+
+	t.Run("cursor_token_send_as_in_full_doc_rejected_at_parse", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      cursor: {ref: cursor.token, default: ""}
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  cursor_token:
+    token_at: response.body.next
+    send_as: query.cursor
+progress:
+  stateless: {}
+`
+		_, err := schema.Parse([]byte(src))
+		mustErrContain(t, err, "send_as was removed")
+		mustErrContain(t, err, "wire the cursor explicitly")
+	})
+
+	t.Run("scroll_id_send_as_in_full_doc_rejected_at_parse", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      scroll: {ref: cursor.scroll_id}
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  scroll_id:
+    scroll_id_at: response.body.scroll
+    send_as: query.scroll
+progress:
+  stateless: {}
+`
+		_, err := schema.Parse([]byte(src))
+		mustErrContain(t, err, "send_as was removed")
+		mustErrContain(t, err, "wire the cursor explicitly")
+	})
+
+	// Positive case: a cursor_token spec without send_as and with the new
+	// explicit-wire form for query.cursor validates cleanly.
+	t.Run("explicit_cursor_wire_accepted", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      cursor: {ref: cursor.token, default: ""}
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  cursor_token:
+    token_at: response.body.next
+progress:
+  stateless: {}
+`
+		doc, err := schema.Parse([]byte(src))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		var errs []schema.Diagnostic
+		for _, d := range schema.Validate(doc) {
+			if d.Severity == "error" {
+				errs = append(errs, d)
+			}
+		}
+		if len(errs) != 0 {
+			t.Errorf("explicit cursor wire should validate; got %+v", errs)
+		}
 	})
 }

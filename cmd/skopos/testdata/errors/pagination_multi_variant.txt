@@ -20,6 +20,5 @@ pagination:
   none: {}
   cursor_token:
     token_at: response.body.next
-    send_as: query.cursor
 progress:
   stateless: {}

@@ -1192,108 +1192,21 @@ func TestPaginationErrorLabels(t *testing.T) {
 	}
 }
 
-// ---- send_as implicit auto-injection ----
+// ---- explicit cursor wiring end-to-end ----
 //
-// The §4.4 implicit-form contract: when a paginating strategy declares
-// `send_as: query.<param>` (or `header.<name>`), the runner auto-injects
-// the cursor at that slot on the producer step's request — authors don't
-// have to write the explicit {ref: cursor.<name>} Value themselves.
-// Explicit form (template declares the slot) wins; the runner detects
-// explicit declaration by IR presence (req.Query[name] / req.Headers[name]
-// case-insensitive) and skips the auto-injection for that slot.
-//
-// The unit tests below pin parseSendAs's two legal kinds, the per-strategy
-// autoInjectSlot() returns, and the queryDeclared / headerDeclared helpers.
-// The end-to-end tests pin the lowering against a live httptest server for
-// both kinds (query slot for cursor_token, header slot for scroll_id) plus
-// the explicit-form-skips-auto-injection guarantee.
+// Slice 5 deleted the implicit `send_as` auto-injector. Every paginating
+// template now wires the cursor explicitly into the producer step's request
+// — `query: {cursor: {ref: cursor.token, default: ""}}` for cursor_token,
+// `query: {scroll: {ref: cursor.scroll_id}}` for scroll_id, etc. The
+// end-to-end tests below pin the wire-shape regression guard for both
+// strategies against a live httptest server.
 
-func TestParseSendAs(t *testing.T) {
-	cases := []struct {
-		in       string
-		wantKind string
-		wantName string
-	}{
-		{"query.cursor", "query", "cursor"},
-		{"header.X-Scroll-ID", "header", "X-Scroll-ID"},
-		{"query.", "query", ""},
-		{"header.", "header", ""},
-		{"", "", ""},
-		{"body.token", "", ""},
-		{"cookie.session", "", ""},
-	}
-	for _, tc := range cases {
-		gotKind, gotName := parseSendAs(tc.in)
-		if gotKind != tc.wantKind || gotName != tc.wantName {
-			t.Errorf("parseSendAs(%q) = (%q, %q), want (%q, %q)", tc.in, gotKind, gotName, tc.wantKind, tc.wantName)
-		}
-	}
-}
-
-func TestCursorTokenPagination_AutoInjectSlot(t *testing.T) {
-	p := &cursorTokenPagination{cfg: &schema.CursorTokenPagination{
-		TokenAt: mustPath("response.body.next_cursor"),
-		SendAs:  "query.cursor",
-	}}
-	got := p.autoInjectSlot()
-	want := autoInjectSlot{kind: "query", name: "cursor", role: "token"}
-	if got != want {
-		t.Errorf("autoInjectSlot = %+v, want %+v", got, want)
-	}
-}
-
-func TestScrollIDPagination_AutoInjectSlot(t *testing.T) {
-	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
-		SendAs:     "header.X-Scroll-ID",
-	}}
-	got := p.autoInjectSlot()
-	want := autoInjectSlot{kind: "header", name: "X-Scroll-ID", role: "scroll_id"}
-	if got != want {
-		t.Errorf("autoInjectSlot = %+v, want %+v", got, want)
-	}
-}
-
-// TestHeaderDeclared_CaseInsensitive pins that the explicit-form detector
-// canonicalises header keys per RFC 7230 §3.2 — a template that writes
-// `X-API-Token` and a send_as of `header.x-api-token` refer to the same
-// slot, so auto-injection MUST skip.
-func TestHeaderDeclared_CaseInsensitive(t *testing.T) {
-	req := schema.Request{Headers: map[string]schema.Value{"X-API-Token": vStr("explicit")}}
-	if !headerDeclared(req, "x-api-token") {
-		t.Errorf("headerDeclared with mismatched case returned false; HTTP header names are case-insensitive")
-	}
-	if !headerDeclared(req, "X-API-TOKEN") {
-		t.Errorf("headerDeclared with upper case returned false")
-	}
-	if headerDeclared(req, "X-Other-Header") {
-		t.Errorf("headerDeclared with unrelated key returned true")
-	}
-}
-
-// TestQueryDeclared_ExactMatch pins that query-param detection is exact
-// (case-sensitive) — RFC 3986 reserves no case folding for query
-// components, so `cursor` and `Cursor` are distinct slots.
-func TestQueryDeclared_ExactMatch(t *testing.T) {
-	req := schema.Request{Query: map[string]schema.Value{"cursor": vStr("explicit")}}
-	if !queryDeclared(req, "cursor") {
-		t.Errorf("queryDeclared with exact match returned false")
-	}
-	if queryDeclared(req, "Cursor") {
-		t.Errorf("queryDeclared with different case returned true; query params are case-sensitive")
-	}
-	if queryDeclared(req, "other") {
-		t.Errorf("queryDeclared with unrelated key returned true")
-	}
-}
-
-// TestEndToEnd_CursorToken_ImplicitSendAs drives cursor_token across three
-// pages without an explicit {ref: cursor.token} in req.Query — the
-// runner must lower `send_as: query.cursor` into an auto-injection at the
-// producer-step query slot. Wire shape (page 0 bootstrap → page 2
-// termination) must match the explicit-form TestEndToEnd_CursorToken case
-// exactly. Pins the §4.4 implicit-form contract.
-func TestEndToEnd_CursorToken_ImplicitSendAs(t *testing.T) {
+// TestEndToEnd_CursorToken_Explicit drives cursor_token across three pages
+// with the template wiring {ref: cursor.token, default: ""} at the query
+// slot. Page 0 sends `cursor=` (empty); pages 1-2 echo the token returned
+// by the previous response; the empty next_cursor on page 2 terminates and
+// clears cursor.token.
+func TestEndToEnd_CursorToken_Explicit(t *testing.T) {
 	pages := []map[string]any{
 		{
 			"findings":    []map[string]any{{"id": "f1", "created_at": "2026-05-12T08:00:00Z"}},
@@ -1311,6 +1224,12 @@ func TestEndToEnd_CursorToken_ImplicitSendAs(t *testing.T) {
 	var pageCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		idx := int(pageCount.Add(1)) - 1
+		// The bootstrap iteration sends cursor= (empty string from the
+		// {default: ""} branch); subsequent iterations send the captured
+		// token from the previous response.
+		if _, present := r.URL.Query()["cursor"]; !present {
+			t.Errorf("page %d cursor query param missing; expected the template-wired ref to fire", idx)
+		}
 		cur := r.URL.Query().Get("cursor")
 		switch idx {
 		case 0:
@@ -1319,11 +1238,11 @@ func TestEndToEnd_CursorToken_ImplicitSendAs(t *testing.T) {
 			}
 		case 1:
 			if cur != "tok-2" {
-				t.Errorf("page 1 cursor = %q, want tok-2 (auto-injected)", cur)
+				t.Errorf("page 1 cursor = %q, want tok-2", cur)
 			}
 		case 2:
 			if cur != "tok-3" {
-				t.Errorf("page 2 cursor = %q, want tok-3 (auto-injected)", cur)
+				t.Errorf("page 2 cursor = %q, want tok-3", cur)
 			}
 		default:
 			t.Errorf("unexpected extra page request %d", idx)
@@ -1334,7 +1253,7 @@ func TestEndToEnd_CursorToken_ImplicitSendAs(t *testing.T) {
 
 	store := &MemoryStore{}
 	r := &Runner{
-		Doc:    cursorTokenImplicitDoc(server.URL, "test-token"),
+		Doc:    cursorTokenExplicitDoc(server.URL, "test-token"),
 		Sink:   &captureSink{},
 		Store:  store,
 		Now:    fixedNow(),
@@ -1352,10 +1271,10 @@ func TestEndToEnd_CursorToken_ImplicitSendAs(t *testing.T) {
 	}
 }
 
-// cursorTokenImplicitDoc mirrors cursorTokenDoc but OMITS the explicit
-// {ref: cursor.token} value at query.cursor. The runner's `send_as`
-// auto-injection has to produce the same wire shape.
-func cursorTokenImplicitDoc(baseURL, token string) *schema.Doc {
+// cursorTokenExplicitDoc wires query.cursor to {ref: cursor.token,
+// default: ""} so the bootstrap iteration sends `cursor=` and subsequent
+// iterations carry the token captured from the previous response.
+func cursorTokenExplicitDoc(baseURL, token string) *schema.Doc {
 	return &schema.Doc{
 		IRVersion: "1",
 		State: &schema.State{Fields: map[string]schema.FieldDecl{
@@ -1367,12 +1286,13 @@ func cursorTokenImplicitDoc(baseURL, token string) *schema.Doc {
 		Requests: []schema.Request{{
 			Method: "GET",
 			Path:   ptrValue(vStr("/api/v1/findings")),
-			// No req.Query — auto-injection populates query.cursor.
+			Query: map[string]schema.Value{
+				"cursor": vRefDefault("cursor.token", vStr("")),
+			},
 		}},
 		Response: schema.Response{Decode: "json", EventsAt: mustPath("response.body.findings")},
 		Pagination: schema.Pagination{CursorToken: &schema.CursorTokenPagination{
 			TokenAt: mustPath("response.body.next_cursor"),
-			SendAs:  "query.cursor",
 		}},
 		Progress: schema.Progress{
 			LatestEventTimestamp: &schema.TimestampProgress{
@@ -1382,12 +1302,13 @@ func cursorTokenImplicitDoc(baseURL, token string) *schema.Doc {
 	}
 }
 
-// TestEndToEnd_ScrollID_ImplicitSendAs_Header drives scroll_id with
-// send_as=header.X-Scroll-ID (no explicit {ref: cursor.scroll_id} in
-// the template). Asserts the header is absent on page 0 (bootstrap) and
-// echoed on pages 1-2 by the auto-injection. Exercises the header branch
-// of the implicit lowering AND the case-insensitive declared-slot check.
-func TestEndToEnd_ScrollID_ImplicitSendAs_Header(t *testing.T) {
+// TestEndToEnd_ScrollID_Explicit_Header drives scroll_id with the template
+// wiring {ref: cursor.scroll_id} into the X-Scroll-ID request header.
+// Asserts the header is absent on page 0 (bootstrap — cursor.scroll_id
+// resolves to nil so the slot is skipped) and echoed on pages 1-2 from the
+// captured scroll id. Pins the header-slot path through the cursor-ref
+// resolver.
+func TestEndToEnd_ScrollID_Explicit_Header(t *testing.T) {
 	type page struct {
 		events     []map[string]any
 		scrollID   string
@@ -1433,7 +1354,7 @@ func TestEndToEnd_ScrollID_ImplicitSendAs_Header(t *testing.T) {
 	defer server.Close()
 
 	r := &Runner{
-		Doc:    scrollIDImplicitHeaderDoc(server.URL, "test-token"),
+		Doc:    scrollIDExplicitHeaderDoc(server.URL, "test-token"),
 		Sink:   &captureSink{},
 		Store:  &MemoryStore{},
 		Now:    fixedNow(),
@@ -1447,10 +1368,11 @@ func TestEndToEnd_ScrollID_ImplicitSendAs_Header(t *testing.T) {
 	}
 }
 
-// scrollIDImplicitHeaderDoc uses send_as=header.X-Scroll-ID with no
-// explicit slot Value. The runner must auto-inject the scroll id as a
-// request header on every non-bootstrap request.
-func scrollIDImplicitHeaderDoc(baseURL, token string) *schema.Doc {
+// scrollIDExplicitHeaderDoc wires {ref: cursor.scroll_id} into the
+// X-Scroll-ID request header. The bootstrap iteration's nil cursor causes
+// the slot to be skipped (http.go drops nil header values); subsequent
+// iterations carry the captured id.
+func scrollIDExplicitHeaderDoc(baseURL, token string) *schema.Doc {
 	complete := schema.Predicate{Eq: &schema.PredicateEq{
 		Path:  mustPath("response.body.request_metadata.complete"),
 		Equal: vStr("true"),
@@ -1466,12 +1388,13 @@ func scrollIDImplicitHeaderDoc(baseURL, token string) *schema.Doc {
 		Requests: []schema.Request{{
 			Method: "GET",
 			Path:   ptrValue(vStr("/api/v1/scroll")),
-			// No req.Headers — auto-injection populates X-Scroll-ID.
+			Headers: map[string]schema.Value{
+				"X-Scroll-ID": vRef("cursor.scroll_id"),
+			},
 		}},
 		Response: schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{ScrollID: &schema.ScrollIDPagination{
 			ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
-			SendAs:       "header.X-Scroll-ID",
 			CompleteWhen: &complete,
 		}},
 		Progress: schema.Progress{
@@ -1480,78 +1403,5 @@ func scrollIDImplicitHeaderDoc(baseURL, token string) *schema.Doc {
 				Initial:   &schema.Initial{Lookback: vStr("24h")},
 			},
 		},
-	}
-}
-
-// TestEndToEnd_CursorToken_ExplicitFormWinsOverAutoInject pins that when a
-// template declares the slot itself (explicit form), the runtime does NOT
-// auto-inject and the explicit Value's output is what reaches the wire.
-// The producer's req.Query["cursor"] is a literal string here so the wire
-// value is observable and distinguishable from the cursor token the
-// auto-injection WOULD have written.
-func TestEndToEnd_CursorToken_ExplicitFormWinsOverAutoInject(t *testing.T) {
-	pages := []map[string]any{
-		{
-			"findings":    []map[string]any{{"id": "f1", "created_at": "2026-05-12T08:00:00Z"}},
-			"next_cursor": "tok-2",
-		},
-		{
-			"findings":    []map[string]any{{"id": "f2", "created_at": "2026-05-12T08:05:00Z"}},
-			"next_cursor": "",
-		},
-	}
-	var pageCount atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		idx := int(pageCount.Add(1)) - 1
-		// Every page should carry the explicit-form literal — auto-injection
-		// MUST skip the slot when the template declared it.
-		if got := r.URL.Query().Get("cursor"); got != "explicit-literal" {
-			t.Errorf("page %d cursor = %q, want explicit-literal", idx, got)
-		}
-		writeJSON(w, http.StatusOK, pages[idx])
-	}))
-	defer server.Close()
-
-	doc := &schema.Doc{
-		IRVersion: "1",
-		State: &schema.State{Fields: map[string]schema.FieldDecl{
-			"url":     {Type: "url", Default: server.URL},
-			"api_key": {Type: "secret", Default: "test-token"},
-		}},
-		Defaults: &schema.Defaults{BaseURL: vRef("state.url")},
-		Auth:     schema.Auth{Bearer: &schema.BearerAuth{Token: vRef("state.api_key")}},
-		Requests: []schema.Request{{
-			Method: "GET",
-			Path:   ptrValue(vStr("/api/v1/findings")),
-			Query: map[string]schema.Value{
-				// Explicit form: a literal that the auto-injection must
-				// NOT overwrite. Distinguishable from the cursor token
-				// the implicit form would have written ("tok-2").
-				"cursor": vStr("explicit-literal"),
-			},
-		}},
-		Response: schema.Response{Decode: "json", EventsAt: mustPath("response.body.findings")},
-		Pagination: schema.Pagination{CursorToken: &schema.CursorTokenPagination{
-			TokenAt: mustPath("response.body.next_cursor"),
-			SendAs:  "query.cursor",
-		}},
-		Progress: schema.Progress{
-			LatestEventTimestamp: &schema.TimestampProgress{
-				EventTime: schema.EventTime{Path: mustPath("created_at")},
-			},
-		},
-	}
-	r := &Runner{
-		Doc:    doc,
-		Sink:   &captureSink{},
-		Store:  &MemoryStore{},
-		Now:    fixedNow(),
-		Client: server.Client(),
-	}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if got := pageCount.Load(); got != 2 {
-		t.Fatalf("server saw %d requests, want 2", got)
 	}
 }

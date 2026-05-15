@@ -5,7 +5,6 @@ package schema
 import (
 	"fmt"
 	"math"
-	"strings"
 	"time"
 )
 
@@ -810,7 +809,6 @@ func (v *validator) checkPagination(path string, p Pagination, namespace *ns) {
 	switch {
 	case p.CursorToken != nil:
 		v.checkBodyRootedPath(path+".cursor_token.token_at", p.CursorToken.TokenAt, namespace, false)
-		v.checkSendAs(path+".cursor_token.send_as", p.CursorToken.SendAs)
 
 	case p.PageNumber != nil:
 		if p.PageNumber.PageParam == "" {
@@ -832,7 +830,6 @@ func (v *validator) checkPagination(path string, p Pagination, namespace *ns) {
 
 	case p.ScrollID != nil:
 		v.checkBodyRootedPath(path+".scroll_id.scroll_id_at", p.ScrollID.ScrollIDAt, namespace, false)
-		v.checkSendAs(path+".scroll_id.send_as", p.ScrollID.SendAs)
 		if p.ScrollID.CompleteWhen != nil {
 			v.checkPredicate(path+".scroll_id.complete_when", *p.ScrollID.CompleteWhen, namespace, true)
 		}
@@ -1374,19 +1371,6 @@ func (v *validator) checkPredicate(path string, p Predicate, namespace *ns, allo
 	}
 }
 
-// checkSendAs validates the "query.<param>" / "header.<name>" form used for
-// pagination send_as fields. Required: a non-empty value with a recognised
-// kind prefix.
-func (v *validator) checkSendAs(path, s string) {
-	if s == "" {
-		v.errorf(path, "send_as is required (\"query.<param>\" or \"header.<name>\")")
-		return
-	}
-	if _, _, err := splitSendAs(s); err != nil {
-		v.errorf(path, "%v", err)
-	}
-}
-
 // ---- helpers ----
 
 // isNamespaceRoot reports whether s is one of the reserved namespace-root
@@ -1476,13 +1460,3 @@ func cursorSchema(d *Doc) map[string]struct{} {
 	return cs
 }
 
-// splitSendAs parses "query.<param>" or "header.<name>" into (kind, name).
-func splitSendAs(s string) (string, string, error) {
-	if strings.HasPrefix(s, "query.") {
-		return "query", strings.TrimPrefix(s, "query."), nil
-	}
-	if strings.HasPrefix(s, "header.") {
-		return "header", strings.TrimPrefix(s, "header."), nil
-	}
-	return "", "", fmt.Errorf("send_as must be 'query.<param>' or 'header.<name>', got %q", s)
-}

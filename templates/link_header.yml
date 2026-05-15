@@ -5,9 +5,8 @@
 # cursor.next_link, and the request's url slot reads it back via
 # {ref: cursor.next_link, default: <bootstrap-url>} — so the first
 # iteration hits the bootstrap URL and every subsequent iteration follows
-# the server's link until it disappears. link_header has no send_as
-# auto-injection: wiring cursor.next_link into the request is the
-# template's job.
+# the server's link until it disappears. Wiring cursor.next_link into the
+# request is the template's job.
 
 ir_version: "1"
 
