@@ -3,6 +3,7 @@
 package client
 
 import (
+	"net/http"
 	"reflect"
 	"testing"
 	"time"
@@ -316,4 +317,136 @@ func mustTime(s string) time.Time {
 		panic(err)
 	}
 	return t
+}
+
+// TestSliceOneResponseAndStepHeaderRefs covers runtime resolution of the new
+// roots introduced in slice 1: response.body.<path>, response.header.<name>,
+// and steps.<id>.header.<name>.
+//
+// Slice 1's acceptance criterion 2 demands that response.body.<path> resolve
+// the same value as the legacy body.<path> form for the same fixture — the
+// "interchangeable" test below pins that.
+func TestSliceOneResponseAndStepHeaderRefs(t *testing.T) {
+	t.Run("response_body_matches_legacy_body_path", func(t *testing.T) {
+		s := newTestScope(t, nil, nil)
+		body := map[string]any{
+			"status":  "complete",
+			"meta":    map[string]any{"page": int64(7)},
+			"items":   []any{map[string]any{"id": "a"}, map[string]any{"id": "b"}},
+		}
+		s.body = body
+
+		cases := []struct {
+			label    string
+			legacy   string
+			response string
+		}{
+			{"top-level scalar", "body.status", "response.body.status"},
+			{"nested object", "body.meta.page", "response.body.meta.page"},
+			{"list index", "body.items.1.id", "response.body.items.1.id"},
+			{"missing leaf", "body.meta.missing", "response.body.meta.missing"},
+		}
+		for _, c := range cases {
+			t.Run(c.label, func(t *testing.T) {
+				legacyVal, legacyOK, err := s.resolveOrBodyPath(mustPath(c.legacy))
+				if err != nil {
+					t.Fatalf("legacy resolve(%s): %v", c.legacy, err)
+				}
+				respVal, respOK, err := s.resolveNamespaceRef(mustPath(c.response))
+				if err != nil {
+					t.Fatalf("response resolve(%s): %v", c.response, err)
+				}
+				if legacyOK != respOK {
+					t.Fatalf("ok mismatch: legacy=%v response=%v", legacyOK, respOK)
+				}
+				if !reflect.DeepEqual(legacyVal, respVal) {
+					t.Errorf("value mismatch: legacy=%#v response=%#v", legacyVal, respVal)
+				}
+			})
+		}
+	})
+
+	t.Run("response_header_case_insensitive", func(t *testing.T) {
+		s := newTestScope(t, nil, nil)
+		s.responseHeaders = http.Header{}
+		s.responseHeaders.Set("ETag", "abc-1")
+		s.responseHeaders.Set("X-Total-Count", "42")
+
+		cases := []struct {
+			ref  string
+			want any
+		}{
+			{"response.header.ETag", "abc-1"},
+			{"response.header.etag", "abc-1"},
+			{"response.header.X-Total-Count", "42"},
+			{"response.header.x-total-count", "42"},
+		}
+		for _, c := range cases {
+			got, ok, err := s.resolveNamespaceRef(mustPath(c.ref))
+			if err != nil {
+				t.Fatalf("resolve(%s): %v", c.ref, err)
+			}
+			if !ok || got != c.want {
+				t.Errorf("resolve(%s) = (%v, %v); want (%v, true)", c.ref, got, ok, c.want)
+			}
+		}
+
+		// Absent header resolves as nil/!ok (the {default: ...} path on Ref
+		// handles first-iteration absence at the Value layer).
+		got, ok, err := s.resolveNamespaceRef(mustPath("response.header.X-Missing"))
+		if err != nil {
+			t.Fatalf("absent resolve: %v", err)
+		}
+		if ok || got != nil {
+			t.Errorf("absent header should resolve as (nil,false); got (%v,%v)", got, ok)
+		}
+	})
+
+	t.Run("steps_id_header_resolves_from_stepHeaders", func(t *testing.T) {
+		s := newTestScope(t, nil, nil)
+		h := http.Header{}
+		h.Set("Set-Cookie", "session=xyz")
+		h.Set("ETag", "v1")
+		s.stepHeaders["login"] = h
+
+		got, ok, err := s.resolveNamespaceRef(mustPath("steps.login.header.Set-Cookie"))
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if !ok || got != "session=xyz" {
+			t.Errorf("steps.login.header.Set-Cookie = (%v, %v); want (\"session=xyz\", true)", got, ok)
+		}
+
+		// Case-insensitive match.
+		got, ok, err = s.resolveNamespaceRef(mustPath("steps.login.header.etag"))
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if !ok || got != "v1" {
+			t.Errorf("steps.login.header.etag = (%v, %v); want (\"v1\", true)", got, ok)
+		}
+
+		// Unknown step id resolves as (nil, false).
+		got, ok, err = s.resolveNamespaceRef(mustPath("steps.unknown.header.ETag"))
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if ok || got != nil {
+			t.Errorf("unknown step header should resolve as (nil,false); got (%v,%v)", got, ok)
+		}
+	})
+
+	t.Run("response_body_unset_resolves_as_nil", func(t *testing.T) {
+		s := newTestScope(t, nil, nil)
+		// Outside complete_when, s.body is nil — every response.body ref
+		// resolves as (nil, false). The validator already rejects such use
+		// at parse time; the runtime guard is the second line of defence.
+		got, ok, err := s.resolveNamespaceRef(mustPath("response.body.anything"))
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if ok || got != nil {
+			t.Errorf("response.body with no body context should resolve as (nil,false); got (%v,%v)", got, ok)
+		}
+	})
 }

@@ -794,7 +794,7 @@ func (v *validator) checkFanOutOverForm(path string, val Value) {
 func (v *validator) checkFanOutAsShadow(path, as string, namespace *ns) {
 	reserved := map[string]struct{}{
 		"state": {}, "cursor": {}, "extract": {},
-		"steps": {}, "item": {}, "body": {},
+		"steps": {}, "item": {}, "body": {}, "response": {},
 	}
 	if _, ok := reserved[as]; ok {
 		v.errorf(path, "fan_out.as %q shadows the reserved namespace name %q", as, as)
@@ -1066,8 +1066,12 @@ func (v *validator) checkError(path string, e ErrorBlock) {
 // ---- value reference checking ----
 
 // checkValue validates a Value within a namespace context.
-// allowBody indicates whether "body.<path>" refs are valid here (they are only
-// valid inside extract.path and response.events_at, not in top-level Value fields).
+// allowBody indicates whether the contextual response roots are valid here:
+// the legacy "body.<path>" and the new "response.body.<path>" /
+// "response.header.<name>" forms. Both are gated by the same flag because
+// they resolve against the same call-site response context. Set true at
+// complete_when predicate sites; false everywhere else (extract.path,
+// top-level Value fields, etc.).
 func (v *validator) checkValue(path string, val Value, namespace *ns, allowBody bool) {
 	if val.IsZero || val.LiteralString != nil || val.LiteralInt != nil || val.LiteralBool != nil {
 		return
@@ -1193,7 +1197,7 @@ func (v *validator) checkPathRef(path string, p Path, namespace *ns, allowBody b
 
 	case "steps":
 		if len(p.Parts) < 2 {
-			v.errorf(path, "steps ref requires an id: steps.<id>.body.<path>")
+			v.errorf(path, "steps ref requires an id: steps.<id>.body.<path> or steps.<id>.header.<name>")
 			return
 		}
 		id := p.Parts[1]
@@ -1202,24 +1206,53 @@ func (v *validator) checkPathRef(path string, p Path, namespace *ns, allowBody b
 			return
 		}
 		if len(p.Parts) < 3 {
-			v.errorf(path, "ref %q: steps ref must include the body segment: steps.%s.body.<path>", p.String(), id)
+			v.errorf(path, "ref %q: steps ref must include a kind segment: steps.%s.body.<path> or steps.%s.header.<name>", p.String(), id, id)
 			return
 		}
-		if p.Parts[2] != "body" {
-			v.errorf(path, "ref %q: steps ref second segment must be \"body\" (got %q); only steps.<id>.body.<path> is valid", p.String(), p.Parts[2])
+		switch p.Parts[2] {
+		case "body":
+			// steps.<id>.body.<path> — body segments are validated structurally
+			// by the Path codec; no further checks required here.
+		case "header":
+			if len(p.Parts) < 4 {
+				v.errorf(path, "ref %q: steps.<id>.header ref requires a header name: steps.%s.header.<name>", p.String(), id)
+			}
+		default:
+			v.errorf(path, "ref %q: steps ref second segment must be \"body\" or \"header\" (got %q); only steps.<id>.body.<path> and steps.<id>.header.<name> are valid", p.String(), p.Parts[2])
+		}
+
+	case "response":
+		if !allowBody {
+			v.errorf(path, "ref %q: response namespace is only valid inside complete_when predicates (pagination.scroll_id.complete_when, progress.async_job.poll.complete_when)", p.String())
+			return
+		}
+		if len(p.Parts) < 2 {
+			v.errorf(path, "ref %q: response ref requires a kind segment: response.body.<path> or response.header.<name>", p.String())
+			return
+		}
+		switch p.Parts[1] {
+		case "body":
+			// response.body.<path> — body segments are validated structurally
+			// by the Path codec.
+		case "header":
+			if len(p.Parts) < 3 {
+				v.errorf(path, "ref %q: response.header ref requires a header name: response.header.<name>", p.String())
+			}
+		default:
+			v.errorf(path, "ref %q: response second segment must be \"body\" or \"header\" (got %q); only response.body.<path> and response.header.<name> are valid", p.String(), p.Parts[1])
 		}
 
 	case "body":
 		if !allowBody {
-			v.errorf(path, "ref %q: body namespace is only valid inside complete_when predicates (pagination.scroll_id.complete_when, progress.async_job.poll.complete_when)", p.String())
+			v.errorf(path, "ref %q: body namespace is only valid inside complete_when predicates (pagination.scroll_id.complete_when, progress.async_job.poll.complete_when); use response.body.<path> in those sites going forward", p.String())
 		}
 
 	default:
 		if namespace.itemNamespace != "" {
-			v.errorf(path, "ref %q: unknown namespace root %q; want state|cursor|extract|steps|body|%s",
+			v.errorf(path, "ref %q: unknown namespace root %q; want state|cursor|extract|steps|body|response|%s",
 				p.String(), root, namespace.itemNamespace)
 		} else {
-			v.errorf(path, "ref %q: unknown namespace root %q; want state|cursor|extract|steps|body (or the fan_out.as name inside a fan_out step)",
+			v.errorf(path, "ref %q: unknown namespace root %q; want state|cursor|extract|steps|body|response (or the fan_out.as name inside a fan_out step)",
 				p.String(), root)
 		}
 	}
@@ -1228,9 +1261,11 @@ func (v *validator) checkPathRef(path string, p Path, namespace *ns, allowBody b
 // ---- predicate checking ----
 
 // checkPredicate validates a Predicate within a namespace context.
-// allowBody indicates whether "body.<path>" refs are valid (they are for
-// complete_when predicates that evaluate against a step's response body,
-// and for scroll_id.complete_when).
+// allowBody indicates whether the contextual response roots are valid — the
+// legacy "body.<path>" and the new "response.body.<path>" /
+// "response.header.<name>" forms. Both are accepted at complete_when
+// predicate sites (pagination.scroll_id.complete_when,
+// progress.async_job.poll.complete_when).
 func (v *validator) checkPredicate(path string, p Predicate, namespace *ns, allowBody bool) {
 	if p.IsZero() {
 		v.errorf(path, "predicate must not be empty")
@@ -1372,7 +1407,7 @@ func (v *validator) checkSendAs(path, s string) {
 // names. Used by the extract.path namespace-shadow warning.
 func isNamespaceRoot(s string) bool {
 	switch s {
-	case "state", "cursor", "extract", "steps", "item", "body":
+	case "state", "cursor", "extract", "steps", "item", "body", "response":
 		return true
 	}
 	return false

@@ -581,12 +581,20 @@ func (p *asyncJobProgress) phaseTransition(s *scope, stepID string, res *stepRes
 		done := true
 		if p.cfg.Poll != nil && p.cfg.Poll.CompleteWhen != nil {
 			// Defer-based restore so a future panic inside evalPredicate
-			// cannot leak the poll body into the next iteration's scope.
-			// scope.body must be "scoped to the complete_when predicate
-			// evaluation" — enforce that with the language.
-			prev := s.body
+			// cannot leak the poll body / headers into the next iteration's
+			// scope. scope.body / scope.responseHeaders must be "scoped to
+			// the complete_when predicate evaluation" — enforce that with
+			// the language. The predicate may reference either the legacy
+			// body.<path> root or the new response.body.<path> /
+			// response.header.<name> roots; both resolve against res.
+			prevBody := s.body
+			prevHeaders := s.responseHeaders
 			s.body = res.body
-			defer func() { s.body = prev }()
+			s.responseHeaders = res.headers
+			defer func() {
+				s.body = prevBody
+				s.responseHeaders = prevHeaders
+			}()
 			ok, err := s.evalPredicate(*p.cfg.Poll.CompleteWhen)
 			if err != nil {
 				return phase, false, false, fmt.Errorf("async_job.poll.complete_when: %w", err)

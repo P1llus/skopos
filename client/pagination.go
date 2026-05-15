@@ -596,16 +596,21 @@ func (p *scrollIDPagination) seed(s *scope) {
 	}
 }
 
-func (p *scrollIDPagination) advance(s *scope, body any, _ http.Header, _ []any) (bool, error) {
+func (p *scrollIDPagination) advance(s *scope, body any, headers http.Header, _ []any) (bool, error) {
 	// complete_when (if declared) wins over the zero-id default rule. We
 	// evaluate it against the producer body via the same {body: ...} scope
-	// mechanic async_job.poll uses for its complete_when — body.<path>
-	// resolves against the just-decoded response.
+	// mechanic async_job.poll uses for its complete_when. The predicate may
+	// reference either the legacy body.<path> root or the new
+	// response.body.<path> / response.header.<name> roots; both resolve
+	// against the just-decoded producer response.
 	if p.cfg.CompleteWhen != nil {
-		prev := s.body
+		prevBody := s.body
+		prevHeaders := s.responseHeaders
 		s.body = body
+		s.responseHeaders = headers
 		done, err := s.evalPredicate(*p.cfg.CompleteWhen)
-		s.body = prev
+		s.body = prevBody
+		s.responseHeaders = prevHeaders
 		if err != nil {
 			return false, fmt.Errorf("pagination.scroll_id.complete_when: %w", err)
 		}

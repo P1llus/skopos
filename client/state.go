@@ -5,6 +5,7 @@ package client
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/p1llus/skopos/schema"
@@ -115,6 +116,17 @@ func (m *MemoryStore) Save(s Snapshot) error { m.snap = s; return nil }
 //
 //   - body:           SCOPED to the complete_when predicate evaluation in
 //     async_job. Outside that narrow window the field is unset.
+//     The new response.body.<path> ref also resolves against this field;
+//     it is the same data, just under the new namespace name.
+//
+//   - responseHeaders: SCOPED, mirrors body. Set alongside scope.body
+//     whenever the response context is active (currently only
+//     complete_when predicate evaluation). Resolves response.header.<name>
+//     refs case-insensitively via http.Header.Get.
+//
+//   - stepHeaders:    PER-ITERATION, mirrors steps. Populated after every
+//     completed request whose req.ID is set. Resolves
+//     steps.<id>.header.<name> refs.
 //
 //   - fromPagination: PER-ITERATION. Reset by paginationPlan.seed at the
 //     top of every iteration.
@@ -129,9 +141,12 @@ type scope struct {
 	state   map[string]any
 	cursor  map[string]any
 	extract map[string]any
-	steps   map[string]any // step id → decoded body
-	item    any            // per-item binding when inside fan_out
-	body    any            // active complete_when body (unused outside the predicate)
+	steps   map[string]any         // step id → decoded body
+	item    any                    // per-item binding when inside fan_out
+	body    any                    // active response context body (unused outside the predicate);
+	                               // resolves both body.<path> (legacy) and response.body.<path> (new)
+	responseHeaders http.Header    // active response context headers (mirrors body)
+	stepHeaders     map[string]http.Header // step id → response headers
 
 	// Active pagination/progress signals exposed to Value via
 	// {from_pagination: ...} / {from_progress: ...}. Populated by the
@@ -164,6 +179,7 @@ func newScope(doc *schema.Doc, snap Snapshot, now func() time.Time) (*scope, err
 		cursor:         make(map[string]any),
 		extract:        make(map[string]any),
 		steps:          make(map[string]any),
+		stepHeaders:    make(map[string]http.Header),
 		fromPagination: make(map[string]any),
 		fromProgress:   make(map[string]any),
 		nowFn:          now,
@@ -256,17 +272,32 @@ func (s *scope) resolveNamespaceRef(p schema.Path) (any, bool, error) {
 		}
 		return walk(v, rest[1:])
 	case "steps":
-		// steps.<id>.body.<path>
-		if len(rest) < 2 || rest[1] != "body" {
-			return nil, false, fmt.Errorf("steps ref must be steps.<id>.body[.<path>]")
+		// steps.<id>.body.<path>  → decoded response body
+		// steps.<id>.header.<name> → response header value (first match)
+		if len(rest) < 2 {
+			return nil, false, fmt.Errorf("steps ref must be steps.<id>.body[.<path>] or steps.<id>.header.<name>")
 		}
 		stepID := rest[0]
-		body, ok := s.steps[stepID]
-		if !ok {
-			return nil, false, nil
+		switch rest[1] {
+		case "body":
+			body, ok := s.steps[stepID]
+			if !ok {
+				return nil, false, nil
+			}
+			top = body
+			return walk(top, rest[2:])
+		case "header":
+			if len(rest) < 3 {
+				return nil, false, fmt.Errorf("steps.<id>.header ref requires a header name")
+			}
+			h, ok := s.stepHeaders[stepID]
+			if !ok || h == nil {
+				return nil, false, nil
+			}
+			return headerLookup(h, rest[2])
+		default:
+			return nil, false, fmt.Errorf("steps ref must be steps.<id>.body[.<path>] or steps.<id>.header.<name>")
 		}
-		top = body
-		return walk(top, rest[2:])
 	case "item":
 		if s.item == nil {
 			return nil, false, nil
@@ -277,9 +308,54 @@ func (s *scope) resolveNamespaceRef(p schema.Path) (any, bool, error) {
 			return nil, false, nil
 		}
 		return walk(s.body, rest)
+	case "response":
+		// response.body.<path>    → s.body (same target as the legacy body.* root;
+		//                          uses lookupBodyPath so list indexing matches body.<...>)
+		// response.header.<name>  → s.responseHeaders[name] (first value, case-insensitive)
+		if len(rest) < 1 {
+			return nil, false, fmt.Errorf("response ref requires a kind segment: response.body[.<path>] or response.header.<name>")
+		}
+		switch rest[0] {
+		case "body":
+			if s.body == nil {
+				return nil, false, nil
+			}
+			return lookupBodyPath(s.body, rest[1:])
+		case "header":
+			if len(rest) < 2 {
+				return nil, false, fmt.Errorf("response.header ref requires a header name")
+			}
+			if s.responseHeaders == nil {
+				return nil, false, nil
+			}
+			return headerLookup(s.responseHeaders, rest[1])
+		default:
+			return nil, false, fmt.Errorf("response ref must be response.body[.<path>] or response.header.<name>")
+		}
 	default:
 		return nil, false, fmt.Errorf("unknown namespace root %q", root)
 	}
+}
+
+// headerLookup returns the first value for header `name` in h. The lookup is
+// case-insensitive via http.Header.Get (which canonicalises the key). Returns
+// (nil, false, nil) when the header is absent — callers decide whether that
+// counts as unresolved.
+func headerLookup(h http.Header, name string) (any, bool, error) {
+	if h == nil {
+		return nil, false, nil
+	}
+	if v := h.Get(name); v != "" {
+		return v, true, nil
+	}
+	// An explicitly-empty header value is still "present" for predicate
+	// purposes. Distinguish "absent" (no key) from "present but empty"
+	// via the canonical-key map lookup.
+	canonical := http.CanonicalHeaderKey(name)
+	if vs, ok := h[canonical]; ok && len(vs) > 0 {
+		return vs[0], true, nil
+	}
+	return nil, false, nil
 }
 
 // walk descends rest steps into v, treating each step as a map key. NDJSON

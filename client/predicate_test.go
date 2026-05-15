@@ -238,3 +238,67 @@ func TestEqualRule(t *testing.T) {
 		}
 	}
 }
+
+// TestEvalPredicate_ResponseBodyInterchangeableWithBody pins slice 1's
+// acceptance criterion 2: a complete_when predicate using
+// response.body.<path> must evaluate identically to one using the legacy
+// body.<path> form against the same scope. The two forms address the same
+// data — only the spelling differs.
+func TestEvalPredicate_ResponseBodyInterchangeableWithBody(t *testing.T) {
+	cases := []struct {
+		name string
+		body any
+		// pair: (legacy body path, new response.body path)
+		legacy, response schema.Predicate
+		want             bool
+	}{
+		{
+			name:     "eq_top_level_string",
+			body:     map[string]any{"status": "complete"},
+			legacy:   pEq("body.status", vStr("complete")),
+			response: pEq("response.body.status", vStr("complete")),
+			want:     true,
+		},
+		{
+			name:     "eq_nested_int",
+			body:     map[string]any{"meta": map[string]any{"page": int64(7)}},
+			legacy:   pEq("body.meta.page", vInt(7)),
+			response: pEq("response.body.meta.page", vInt(7)),
+			want:     true,
+		},
+		{
+			name:     "present_list_index",
+			body:     map[string]any{"items": []any{map[string]any{"id": "a"}}},
+			legacy:   pPresent("body.items.0.id"),
+			response: pPresent("response.body.items.0.id"),
+			want:     true,
+		},
+		{
+			name:     "missing_leaf_is_false",
+			body:     map[string]any{"meta": map[string]any{"page": int64(7)}},
+			legacy:   pPresent("body.meta.missing"),
+			response: pPresent("response.body.meta.missing"),
+			want:     false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestScope(t, nil, nil)
+			s.body = tc.body
+
+			gotLegacy, err := s.evalPredicate(tc.legacy)
+			if err != nil {
+				t.Fatalf("evalPredicate(legacy): %v", err)
+			}
+			gotResponse, err := s.evalPredicate(tc.response)
+			if err != nil {
+				t.Fatalf("evalPredicate(response): %v", err)
+			}
+			if gotLegacy != tc.want || gotResponse != tc.want {
+				t.Errorf("legacy=%v response=%v; want both %v", gotLegacy, gotResponse, tc.want)
+			}
+		})
+	}
+}

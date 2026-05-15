@@ -1314,3 +1314,307 @@ progress:
 		}
 	})
 }
+
+// TestSliceOneAdditiveRoots covers the three new namespace roots introduced
+// in slice 1 of the schema redesign:
+//
+//   - response.body.<path>     contextual; valid in complete_when predicates
+//   - response.header.<name>   contextual; valid in complete_when predicates
+//   - steps.<id>.header.<name> explicit; valid wherever steps.<id>.body.<...>
+//                              is, i.e. anywhere a Path is legal
+//
+// Slice 1 is purely additive — the legacy body.<path> form keeps working in
+// the same complete_when sites; slice 2 deletes it.
+func TestSliceOneAdditiveRoots(t *testing.T) {
+	// helper: validate src and return all error-severity messages joined.
+	validateErrs := func(t *testing.T, src string) []schema.Diagnostic {
+		t.Helper()
+		doc, err := schema.Parse([]byte(src))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		var out []schema.Diagnostic
+		for _, d := range schema.Validate(doc) {
+			if d.Severity == "error" {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+
+	t.Run("response_body_accepted_in_scroll_id_complete_when", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+response:
+  decode: json
+  events_at: events
+pagination:
+  scroll_id:
+    scroll_id_at: scroll
+    send_as: query.scroll_id
+    complete_when:
+      eq:
+        path: response.body.done
+        equal: true
+progress:
+  stateless: {}
+`
+		if diags := validateErrs(t, src); len(diags) != 0 {
+			t.Errorf("response.body in scroll_id.complete_when should validate; got %+v", diags)
+		}
+	})
+
+	t.Run("response_header_accepted_in_scroll_id_complete_when", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+response:
+  decode: json
+  events_at: events
+pagination:
+  scroll_id:
+    scroll_id_at: scroll
+    send_as: query.scroll_id
+    complete_when:
+      present: response.header.X-Done
+progress:
+  stateless: {}
+`
+		if diags := validateErrs(t, src); len(diags) != 0 {
+			t.Errorf("response.header in scroll_id.complete_when should validate; got %+v", diags)
+		}
+	})
+
+	t.Run("response_body_accepted_in_async_job_poll_complete_when", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - id: submit
+    method: POST
+    path: /api/v1/exports
+  - id: poll
+    method: GET
+    path: /api/v1/status
+    produces_events: true
+response:
+  decode: json
+  events_at: items
+pagination:
+  none: {}
+progress:
+  async_job:
+    submit:
+      step: submit
+    poll:
+      step: poll
+      complete_when:
+        eq:
+          path: response.body.status
+          equal: "complete"
+    on_complete:
+      cursor_update:
+        kind: use_now
+`
+		if diags := validateErrs(t, src); len(diags) != 0 {
+			t.Errorf("response.body in async_job.poll.complete_when should validate; got %+v", diags)
+		}
+	})
+
+	t.Run("steps_id_header_accepted_in_request_extract", func(t *testing.T) {
+		// steps.<id>.header.<name> is an explicit (non-contextual) root —
+		// allowed everywhere a Path is legal. Use it as a request header
+		// value referencing an earlier step.
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - id: meta
+    method: HEAD
+    path: /api/v1/meta
+  - method: GET
+    path: /api/v1/events
+    headers:
+      If-None-Match: {ref: steps.meta.header.ETag}
+response:
+  decode: json
+  events_at: events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		if diags := validateErrs(t, src); len(diags) != 0 {
+			t.Errorf("steps.<id>.header.<name> should validate in request headers; got %+v", diags)
+		}
+	})
+
+	t.Run("response_body_rejected_in_request_headers", func(t *testing.T) {
+		// response.* is contextual: it must be rejected outside the call-site
+		// allow-list. Slice 1 only permits it inside complete_when.
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    headers:
+      X-Probe: {ref: response.body.token}
+response:
+  decode: json
+  events_at: events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		if len(diags) == 0 {
+			t.Fatalf("response.body outside complete_when should error; got no diagnostics")
+		}
+		found := false
+		for _, d := range diags {
+			if strings.Contains(d.Message, "response namespace is only valid inside complete_when") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected 'response namespace is only valid inside complete_when' error; got %+v", diags)
+		}
+	})
+
+	t.Run("response_header_rejected_in_query", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    query:
+      from: {ref: response.header.X-Cursor}
+response:
+  decode: json
+  events_at: events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		found := false
+		for _, d := range diags {
+			if strings.Contains(d.Message, "response namespace is only valid inside complete_when") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected 'response namespace is only valid inside complete_when' error; got %+v", diags)
+		}
+	})
+
+	t.Run("response_bare_root_rejected_in_complete_when", func(t *testing.T) {
+		// response.* must carry a kind segment (body|header); a bare
+		// response.x ref must be rejected even where response is allowed.
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+response:
+  decode: json
+  events_at: events
+pagination:
+  scroll_id:
+    scroll_id_at: scroll
+    send_as: query.scroll_id
+    complete_when:
+      eq:
+        path: response.other.x
+        equal: true
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		found := false
+		for _, d := range diags {
+			if strings.Contains(d.Message, "response second segment must be") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected 'response second segment must be' error; got %+v", diags)
+		}
+	})
+
+	t.Run("steps_id_header_requires_name", func(t *testing.T) {
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - id: meta
+    method: HEAD
+    path: /api/v1/meta
+  - method: GET
+    path: /api/v1/events
+    headers:
+      X-Probe: {ref: steps.meta.header}
+response:
+  decode: json
+  events_at: events
+pagination:
+  none: {}
+progress:
+  stateless: {}
+`
+		diags := validateErrs(t, src)
+		found := false
+		for _, d := range diags {
+			if strings.Contains(d.Message, "steps.<id>.header ref requires a header name") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected 'steps.<id>.header ref requires a header name' error; got %+v", diags)
+		}
+	})
+
+	t.Run("legacy_body_path_still_accepted_in_complete_when", func(t *testing.T) {
+		// Slice 1 is additive: the legacy body.<path> root continues to
+		// work inside complete_when. Slice 2 deletes it.
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+response:
+  decode: json
+  events_at: events
+pagination:
+  scroll_id:
+    scroll_id_at: scroll
+    send_as: query.scroll_id
+    complete_when:
+      eq:
+        path: body.done
+        equal: true
+progress:
+  stateless: {}
+`
+		if diags := validateErrs(t, src); len(diags) != 0 {
+			t.Errorf("legacy body.<path> in complete_when should still validate in slice 1; got %+v", diags)
+		}
+	})
+}

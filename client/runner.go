@@ -590,9 +590,11 @@ func (r *Runner) runIteration(
 		if err := s.runExtracts(res, req.Extract); err != nil {
 			return iterationResult{}, fmt.Errorf("%s.extract: %w", reqLabel(req), err)
 		}
-		// Bind step body for downstream refs.
+		// Bind step body + headers for downstream refs:
+		// steps.<id>.body.<path> and steps.<id>.header.<name>.
 		if req.ID != "" {
 			s.steps[req.ID] = res.body
+			s.stepHeaders[req.ID] = res.headers
 		}
 
 		// requests[].cache: capture the step's token-shaped value into
