@@ -4,8 +4,9 @@
 # given EventsPerDrain=5 with 1-second spacing) instead of using_now.
 # phase: submit is restored after on_complete so the next iteration starts
 # the chain over.
+# The spec is loaded live from the embedded template.
 
-replace spec.yml /api/v1/exports /async_poll_latest_ts/exports
+exec skopos template show -o spec.yml async_poll_latest_ts
 replace spec.yml http://localhost:9999 $URL
 exec skopos run -i spec.yml --once --state state.json --trace trace.jsonl --out events.jsonl
 normalize trace.jsonl
@@ -14,77 +15,6 @@ cmp events.jsonl want_events.jsonl
 chomp want_state.json
 cmp state.json want_state.json
 
--- spec.yml --
-ir_version: "1"
-
-state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    api_key:
-      type: secret
-      default: "test-bearer-token-12345"
-
-defaults:
-  base_url: {ref: state.url}
-
-auth:
-  bearer:
-    token: {ref: state.api_key}
-
-requests:
-  - id: submit
-    method: POST
-    path: /api/v1/exports
-    body:
-      json:
-        since: {from_progress: latest_timestamp}
-    expect_status: [202]
-
-  - id: poll
-    method: GET
-    path:
-      concat:
-        - /api/v1/exports/
-        - {ref: cursor.export_id}
-        - /status
-
-  - id: fetch
-    method: GET
-    url: {ref: cursor.result_url}
-
-response:
-  decode: json
-  events_at: items
-
-pagination:
-  none: {}
-
-progress:
-  async_job:
-    submit:
-      step: submit
-      extract:
-        export_id: {path: export_id}
-    poll:
-      step: poll
-      complete_when:
-        eq:
-          path: body.status
-          equal: complete
-      extract:
-        result_url: {path: result_url}
-    fetch:
-      step: fetch
-    on_complete:
-      cursor_update:
-        kind: latest_event_timestamp
-        event_time:
-          path: timestamp
-
-error:
-  mode: standard
 -- want_trace.jsonl --
 {"elapsed":"<scrubbed>","iteration":1,"method":"POST","phase":"submit","request_body":"body 12 bytes, object-like","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>","Content-Type":"application/json"},"response_body":"body 27 bytes, object-like","started_at":"<scrubbed>","status":202,"step_id":"submit","url":"$URL_HOST/async_poll_latest_ts/exports"}
 {"elapsed":"<scrubbed>","iteration":2,"method":"GET","phase":"poll","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 100 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"poll","url":"$URL_HOST/async_poll_latest_ts/exports/exp-000001/status"}

@@ -1001,7 +1001,7 @@ func ptrValue(v schema.Value) *schema.Value { return &v }
 // state map see it as a runtime-typed FieldDecl.
 func TestAutoRegisteredFieldDecl(t *testing.T) {
 	t.Run("request_cache_store_in", func(t *testing.T) {
-		path := filepath.Join("testdata", "session_login_cached.yml")
+		path := filepath.Join("..", "templates", "session_login_cached.yml")
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read: %v", err)

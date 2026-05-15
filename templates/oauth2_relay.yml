@@ -1,12 +1,11 @@
-# schema/oauth2_relay — valid spec produces no diagnostics and exits 0
-# No testserver needed; validate performs static analysis only.
-
-exec skopos validate -i spec.yml
-! stderr .
-! stdout .
-
--- spec.yml --
-# auth.oauth2.client_credentials with cache + GraphQL Relay-style pagination.
+# oauth2_relay — OAuth2 client_credentials + GraphQL Relay pagination.
+#
+# Demonstrates: auth.oauth2.client_credentials with token caching combined
+# with pagination.graphql_relay. The runner POSTs the GraphQL query with
+# variables.after driven by the previous response's pageInfo.endCursor;
+# pagination terminates on hasNextPage=false. GraphQL has no dedicated
+# body.graphql variant — body.json with a query+variables object is the
+# canonical encoding.
 ir_version: "1"
 
 state:
@@ -19,10 +18,10 @@ state:
       default: "720h"
     page_size:
       type: int
-      default: 5
+      default: 2
     token_url:
       type: url
-      default: "http://localhost:9999/oauth2/token"
+      default: "http://localhost:9999/oauth2_relay/token"
     client_id:
       type: string
       default: "test-client"
@@ -33,9 +32,9 @@ state:
 defaults:
   base_url: {ref: state.url}
 
-# OAuth2 client_credentials with cached token + GraphQL Relay-style cursor
-# pagination. The token fetch is handled transparently; every main request
-# carries "Authorization: Bearer <access_token>".
+# OAuth2 client_credentials with cached token. Same shape as
+# oauth2_client_credentials, but the cached token rides POST GraphQL
+# requests rather than GET data requests.
 auth:
   oauth2:
     client_credentials:
@@ -47,11 +46,9 @@ auth:
         expiry_field: expires_in
         expiry_buffer: 60s
 
-# GraphQL: expressed as a JSON body with a query string and variables map.
-# There is no dedicated body.graphql variant; body.json is the right form.
 requests:
   - method: POST
-    path: /api/v1/graphql
+    path: /oauth2_relay/graphql
     body:
       json:
         query: |

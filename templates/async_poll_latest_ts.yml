@@ -1,25 +1,25 @@
-# schema/async_poll_latest_ts — valid spec produces no diagnostics and exits 0
-# No testserver needed; validate performs static analysis only.
+# async_poll_latest_ts — async submit/poll/fetch with timestamp-driven cursor.
+#
+# Sibling of async_poll.yml: same submit → poll → fetch chain, but the
+# on_complete cursor_update is kind=latest_event_timestamp — the cursor
+# advances to the max event timestamp seen in the fetch step's body instead
+# of using_now. Appropriate for async APIs whose fetch payload carries event
+# timestamps and the operator wants exactly-once semantics anchored to the
+# data.
 
-exec skopos validate -i spec.yml
-! stderr .
-! stdout .
-
--- spec.yml --
 ir_version: "1"
-
-# async_job sibling of async_poll.yml that exercises
-# `on_complete.cursor_update.kind: latest_event_timestamp` — the cursor
-# advances to the max event timestamp seen in the fetch step's body (with an
-# optional per-iteration lookback) instead of using_now. This is the right
-# choice for async APIs whose fetch payload carries event timestamps and the
-# operator wants exactly-once semantics anchored to the data.
 
 state:
   fields:
     url:
       type: url
       default: "http://localhost:9999"
+    initial_interval:
+      type: duration
+      default: "720h"
+    page_size:
+      type: int
+      default: 5
     api_key:
       type: secret
       default: "test-bearer-token-12345"
@@ -34,7 +34,7 @@ auth:
 requests:
   - id: submit
     method: POST
-    path: /api/v1/exports
+    path: /async_poll_latest_ts/exports
     body:
       json:
         since: {from_progress: latest_timestamp}
@@ -44,7 +44,7 @@ requests:
     method: GET
     path:
       concat:
-        - /api/v1/exports/
+        - /async_poll_latest_ts/exports/
         - {ref: cursor.export_id}
         - /status
 

@@ -16,7 +16,7 @@ import (
 // sessionLoginCachedDoc builds a two-step "POST /login → ride the token"
 // Doc: a login step carrying requests[].cache, then an events step that
 // rides the cached token as Bearer auth. The runtime counterpart of
-// schema/testdata/session_login_cached.yml.
+// templates/session_login_cached.yml.
 //
 // The bearer ref carries a default so the login step itself (auth is
 // applied to every request) does not fail on the first drain before the

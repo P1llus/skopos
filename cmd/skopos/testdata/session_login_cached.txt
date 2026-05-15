@@ -3,12 +3,9 @@
 # response's session_token into state.session_token + cursor's expiry stamp;
 # drain 2 reads the cached value within its expiry_buffer and SKIPS the
 # /login step entirely (only /events is traced).
-# The spec is loaded live from the embedded template. Both endpoints are
-# rewritten to the per-scenario prefix; localhost:9999 is replaced with $URL.
+# The spec is loaded live from the embedded template.
 
 exec skopos template show -o spec.yml session_login_cached
-replace spec.yml /api/v1/login /session_login_cached/login
-replace spec.yml /api/v1/events /session_login_cached/events
 replace spec.yml http://localhost:9999 $URL
 
 # Drain 1: cold cache. Both /login (cache miss → fetch) and /events traced.
