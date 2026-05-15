@@ -245,6 +245,11 @@ sinks, and tracing.
 | [`docs/stores.md`](docs/stores.md)                        | Plug in a custom state store (SQLite, BoltDB, …) |
 | [`Go API reference`](https://pkg.go.dev/github.com/p1llus/skopos) | Go API reference                         |
 
+
+## More examples
+
+More examples can be found by the generated golden files for each template in the [`cmd/skopos/testdata`](cmd/skopos/testdata) directory.
+
 ## License
 
 Skopos is licensed under the Apache License, Version 2.0. See
