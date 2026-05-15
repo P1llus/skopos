@@ -1,0 +1,24 @@
+# errors/extract_path_required_for_body_source — invalid spec; validate exits 1 with diagnostic
+# matching the substring tested by TestValidateErrors in
+# schema/fixtures_test.go.
+
+! exec skopos validate -i spec.yml
+! stderr .
+stdout 'path is required'
+
+-- spec.yml --
+ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+    extract:
+      - name: tag
+response:
+  decode: json
+  events_at: events
+pagination:
+  none: {}
+progress:
+  stateless: {}

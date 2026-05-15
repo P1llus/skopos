@@ -1,0 +1,70 @@
+# etag_conditional_middle — conditional middle step in a 3-step chain.
+#
+# Sibling of etag_conditional.yml. Same conditional primitives (if + on_status:
+# {304: skip}) but the conditional step sits in the MIDDLE of the chain
+# rather than at the end. The final step is the events producer; its path
+# is computed by a select.branches expression that consumes steps.middle's
+# body when the middle step ran, and falls through to a default path when
+# the middle step was skipped (either by if=false or by a 304 response).
+#
+# state.etag_check defaults to true so the middle step runs and returns
+# {"next_path": "/etag_conditional_middle/events"}; the final step picks
+# that path via the present-guarded select.branches arm. The fallback path
+# is exercised by overriding state.etag_check=false at runtime.
+
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    etag_check:
+      type: bool
+      default: true
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  none: {}
+
+requests:
+  - id: probe
+    method: GET
+    path: /etag_conditional_middle/probe
+
+  - id: middle
+    method: GET
+    path: /etag_conditional_middle/data
+    if:
+      eq:
+        path: state.etag_check
+        equal: true
+    on_status:
+      304: skip
+
+  - id: events
+    method: GET
+    path:
+      select:
+        branches:
+          - when:
+              present: steps.middle.body.next_path
+            value:
+              ref: steps.middle.body.next_path
+        default: /etag_conditional_middle/fallback
+    produces_events: true
+
+response:
+  decode: json
+  events_at: items
+
+pagination:
+  none: {}
+
+progress:
+  stateless: {}
+
+error:
+  mode: standard

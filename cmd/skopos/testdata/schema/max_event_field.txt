@@ -1,0 +1,54 @@
+# schema/max_event_field — valid spec produces no diagnostics and exits 0
+# No testserver needed; validate performs static analysis only.
+
+exec skopos validate -i spec.yml
+! stderr .
+! stdout .
+
+-- spec.yml --
+ir_version: "1"
+
+# Exercises progress.max_event_field — the variant for APIs that don't expose
+# a server-supplied "since" filter but whose events carry their own timestamps.
+# advance() walks the accumulated events and picks the max value at
+# event_time.path; the high-water mark is written to cursor.last_timestamp.
+# This is the per-iteration counterpart of latest_event_timestamp for sources
+# that return everything in one shot but where the operator wants to track
+# the most recently seen event timestamp.
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  - method: GET
+    path: /api/v1/events
+
+response:
+  decode: json
+  events_at: events
+
+pagination:
+  none: {}
+
+progress:
+  max_event_field:
+    event_time:
+      path: timestamp
+    initial:
+      lookback: "24h"
+
+error:
+  mode: standard

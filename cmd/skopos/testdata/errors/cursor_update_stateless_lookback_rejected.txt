@@ -1,0 +1,41 @@
+# errors/cursor_update_stateless_lookback_rejected — invalid spec; validate exits 1 with diagnostic
+# matching the substring tested by TestValidateErrors in
+# schema/fixtures_test.go.
+
+! exec skopos validate -i spec.yml
+! stderr .
+stdout 'lookback is meaningless when kind is ''stateless'''
+
+-- spec.yml --
+ir_version: "1"
+auth:
+  none: {}
+requests:
+  - id: submit
+    method: POST
+    path: /api/v1/submit
+  - id: poll
+    method: GET
+    path: /api/v1/status
+  - id: fetch
+    method: GET
+    path: /api/v1/result
+    produces_events: true
+response:
+  decode: json
+  events_at: events
+pagination:
+  none: {}
+progress:
+  async_job:
+    submit:
+      step: submit
+    poll:
+      step: poll
+      complete_when: {eq: {path: cursor.status, equal: "done"}}
+    fetch:
+      step: fetch
+    on_complete:
+      cursor_update:
+        kind: stateless
+        lookback: "-5m"

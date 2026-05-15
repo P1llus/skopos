@@ -1,0 +1,32 @@
+# async_poll_stateless — async_job with cursor_update.kind=stateless
+# Same submit → poll → fetch chain as async_poll_latest_ts but the
+# cursor_update is stateless: no last_timestamp is written on completion.
+# Only the framework-internal phase pointer (reset to "submit" after
+# on_complete) remains in the persisted cursor.
+# The spec is loaded live from the embedded template.
+
+exec skopos template show -o spec.yml async_poll_stateless
+replace spec.yml http://localhost:9999 $URL
+exec skopos run -i spec.yml --once --state state.json --trace trace.jsonl --out events.jsonl
+normalize trace.jsonl
+cmp trace.jsonl want_trace.jsonl
+cmp events.jsonl want_events.jsonl
+chomp want_state.json
+cmp state.json want_state.json
+
+-- want_trace.jsonl --
+{"elapsed":"<scrubbed>","iteration":1,"method":"POST","phase":"submit","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 27 bytes, object-like","started_at":"<scrubbed>","status":202,"step_id":"submit","url":"$URL_HOST/async_poll_stateless/exports"}
+{"elapsed":"<scrubbed>","iteration":2,"method":"GET","phase":"poll","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 100 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"poll","url":"$URL_HOST/async_poll_stateless/exports/exp-000001/status"}
+{"elapsed":"<scrubbed>","iteration":3,"method":"GET","phase":"fetch","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 347 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"fetch","url":"$URL_HOST/async_poll_stateless/results/exp-000001"}
+-- want_events.jsonl --
+{"id":"evt-000001","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
+{"id":"evt-000002","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}
+{"id":"evt-000003","seq_num":3,"timestamp":"2026-01-01T00:00:02Z"}
+{"id":"evt-000004","seq_num":4,"timestamp":"2026-01-01T00:00:03Z"}
+{"id":"evt-000005","seq_num":5,"timestamp":"2026-01-01T00:00:04Z"}
+-- want_state.json --
+{
+  "cursor": {
+    "phase": "submit"
+  }
+}

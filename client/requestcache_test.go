@@ -16,7 +16,7 @@ import (
 // sessionLoginCachedDoc builds a two-step "POST /login → ride the token"
 // Doc: a login step carrying requests[].cache, then an events step that
 // rides the cached token as Bearer auth. The runtime counterpart of
-// schema/testdata/session_login_cached.yml.
+// templates/session_login_cached.yml.
 //
 // The bearer ref carries a default so the login step itself (auth is
 // applied to every request) does not fail on the first drain before the
@@ -99,50 +99,6 @@ func newSessionLoginServers(t *testing.T, sessionToken string, expiresIn int) *s
 	}))
 	t.Cleanup(s.events.Close)
 	return s
-}
-
-// TestRequestCache_LoginFiresThenCached drives two drains over the same
-// Store: drain 1 runs the login step and caches the token; drain 2 finds
-// the cache still inside its expiry buffer and skips the login step while
-// still riding the cached token on the events request.
-func TestRequestCache_LoginFiresThenCached(t *testing.T) {
-	srv := newSessionLoginServers(t, "session-tok-1", 3600)
-
-	doc := sessionLoginCachedDoc(srv.events.URL, &schema.RequestCache{
-		StoreIn:      "session_token",
-		ExpiryField:  mustPath("expires_in"),
-		ExpiryBuffer: "60s",
-		ExpiryFormat: "duration",
-	})
-	// Point the login step at its own mock (the events mock is the base_url).
-	doc.Requests[0].URL = ptrValue(vStr(srv.login.URL + "/api/v1/login"))
-	doc.Requests[0].Path = nil
-
-	store := &MemoryStore{}
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: srv.events.Client()}
-
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain 1: %v", err)
-	}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain 2: %v", err)
-	}
-
-	if got := srv.loginCalls.Load(); got != 1 {
-		t.Errorf("login calls = %d, want 1 (cache hit on drain 2)", got)
-	}
-	if got := srv.eventCalls.Load(); got != 2 {
-		t.Errorf("events calls = %d, want 2 (events step runs every drain)", got)
-	}
-
-	snap, _ := store.Load()
-	if got, ok := snap.State["session_token"].(string); !ok || got != "session-tok-1" {
-		t.Errorf("state.session_token = %v (ok=%v), want session-tok-1", snap.State["session_token"], ok)
-	}
-	if _, ok := snap.Cursor["__step_session_token_expires_at"].(string); !ok {
-		t.Errorf("cursor.__step_session_token_expires_at = %v, want RFC 3339 string",
-			snap.Cursor["__step_session_token_expires_at"])
-	}
 }
 
 // TestRequestCache_ExpiredRefetch advances the clock past the cached

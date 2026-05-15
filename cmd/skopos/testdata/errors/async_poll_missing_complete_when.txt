@@ -1,0 +1,31 @@
+# errors/async_poll_missing_complete_when — invalid spec; validate exits 1 with diagnostic
+# matching the substring tested by TestValidateErrors in
+# schema/fixtures_test.go.
+
+! exec skopos validate -i spec.yml
+! stderr .
+stdout 'complete_when is required'
+
+-- spec.yml --
+ir_version: "1"
+auth:
+  none: {}
+requests:
+  - id: submit
+    method: POST
+    path: /api/v1/exports
+    expect_status: [202]
+  - id: poll
+    method: GET
+    path: /api/v1/status
+response:
+  decode: json
+  events_at: items
+pagination:
+  none: {}
+progress:
+  async_job:
+    submit:
+      step: submit
+    poll:
+      step: poll

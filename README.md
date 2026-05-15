@@ -164,6 +164,8 @@ runs end-to-end with no further configuration.
 | Operator-defined auth headers                           | [`custom_auth.yml`](templates/custom_auth.yml)                                  |
 | Multi-mode auth dispatched on a state flag              | [`multi_mode_auth.yml`](templates/multi_mode_auth.yml)                          |
 | OAuth2 client-credentials with cached access token      | [`oauth2_client_credentials.yml`](templates/oauth2_client_credentials.yml)      |
+| OAuth2 password grant with cached access token          | [`oauth2_password_grant.yml`](templates/oauth2_password_grant.yml)              |
+| OAuth2 + GraphQL Relay-style cursor pagination          | [`oauth2_relay.yml`](templates/oauth2_relay.yml)                                |
 | Session cookie via POST login                           | [`session_cookie.yml`](templates/session_cookie.yml)                            |
 | Cached JSON login with a per-step token cache           | [`session_login_cached.yml`](templates/session_login_cached.yml)                |
 | Minimal GET, no auth, no pagination                     | [`simple_get_object.yml`](templates/simple_get_object.yml)                      |
@@ -173,8 +175,11 @@ runs end-to-end with no further configuration.
 | Link-header pagination (RFC 5988)                       | [`link_header.yml`](templates/link_header.yml)                                  |
 | Next-URL-in-body pagination                             | [`next_url_in_body.yml`](templates/next_url_in_body.yml)                        |
 | `scroll_id` session                                     | [`scroll_id.yml`](templates/scroll_id.yml)                                      |
-| Async submit / poll / fetch                             | [`async_poll.yml`](templates/async_poll.yml)                                    |
+| Async submit / poll / fetch (clock-driven cursor)       | [`async_poll.yml`](templates/async_poll.yml)                                    |
+| Async submit / poll / fetch (timestamp-driven cursor)   | [`async_poll_latest_ts.yml`](templates/async_poll_latest_ts.yml)                |
+| Async submit / poll / fetch (no cursor advance)         | [`async_poll_stateless.yml`](templates/async_poll_stateless.yml)                |
 | ETag-driven conditional GET (304 skip)                  | [`etag_conditional.yml`](templates/etag_conditional.yml)                        |
+| ETag-driven conditional middle step in a 3-step chain   | [`etag_conditional_middle.yml`](templates/etag_conditional_middle.yml)          |
 | NDJSON response decode                                  | [`ndjson_response.yml`](templates/ndjson_response.yml)                          |
 | POST with JSON body                                     | [`post_json_body.yml`](templates/post_json_body.yml)                            |
 | POST with form-urlencoded body                          | [`post_form_body.yml`](templates/post_form_body.yml)                            |

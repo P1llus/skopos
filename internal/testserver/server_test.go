@@ -3,6 +3,7 @@
 package testserver_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -28,22 +29,22 @@ func newTestServer(t *testing.T, scenarios ...testserver.Scenario) *httptest.Ser
 	return httptest.NewServer(srv.Handler())
 }
 
-func getJSON(t *testing.T, client *http.Client, url, authHeader, authValue string) map[string]any {
+// doPost performs an HTTP POST with Basic-Auth credentials and returns the
+// decoded JSON response body.
+func doPost(t *testing.T, client *http.Client, url, user, pass string) map[string]any {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(nil))
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
-	if authHeader != "" {
-		req.Header.Set(authHeader, authValue)
-	}
+	req.SetBasicAuth(user, pass)
 	resp, err := client.Do(req)
 	if err != nil {
-		t.Fatalf("GET %s: %v", url, err)
+		t.Fatalf("POST %s: %v", url, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s: status %d", url, resp.StatusCode)
+		t.Fatalf("POST %s: status %d", url, resp.StatusCode)
 	}
 	var out map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {

@@ -1,0 +1,26 @@
+# etag_conditional_middle — conditional middle step in a 3-step chain.
+# state.etag_check defaults to true so the middle step runs and returns
+# {"next_path": "/etag_conditional_middle/events"}. The final step's
+# select.branches arm picks steps.middle.body.next_path (present) and
+# fetches /etag_conditional_middle/events for the event payload. Only the
+# final step is marked produces_events: true — middle body is consulted
+# for the path only.
+# The spec is loaded live from the embedded template.
+
+exec skopos template show -o spec.yml etag_conditional_middle
+replace spec.yml http://localhost:9999 $URL
+exec skopos run -i spec.yml --once --trace trace.jsonl --out events.jsonl
+normalize trace.jsonl
+cmp trace.jsonl want_trace.jsonl
+cmp events.jsonl want_events.jsonl
+
+-- want_trace.jsonl --
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1"},"response_body":"body 3 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"probe","url":"$URL_HOST/etag_conditional_middle/probe"}
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1"},"response_body":"body 48 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"middle","url":"$URL_HOST/etag_conditional_middle/data"}
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1"},"response_body":"body 347 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"events","url":"$URL_HOST/etag_conditional_middle/events"}
+-- want_events.jsonl --
+{"id":"evt-000001","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
+{"id":"evt-000002","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}
+{"id":"evt-000003","seq_num":3,"timestamp":"2026-01-01T00:00:02Z"}
+{"id":"evt-000004","seq_num":4,"timestamp":"2026-01-01T00:00:03Z"}
+{"id":"evt-000005","seq_num":5,"timestamp":"2026-01-01T00:00:04Z"}

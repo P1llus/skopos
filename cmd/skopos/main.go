@@ -9,9 +9,15 @@ import (
 )
 
 func main() {
+	os.Exit(Main())
+}
+
+// Main is the testable entry point for the skopos CLI. It returns the process
+// exit code so testscript.RunMain can invoke it in-process.
+func Main() int {
 	if len(os.Args) < 2 {
 		usage()
-		os.Exit(1)
+		return 1
 	}
 
 	switch os.Args[1] {
@@ -23,30 +29,31 @@ func main() {
 			if !errors.Is(err, errValidationFailed) {
 				fmt.Fprintln(os.Stderr, "skopos:", err)
 			}
-			os.Exit(1)
+			return 1
 		}
 	case "run":
 		if err := runRun(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "skopos:", err)
-			os.Exit(1)
+			return 1
 		}
 	case "init":
 		if err := runInit(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "skopos:", err)
-			os.Exit(1)
+			return 1
 		}
 	case "template":
 		if err := runTemplate(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "skopos:", err)
-			os.Exit(1)
+			return 1
 		}
 	case "-h", "--help", "help":
 		usage()
 	default:
 		fmt.Fprintf(os.Stderr, "skopos: unknown subcommand %q\n", os.Args[1])
 		usage()
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func usage() {
@@ -73,11 +80,10 @@ Usage:
   skopos template list
       List the names of all bundled spec templates.
 
-  skopos template show <name>
-      Print a bundled spec template to stdout. The name may be given
-      with or without the .yml extension. Redirect to a file to start
-      from a known-good pattern:
-          skopos template show bearer_simple > spec.yml
+  skopos template show [-o path] <name>
+      Print a bundled spec template to stdout (or write to -o path).
+      The name may be given with or without the .yml extension.
+          skopos template show -o spec.yml bearer_simple
 
 Flags (validate):
   -i path     Input file (YAML or JSON). Omit or use "-" for stdin.

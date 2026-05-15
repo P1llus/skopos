@@ -1,0 +1,22 @@
+# next_url_in_body — server returns next page URL in the response body
+# Boots the next_url_in_body scenario, runs one drain (3 pages), and asserts
+# the trace and events match the golden.
+# The spec is loaded live from the embedded template.
+
+exec skopos template show -o spec.yml next_url_in_body
+replace spec.yml http://localhost:9999 $URL
+exec skopos run -i spec.yml --once --trace trace.jsonl --out events.jsonl
+normalize trace.jsonl
+cmp trace.jsonl want_trace.jsonl
+cmp events.jsonl want_events.jsonl
+
+-- want_trace.jsonl --
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","query":{"limit":"<format:string>","since":"<from_progress:latest_timestamp>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 226 bytes, object-like","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/next_url_in_body/alerts"}
+{"elapsed":"<scrubbed>","iteration":2,"method":"GET","query":{"limit":"<format:string>","since":"<from_progress:latest_timestamp>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 226 bytes, object-like","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/next_url_in_body/alerts"}
+{"elapsed":"<scrubbed>","iteration":3,"method":"GET","query":{"limit":"<format:string>","since":"<from_progress:latest_timestamp>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 106 bytes, object-like","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/next_url_in_body/alerts"}
+-- want_events.jsonl --
+{"id":"evt-000001","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
+{"id":"evt-000002","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}
+{"id":"evt-000003","seq_num":3,"timestamp":"2026-01-01T00:00:02Z"}
+{"id":"evt-000004","seq_num":4,"timestamp":"2026-01-01T00:00:03Z"}
+{"id":"evt-000005","seq_num":5,"timestamp":"2026-01-01T00:00:04Z"}

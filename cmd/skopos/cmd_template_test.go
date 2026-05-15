@@ -3,25 +3,12 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/p1llus/skopos/templates"
 )
-
-func TestTemplateList_ContainsBearerSimple(t *testing.T) {
-	out := captureStdout(t, func() {
-		if err := runTemplateList(); err != nil {
-			t.Fatalf("runTemplateList: %v", err)
-		}
-	})
-
-	if !strings.Contains(out, "bearer_simple") {
-		t.Errorf("list output does not contain bearer_simple:\n%s", out)
-	}
-}
 
 func TestTemplateList_SortedAlphabetically(t *testing.T) {
 	names := templates.Names()
@@ -50,40 +37,19 @@ func TestTemplateList_SortedAlphabetically(t *testing.T) {
 	}
 }
 
-func TestTemplateShow_BearerSimple(t *testing.T) {
-	want, err := templates.Read("bearer_simple")
-	if err != nil {
-		t.Fatalf("templates.Read: %v", err)
-	}
-
-	out := captureStdout(t, func() {
-		if err := runTemplateShow("bearer_simple"); err != nil {
-			t.Fatalf("runTemplateShow: %v", err)
-		}
-	})
-
-	// The output must contain the embedded bytes.
-	if !strings.Contains(out, string(want)) && !bytes.Equal([]byte(out), want) {
-		// Allow for trailing newline difference.
-		if strings.TrimRight(out, "\n") != strings.TrimRight(string(want), "\n") {
-			t.Errorf("show output does not match embedded bytes")
-		}
-	}
-}
-
 func TestTemplateShow_AcceptsYmlExtension(t *testing.T) {
 	outWithout := captureStdout(t, func() {
-		if err := runTemplateShow("bearer_simple"); err != nil {
+		if err := runTemplateShow("bearer_simple", ""); err != nil {
 			t.Fatalf("show without ext: %v", err)
 		}
 	})
 	outYml := captureStdout(t, func() {
-		if err := runTemplateShow("bearer_simple.yml"); err != nil {
+		if err := runTemplateShow("bearer_simple.yml", ""); err != nil {
 			t.Fatalf("show with .yml: %v", err)
 		}
 	})
 	outLegacyYaml := captureStdout(t, func() {
-		if err := runTemplateShow("bearer_simple.yaml"); err != nil {
+		if err := runTemplateShow("bearer_simple.yaml", ""); err != nil {
 			t.Fatalf("show with legacy .yaml: %v", err)
 		}
 	})
@@ -96,7 +62,7 @@ func TestTemplateShow_AcceptsYmlExtension(t *testing.T) {
 }
 
 func TestTemplateShow_UnknownName(t *testing.T) {
-	err := runTemplateShow("no_such_template_xyz")
+	err := runTemplateShow("no_such_template_xyz", "")
 	if err == nil {
 		t.Fatal("expected error for unknown template, got nil")
 	}

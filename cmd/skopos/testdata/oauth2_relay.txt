@@ -1,0 +1,25 @@
+# oauth2_relay — OAuth2 client_credentials + GraphQL Relay pagination
+# Verifies: the runner fetches an OAuth2 token, then POSTs the GraphQL query
+# to /oauth2_relay/graphql with variables.after driven by relay_cursor.
+# PageSize=2, EventsPerDrain=5 → 3 pages (2 + 2 + 1) of relay-style cursor
+# pagination; pageInfo.hasNextPage drives termination on page 3.
+# The token endpoint is handled by the auth layer (not traced as an exchange).
+# The spec is loaded live from the embedded template.
+
+exec skopos template show -o spec.yml oauth2_relay
+replace spec.yml http://localhost:9999 $URL
+exec skopos run -i spec.yml --once --trace trace.jsonl --out events.jsonl
+normalize trace.jsonl
+cmp trace.jsonl want_trace.jsonl
+cmp events.jsonl want_events.jsonl
+
+-- want_trace.jsonl --
+{"elapsed":"<scrubbed>","iteration":1,"method":"POST","request_body":"body 213 bytes, object-like","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>","Content-Type":"application/json"},"response_body":"body 221 bytes, object-like","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/oauth2_relay/graphql"}
+{"elapsed":"<scrubbed>","iteration":2,"method":"POST","request_body":"body 217 bytes, object-like","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>","Content-Type":"application/json"},"response_body":"body 221 bytes, object-like","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/oauth2_relay/graphql"}
+{"elapsed":"<scrubbed>","iteration":3,"method":"POST","request_body":"body 217 bytes, object-like","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>","Content-Type":"application/json"},"response_body":"body 148 bytes, object-like","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/oauth2_relay/graphql"}
+-- want_events.jsonl --
+{"created_at":"2026-01-01T00:00:00Z","id":"evt-000001","seq_num":1}
+{"created_at":"2026-01-01T00:00:01Z","id":"evt-000002","seq_num":2}
+{"created_at":"2026-01-01T00:00:02Z","id":"evt-000003","seq_num":3}
+{"created_at":"2026-01-01T00:00:03Z","id":"evt-000004","seq_num":4}
+{"created_at":"2026-01-01T00:00:04Z","id":"evt-000005","seq_num":5}

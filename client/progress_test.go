@@ -1064,11 +1064,6 @@ func TestEndToEnd_AsyncJob_LatestEventTimestamp(t *testing.T) {
 	if submitSinces[1] != "2026-05-12T11:45:00Z" {
 		t.Errorf("drain-2 since = %q, want drain-1 max 2026-05-12T11:45:00Z", submitSinces[1])
 	}
-
-	snap, _ := store.Load()
-	if got := snap.Cursor["last_timestamp"]; got != "2026-05-12T11:45:00Z" {
-		t.Errorf("snapshot cursor.last_timestamp = %v, want drain-2 max 2026-05-12T11:45:00Z", got)
-	}
 }
 
 // asyncLatestEventTimestampDoc mirrors templates/async_poll.yml

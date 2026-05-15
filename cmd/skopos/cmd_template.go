@@ -3,6 +3,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -13,7 +14,7 @@ import (
 // runTemplate is the entry point for "skopos template".
 //
 //	skopos template list
-//	skopos template show <name>
+//	skopos template show [-o path] <name>
 func runTemplate(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("template: subcommand required (list, show)")
@@ -22,10 +23,7 @@ func runTemplate(args []string) error {
 	case "list":
 		return runTemplateList()
 	case "show":
-		if len(args) < 2 {
-			return fmt.Errorf("template show: name is required")
-		}
-		return runTemplateShow(args[1])
+		return runTemplateShowCmd(args[1:])
 	default:
 		return fmt.Errorf("template: unknown subcommand %q (use list or show)", args[0])
 	}
@@ -41,21 +39,34 @@ func runTemplateList() error {
 	return nil
 }
 
-func runTemplateShow(name string) error {
+// runTemplateShowCmd parses "skopos template show [-o path] <name>" and writes
+// the named template to -o path (or stdout when -o is omitted).
+func runTemplateShowCmd(args []string) error {
+	fs := flag.NewFlagSet("template show", flag.ContinueOnError)
+	out := fs.String("o", "", "Write template to this file instead of stdout. Use - for explicit stdout.")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("template show: name is required")
+	}
+	return runTemplateShow(fs.Arg(0), *out)
+}
+
+func runTemplateShow(name, outPath string) error {
 	data, err := templates.Read(name)
 	if err != nil {
 		// templates.Read already includes the available list in the message.
 		return err
 	}
-	// Ensure the output ends with a newline so shell redirections don't
-	// produce a file missing its trailing newline.
-	if _, err := os.Stdout.Write(data); err != nil {
+	// Ensure the output ends with a newline so file writes don't produce a
+	// file missing its trailing newline.
+	if !strings.HasSuffix(string(data), "\n") {
+		data = append(data, '\n')
+	}
+	if outPath == "" || outPath == "-" {
+		_, err = os.Stdout.Write(data)
 		return err
 	}
-	if !strings.HasSuffix(string(data), "\n") {
-		if _, err := fmt.Fprintln(os.Stdout); err != nil {
-			return err
-		}
-	}
-	return nil
+	return os.WriteFile(outPath, data, 0o644)
 }

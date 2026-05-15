@@ -61,6 +61,12 @@ func AllScenarios() []Scenario {
 		PostJSONBody(),
 		ScrollID(),
 		SessionCookie(),
+		OAuth2PasswordGrant(),
+		OAuth2Relay(),
+		AsyncPollLatestTS(),
+		AsyncPollStateless(),
+		EtagConditionalMiddle(),
+		SessionLoginCached(),
 	}
 }
 

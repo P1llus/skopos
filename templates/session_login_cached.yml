@@ -7,11 +7,6 @@
 # auth.oauth2.<grant>.cache — for vendors whose login does not fit the
 # OAuth2 client_credentials shape (custom JSON logins, session-key
 # exchanges, etc.).
-#
-# Run the matching mock first:
-#   go run ./examples/session_login_cached_mock
-# then:
-#   skopos validate -i spec.yml && skopos run -i spec.yml --once
 
 ir_version: "1"
 
@@ -40,14 +35,14 @@ auth:
     token: {ref: state.session_token, default: "pending"}
 
 requests:
-  # Step 1 (login): POST /api/v1/login. The cache: block captures the
-  # response's session_token field into state.session_token and pairs it
-  # with an expiry stamp at cursor.__step_session_token_expires_at. On the
-  # next iteration/drain the step is skipped while the token is still
+  # Step 1 (login): POST /session_login_cached/login. The cache: block
+  # captures the response's session_token field into state.session_token and
+  # pairs it with an expiry stamp at cursor.__step_session_token_expires_at.
+  # On the next iteration/drain the step is skipped while the token is still
   # inside its expiry_buffer.
   - id: login
     method: POST
-    path: /api/v1/login
+    path: /session_login_cached/login
     body:
       json:
         username: {ref: state.username}
@@ -58,10 +53,11 @@ requests:
       expiry_buffer: 60s
       expiry_format: duration
 
-  # Step 2 (events): GET /api/v1/events, riding the cached Bearer token.
+  # Step 2 (events): GET /session_login_cached/events, riding the cached
+  # Bearer token.
   - id: events
     method: GET
-    path: /api/v1/events
+    path: /session_login_cached/events
     produces_events: true
 
 response:

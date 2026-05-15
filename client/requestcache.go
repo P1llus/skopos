@@ -18,7 +18,7 @@ import (
 // The cached value lives at state.<cache.store_in> — the same top-level
 // response field name doubles as the state slot, so a Splunk login
 // (store_in: sessionKey), a Lacework login (store_in: token), or the
-// session_login_cached fixture (store_in: session_token) each capture
+// session_login_cached template (store_in: session_token) each capture
 // body.<store_in> into state.<store_in>. The slot is auto-registered as a
 // runtime string by the IR validator, so it survives across drains via the
 // deferred store.Save.
