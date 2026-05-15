@@ -1,9 +1,9 @@
 # session_login_cached — POST /login → cached token reused on drain 2.
 # Verifies the runner honours requests[].cache: drain 1 captures the
-# response's session_token into state.session_token + cursor's expiry stamp;
-# drain 2 reads the cached value within its expiry_buffer and SKIPS the
-# /login step entirely (only /events is traced).
-# The spec is loaded live from the embedded template.
+# response's session_token into state.session_token + the paired expiry
+# stamp at state.session_token_expires_at; drain 2 reads the cached value
+# within its expiry_buffer and SKIPS the /login step entirely (only /events
+# is traced). The spec is loaded live from the embedded template.
 
 exec skopos template show -o spec.yml session_login_cached
 replace spec.yml http://localhost:9999 $URL
@@ -15,9 +15,9 @@ cmp trace1.jsonl want_trace1.jsonl
 cmp events1.jsonl want_events1.jsonl
 
 # Drain 1 captured the issued token into state.session_token and paired it
-# with an expiry stamp at cursor.__step_session_token_expires_at.
+# with an expiry stamp at state.session_token_expires_at.
 grep '"session_token": "session-token-0001"' state.json
-grep '__step_session_token_expires_at' state.json
+grep 'session_token_expires_at' state.json
 
 # Drain 2: warm cache. /login MUST NOT appear in the trace — only /events.
 exec skopos run -i spec.yml --once --state state.json --trace trace2.jsonl --out events2.jsonl

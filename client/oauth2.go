@@ -23,7 +23,8 @@ import (
 //
 // Each grant participates in the <grant>.cache slot: the access token
 // lives at state.<store_in>; its expiry timestamp at
-// cursor.__oauth2_<store_in>_expires_at.
+// state.<store_in>_expires_at (slice 7 moved the expiry slot out of the
+// cursor namespace; both names are auto-registered as runtime strings).
 //
 // The token endpoint is fetched via the same *http.Client the runner uses
 // for the IR-described requests, so timeouts, transports, and proxies all
@@ -84,11 +85,13 @@ func (g oauth2Grant) cache() *schema.TokenCache {
 //
 // The cached token lives at state.<cache.store_in> (auto-registered as a
 // runtime string by the IR validator). The cached expiry timestamp lives
-// at cursor.__oauth2_<store_in>_expires_at as an RFC 3339 string. Two
-// slots, two persistence layers — both ride through the same deferred
-// store.Save in Runner.Drain. We do not stuff a structured value into the
-// state slot because the IR spec declares it a "string" type slot, and
-// downstream authors may legitimately {ref: state.<store_in>} as a string.
+// at state.<store_in>_expires_at as an RFC 3339 string (also
+// auto-registered as a runtime string; slice 7 moved this slot out of the
+// cursor namespace so Snapshot.Cursor carries only author-facing pagination
+// / progress state). Both slots ride through the same deferred store.Save
+// in Runner.Drain. We do not stuff a structured value into the state slot
+// because the IR spec declares it a "string" type slot, and downstream
+// authors may legitimately {ref: state.<store_in>} as a string.
 func (s *scope) oauth2Token(ctx context.Context, client *http.Client, grant oauth2Grant) (string, error) {
 	cache := grant.cache()
 	if cache != nil {
@@ -118,7 +121,7 @@ func (s *scope) cachedOAuth2Token(cache *schema.TokenCache) (string, bool) {
 	if !ok || tok == "" {
 		return "", false
 	}
-	expRaw, ok := s.cursor[oauth2ExpiryKey(cache.StoreIn)]
+	expRaw, ok := s.state[oauth2ExpiryKey(cache.StoreIn)]
 	if !ok {
 		return "", false
 	}
@@ -149,18 +152,21 @@ func (s *scope) cachedOAuth2Token(cache *schema.TokenCache) (string, bool) {
 // token-endpoint response body (cache.expiry_field).
 func (s *scope) storeOAuth2Token(cache *schema.TokenCache, token string, lifetime time.Duration) {
 	s.state[cache.StoreIn] = token
-	s.cursor[oauth2ExpiryKey(cache.StoreIn)] = s.now().Add(lifetime).UTC().Format(time.RFC3339Nano)
+	s.state[oauth2ExpiryKey(cache.StoreIn)] = s.now().Add(lifetime).UTC().Format(time.RFC3339Nano)
 }
 
-// oauth2ExpiryKey returns the cursor key paired with state.<storeIn> for
-// holding the access token's expiry timestamp.
+// oauth2ExpiryKey returns the state key paired with state.<storeIn> for
+// holding the access token's expiry timestamp. Auto-registered as a
+// runtime string by the IR validator (slice 7 moved this slot from
+// cursor.__oauth2_<storeIn>_expires_at into the state namespace so
+// Snapshot.Cursor carries only author-facing pagination / progress state).
 func oauth2ExpiryKey(storeIn string) string {
-	return "__oauth2_" + storeIn + "_expires_at"
+	return storeIn + "_expires_at"
 }
 
 // invalidateAuthCaches clears every OAuth2 token-cache slot reachable from
-// auth (state.<store_in> + cursor.__oauth2_<store_in>_expires_at) and
-// returns the store_in names that were cleared. Backs the runtime
+// auth (state.<store_in> + state.<store_in>_expires_at) and returns the
+// store_in names that were cleared. Backs the runtime
 // `on_status: invalidate_cache` verb (runner.go) — after the verb fires,
 // the next request misses the cache and forces a fresh token fetch.
 //
@@ -206,13 +212,14 @@ func oauth2CacheFor(o *schema.OAuth2Auth) *schema.TokenCache {
 }
 
 // clearOAuth2Cache removes the access token and its paired expiry timestamp
-// from the scope's state + cursor maps. snapshot() persists only keys that
-// exist in s.state / s.cursor, so the deletion round-trips cleanly through
-// the deferred Save: the next drain seeds with empty slots and the
-// cachedOAuth2Token miss path fires a fresh fetch.
+// from the scope's state map (both the token and the expiry slot live in
+// state after slice 7). snapshot() persists only keys that exist in
+// s.state, so the deletion round-trips cleanly through the deferred Save:
+// the next drain seeds with empty slots and the cachedOAuth2Token miss path
+// fires a fresh fetch.
 func (s *scope) clearOAuth2Cache(cache *schema.TokenCache) {
 	delete(s.state, cache.StoreIn)
-	delete(s.cursor, oauth2ExpiryKey(cache.StoreIn))
+	delete(s.state, oauth2ExpiryKey(cache.StoreIn))
 }
 
 // fetchOAuth2Token exchanges client/user credentials at grant.token_url for

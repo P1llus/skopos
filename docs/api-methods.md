@@ -174,14 +174,16 @@ auth:
 
 **What it does:** Wraps the OAuth2 token fetch in a fresh-vs-cached
 conditional. `store_in` names the state key the cached token lands in;
-`expiry_field` is the body-relative `Path` to the response field carrying
-the TTL (RFC 6749 `expires_in`, integer seconds, with `string→int` and
-`string→Go-duration` fallbacks); `expiry_buffer` is the "don't cut it too
-close" margin. The `store_in` key is auto-registered as a runtime
-`string` state field — authors must NOT also declare it under
-`state.fields`. Fresh fetch fires when
-`now + expiry_buffer >= cached_expires_at`. The expiry timestamp lives at
-`cursor.__oauth2_<store_in>_expires_at` as RFC 3339.
+`expiry_field` is a `Path` rooted at `response.body.<path>` of the token
+endpoint's response carrying the TTL (RFC 6749 `expires_in`, integer
+seconds, with `string→int` and `string→Go-duration` fallbacks);
+`expiry_buffer` is the "don't cut it too close" margin. The `store_in`
+key is auto-registered as a runtime `string` state field — authors must
+NOT also declare it under `state.fields`. The paired expiry slot
+(`<store_in>_expires_at`) auto-registers the same way. Fresh fetch fires
+when `now + expiry_buffer >= cached_expires_at`. The expiry timestamp
+lives at `state.<store_in>_expires_at` as RFC 3339 (slice 7 moved this
+slot out of the cursor namespace).
 
 **IR shape:**
 
@@ -766,16 +768,18 @@ just the first entry in `requests:`.
 session-key exchange) in a fresh-vs-cached conditional — the non-OAuth2
 counterpart of the OAuth2 token cache (§1.8). `store_in` names *both* the
 top-level response field captured *and* the state slot it lands in.
-`expiry_field` is the body-relative `Path` to the response field carrying
-the lifetime; `expiry_buffer` is the "don't cut it too close" margin;
-`expiry_format` selects how `expiry_field` is read — `duration` (default:
-a remaining lifetime, integer seconds or a Go duration string, same as
-OAuth2 `expires_in`) or one of the absolute-instant formats
-(`unix_seconds`, `unix_millis`, `rfc3339`, `rfc3339nano`). The `store_in`
-key is auto-registered as a runtime `string` state field and survives
-across iterations. The step is re-run when
-`now + expiry_buffer >= cached_expires_at`; the expiry timestamp lives at
-`cursor.__step_<store_in>_expires_at` as RFC 3339.
+`expiry_field` is a `Path` rooted at `response.body.<path>` of the cached
+step's own response carrying the lifetime; `expiry_buffer` is the "don't
+cut it too close" margin; `expiry_format` selects how `expiry_field` is
+read — `duration` (default: a remaining lifetime, integer seconds or a
+Go duration string, same as OAuth2 `expires_in`) or one of the
+absolute-instant formats (`unix_seconds`, `unix_millis`, `rfc3339`,
+`rfc3339nano`). The `store_in` key is auto-registered as a runtime
+`string` state field and survives across iterations; its paired
+`<store_in>_expires_at` slot auto-registers the same way. The step is
+re-run when `now + expiry_buffer >= cached_expires_at`; the expiry
+timestamp lives at `state.<store_in>_expires_at` as RFC 3339 (slice 7
+moved this slot out of the cursor namespace).
 
 **IR shape:**
 
@@ -805,9 +809,9 @@ ignores the `Authorization` header.
 
 **Cache invalidation:** A request step that declares
 `on_status: {401: invalidate_cache}` drops every step-cache slot
-(`state.<store_in>` + `cursor.__step_<store_in>_expires_at`) alongside
-the OAuth2 cache slots (§1.8), then advances as if the page came back
-empty. The next drain misses the cache and re-runs the login step.
+(`state.<store_in>` + `state.<store_in>_expires_at`) alongside the
+OAuth2 cache slots (§1.8), then advances as if the page came back empty.
+The next drain misses the cache and re-runs the login step.
 
 ### 3.11 Per-item fan-out
 

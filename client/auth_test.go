@@ -110,10 +110,12 @@ func oauth2Doc(apiURL, tokenURL string, grant oauth2GrantSpec, cache *schema.Tok
 			},
 		}}
 	}
-	// When cache is set, schema.Validate would auto-register the store_in field;
-	// emulate that here so newScope sees the slot as runtime-mutable.
+	// When cache is set, schema.Validate would auto-register the store_in
+	// field and its paired <store_in>_expires_at slot (slice 7); emulate
+	// that here so newScope sees both slots as runtime-mutable.
 	if cache != nil && cache.StoreIn != "" {
 		doc.State.Fields[cache.StoreIn] = schema.FieldDecl{Type: "string", Mutability: "runtime"}
+		doc.State.Fields[cache.StoreIn+"_expires_at"] = schema.FieldDecl{Type: "string", Mutability: "runtime"}
 	}
 	return doc
 }
@@ -208,8 +210,8 @@ func TestAuth_OAuth2_ClientCredentials_Cache_Hit(t *testing.T) {
 	if got, ok := snap.State["token"].(string); !ok || got != "tok-cc-cache" {
 		t.Errorf("state.token = %v (ok=%v), want tok-cc-cache", snap.State["token"], ok)
 	}
-	if _, ok := snap.Cursor["__oauth2_token_expires_at"].(string); !ok {
-		t.Errorf("cursor.__oauth2_token_expires_at = %v, want RFC 3339 string", snap.Cursor["__oauth2_token_expires_at"])
+	if _, ok := snap.State["token_expires_at"].(string); !ok {
+		t.Errorf("state.token_expires_at = %v, want RFC 3339 string", snap.State["token_expires_at"])
 	}
 }
 
@@ -451,9 +453,9 @@ func ptrBool(b bool) *bool { return &b }
 // TestOnStatus_InvalidateCache_OAuth2_ClearsSlots asserts that when the API
 // returns a 401 dispatched through `on_status: invalidate_cache`, the
 // runner drops the cached OAuth2 token from state.<store_in> AND the
-// paired expiry timestamp from cursor.__oauth2_<store_in>_expires_at.
-// The snapshot persisted by the deferred Save MUST not carry either key,
-// so the next drain refetches.
+// paired expiry timestamp from state.<store_in>_expires_at. The snapshot
+// persisted by the deferred Save MUST not carry either key, so the next
+// drain refetches.
 func TestOnStatus_InvalidateCache_OAuth2_ClearsSlots(t *testing.T) {
 	tok := newOAuth2TokenServer(t, "tok-fresh", 3600, "client_credentials", nil)
 
@@ -477,8 +479,7 @@ func TestOnStatus_InvalidateCache_OAuth2_ClearsSlots(t *testing.T) {
 	farFuture := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
 	store := &MemoryStore{}
 	_ = store.Save(Snapshot{
-		State:  map[string]any{"token": "stale-token"},
-		Cursor: map[string]any{"__oauth2_token_expires_at": farFuture},
+		State: map[string]any{"token": "stale-token", "token_expires_at": farFuture},
 	})
 
 	r := &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: api.Client()}
@@ -490,9 +491,9 @@ func TestOnStatus_InvalidateCache_OAuth2_ClearsSlots(t *testing.T) {
 	if _, ok := snap.State["token"]; ok {
 		t.Errorf("state.token = %v after invalidate_cache; want missing", snap.State["token"])
 	}
-	if _, ok := snap.Cursor["__oauth2_token_expires_at"]; ok {
-		t.Errorf("cursor.__oauth2_token_expires_at = %v after invalidate_cache; want missing",
-			snap.Cursor["__oauth2_token_expires_at"])
+	if _, ok := snap.State["token_expires_at"]; ok {
+		t.Errorf("state.token_expires_at = %v after invalidate_cache; want missing",
+			snap.State["token_expires_at"])
 	}
 }
 
@@ -568,9 +569,12 @@ func TestOnStatus_InvalidateCache_MultiMode_ClearsOAuth2Branch(t *testing.T) {
 			"static_token":  {Type: "secret", Default: "static-bearer"},
 			"auth_mode":     {Type: "string", Default: "static"},
 			// Auto-registered emulation: when multi_mode wraps an oauth2 cache
-			// the IR pre-pass does not auto-register the slot today, so we
-			// declare it explicitly here to mirror what an operator would do.
-			"token": {Type: "string", Mutability: "runtime"},
+			// the IR pre-pass does not auto-register the slots today, so we
+			// declare them explicitly here to mirror what an operator would do.
+			// Slice 7 pairs the cached token with state.<store_in>_expires_at
+			// (formerly cursor.__oauth2_<store_in>_expires_at).
+			"token":            {Type: "string", Mutability: "runtime"},
+			"token_expires_at": {Type: "string", Mutability: "runtime"},
 		}},
 		Defaults: &schema.Defaults{BaseURL: vRef("state.url")},
 		Auth: schema.Auth{MultiMode: &schema.MultiModeAuth{
@@ -607,8 +611,7 @@ func TestOnStatus_InvalidateCache_MultiMode_ClearsOAuth2Branch(t *testing.T) {
 	farFuture := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
 	store := &MemoryStore{}
 	_ = store.Save(Snapshot{
-		State:  map[string]any{"token": "stale-multi"},
-		Cursor: map[string]any{"__oauth2_token_expires_at": farFuture},
+		State: map[string]any{"token": "stale-multi", "token_expires_at": farFuture},
 	})
 
 	r := &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: api.Client()}
@@ -620,8 +623,8 @@ func TestOnStatus_InvalidateCache_MultiMode_ClearsOAuth2Branch(t *testing.T) {
 	if _, ok := snap.State["token"]; ok {
 		t.Errorf("state.token = %v after multi_mode invalidate_cache; want missing", snap.State["token"])
 	}
-	if _, ok := snap.Cursor["__oauth2_token_expires_at"]; ok {
-		t.Errorf("cursor.__oauth2_token_expires_at = %v after multi_mode invalidate_cache; want missing",
-			snap.Cursor["__oauth2_token_expires_at"])
+	if _, ok := snap.State["token_expires_at"]; ok {
+		t.Errorf("state.token_expires_at = %v after multi_mode invalidate_cache; want missing",
+			snap.State["token_expires_at"])
 	}
 }

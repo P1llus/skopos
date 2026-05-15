@@ -163,9 +163,11 @@ func (v *validator) run(d *Doc) {
 // Auto-registered runtime state slots (auth.oauth2.<grant>.cache.store_in and
 // requests[].cache.store_in) are also materialised in d.State.Fields as
 // FieldDecl{Type: "string", Mutability: "runtime"} when no explicit
-// declaration exists. Targets that walk d.State.Fields to emit a typed
-// state/cursor struct must see the auto-registered slot the same way they see
-// a declared one.
+// declaration exists. The paired expiry timestamp slot
+// (<store_in>_expires_at) auto-registers the same way: slice 7 moved the
+// expiry slot from cursor.__*_expires_at into state.<store_in>_expires_at,
+// so authors that walk d.State.Fields see both the token slot and its
+// expiry slot as runtime-mutable string fields.
 func preregisterStateAndCursor(d *Doc, namespace *ns) {
 	if d.State != nil {
 		for name := range d.State.Fields {
@@ -187,13 +189,20 @@ func preregisterStateAndCursor(d *Doc, namespace *ns) {
 			d.State.Fields[name] = FieldDecl{Type: "string", Mutability: "runtime"}
 		}
 	}
+	autoRegisterCache := func(storeIn string) {
+		if storeIn == "" {
+			return
+		}
+		autoRegister(storeIn)
+		autoRegister(storeIn + "_expires_at")
+	}
 	if d.Auth.OAuth2 != nil {
 		if cc := d.Auth.OAuth2.ClientCredentials; cc != nil && cc.Cache != nil && cc.Cache.StoreIn != "" {
-			autoRegister(cc.Cache.StoreIn)
+			autoRegisterCache(cc.Cache.StoreIn)
 			namespace.oauthStoreIn = cc.Cache.StoreIn
 		}
 		if pg := d.Auth.OAuth2.PasswordGrant; pg != nil && pg.Cache != nil && pg.Cache.StoreIn != "" {
-			autoRegister(pg.Cache.StoreIn)
+			autoRegisterCache(pg.Cache.StoreIn)
 			namespace.oauthStoreIn = pg.Cache.StoreIn
 		}
 	}
@@ -202,7 +211,7 @@ func preregisterStateAndCursor(d *Doc, namespace *ns) {
 			namespace.stepBodies[req.ID] = struct{}{}
 		}
 		if req.Cache != nil && req.Cache.StoreIn != "" {
-			autoRegister(req.Cache.StoreIn)
+			autoRegisterCache(req.Cache.StoreIn)
 		}
 		for _, ex := range req.Extract {
 			if ex.Target == "cursor" && ex.Name != "" {
@@ -428,8 +437,19 @@ func (v *validator) checkTokenCache(path string, c *TokenCache, namespace *ns, d
 	}
 	if c.StoreIn == "" {
 		v.errorf(path+".store_in", "store_in is required")
-	} else if _, conflict := declaredStateFields[c.StoreIn]; conflict {
-		v.errorf(path+".store_in", "store_in %q conflicts with a declared state.fields key", c.StoreIn)
+	} else {
+		if _, conflict := declaredStateFields[c.StoreIn]; conflict {
+			v.errorf(path+".store_in", "store_in %q conflicts with a declared state.fields key", c.StoreIn)
+		}
+		// Slice 7: the paired expiry timestamp auto-registers as
+		// state.<store_in>_expires_at, so an author-declared
+		// state.fields.<store_in>_expires_at collides with the slot the
+		// cache block claims.
+		if _, conflict := declaredStateFields[c.StoreIn+"_expires_at"]; conflict {
+			v.errorf(path+".store_in",
+				"store_in %q conflicts with a declared state.fields key %q (auto-registered by the cache block as the paired expiry slot)",
+				c.StoreIn, c.StoreIn+"_expires_at")
+		}
 	}
 	v.checkBodyRootedPath(path+".expiry_field", c.ExpiryField, namespace, false)
 	v.checkDuration(path+".expiry_buffer", "expiry_buffer", c.ExpiryBuffer)
@@ -500,6 +520,15 @@ func (v *validator) checkRequests(d *Doc, namespace *ns, declaredStateFields map
 			cp := fmt.Sprintf("%s.cache.store_in", p)
 			if _, conflict := declaredStateFields[req.Cache.StoreIn]; conflict {
 				v.errorf(cp, "store_in %q conflicts with a declared state.fields key", req.Cache.StoreIn)
+			}
+			// Slice 7: the paired expiry timestamp auto-registers as
+			// state.<store_in>_expires_at; an author-declared
+			// state.fields.<store_in>_expires_at collides with the slot
+			// the cache block claims.
+			if _, conflict := declaredStateFields[req.Cache.StoreIn+"_expires_at"]; conflict {
+				v.errorf(cp,
+					"store_in %q conflicts with a declared state.fields key %q (auto-registered by the cache block as the paired expiry slot)",
+					req.Cache.StoreIn, req.Cache.StoreIn+"_expires_at")
 			}
 			if namespace.oauthStoreIn == req.Cache.StoreIn {
 				v.errorf(cp, "store_in %q conflicts with auth.oauth2.<grant>.cache.store_in", req.Cache.StoreIn)

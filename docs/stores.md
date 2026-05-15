@@ -27,14 +27,18 @@ What lives where:
 - **`State`** carries runtime-mutable state fields — the only state
   declared in `state.fields` that changes between iterations. The OAuth2
   token cache slot (`auth.oauth2.<grant>.cache.store_in`) is the canonical
-  example; custom JSON logins are similar. Config-mutability fields
-  (the default, operator-supplied) are NOT persisted: they come from
+  example; custom JSON logins are similar. Each cache slot is paired with
+  a `<store_in>_expires_at` slot (also a runtime-mutable state field) that
+  holds the cached value's expiry timestamp as an RFC 3339 string — both
+  slots auto-register from the cache block, so authors never declare them
+  in `state.fields`. Config-mutability fields (the default,
+  operator-supplied) are NOT persisted: they come from
   `state.fields[<name>].default` and re-seed every Drain.
 - **`Cursor`** carries every cursor field inferred from the active
-  pagination + progress + async_job strategies, plus framework-internal
-  expiry slots paired with cached auth tokens
-  (`__oauth2_<store_in>_expires_at`). See the catalogue in
-  `client/state.go` for the exact key per strategy.
+  pagination + progress + async_job strategies. After slice 7 it is
+  author-facing only — the framework-internal expiry slots that used to
+  live at `cursor.__*_expires_at` moved into `State` (see above). The
+  catalogue in `client/state.go` lists the cursor key per strategy.
 
 Both maps hold values that round-trip through JSON cleanly: strings,
 numbers, booleans, nested maps. The bundled `FileStore` uses

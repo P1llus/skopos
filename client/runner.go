@@ -78,13 +78,13 @@ import (
 //     - "empty_events":    treat as a successful empty page; the cursor still
 //     advances normally.
 //     - "invalidate_cache": clears every OAuth2 token-cache slot reachable
-//     from doc.Auth (state.<store_in> + cursor.__oauth2_<store_in>_expires_at,
+//     from doc.Auth (state.<store_in> + state.<store_in>_expires_at,
 //     including each branch of an auth.multi_mode dispatch) AND every
 //     requests[].cache step-cache slot (state.<store_in> +
-//     cursor.__step_<store_in>_expires_at), then advances as if the page
-//     came back empty. The next request misses the cache and forces a fresh
-//     token fetch / login. When there is no cache block of either kind, the
-//     verb degrades to empty_events with a log line — nothing to invalidate.
+//     state.<store_in>_expires_at), then advances as if the page came back
+//     empty. The next request misses the cache and forces a fresh token
+//     fetch / login. When there is no cache block of either kind, the verb
+//     degrades to empty_events with a log line — nothing to invalidate.
 //
 //  2. document.error.mode — fallback for statuses not named in on_status.
 //
@@ -504,10 +504,9 @@ func (r *Runner) runIteration(
 				continue
 			case "invalidate_cache":
 				// Drop every OAuth2 token-cache slot reachable from doc.Auth
-				// (state.<store_in> + cursor.__oauth2_<store_in>_expires_at)
-				// AND every requests[].cache step-cache slot
-				// (state.<store_in> + cursor.__step_<store_in>_expires_at),
-				// then treat the page as empty. The cursor still advances at
+				// (state.<store_in> + state.<store_in>_expires_at) AND every
+				// requests[].cache step-cache slot (state.<store_in> +
+				// state.<store_in>_expires_at), then treat the page as empty. The cursor still advances at
 				// drain end; the next request misses the cache and forces a
 				// fresh token fetch / login. When there is nothing to clear
 				// the verb degrades to empty_events with an explanatory log
