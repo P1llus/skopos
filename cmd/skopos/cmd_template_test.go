@@ -57,7 +57,7 @@ func TestTemplateShow_BearerSimple(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		if err := runTemplateShow("bearer_simple"); err != nil {
+		if err := runTemplateShow("bearer_simple", ""); err != nil {
 			t.Fatalf("runTemplateShow: %v", err)
 		}
 	})
@@ -73,17 +73,17 @@ func TestTemplateShow_BearerSimple(t *testing.T) {
 
 func TestTemplateShow_AcceptsYmlExtension(t *testing.T) {
 	outWithout := captureStdout(t, func() {
-		if err := runTemplateShow("bearer_simple"); err != nil {
+		if err := runTemplateShow("bearer_simple", ""); err != nil {
 			t.Fatalf("show without ext: %v", err)
 		}
 	})
 	outYml := captureStdout(t, func() {
-		if err := runTemplateShow("bearer_simple.yml"); err != nil {
+		if err := runTemplateShow("bearer_simple.yml", ""); err != nil {
 			t.Fatalf("show with .yml: %v", err)
 		}
 	})
 	outLegacyYaml := captureStdout(t, func() {
-		if err := runTemplateShow("bearer_simple.yaml"); err != nil {
+		if err := runTemplateShow("bearer_simple.yaml", ""); err != nil {
 			t.Fatalf("show with legacy .yaml: %v", err)
 		}
 	})
@@ -96,7 +96,7 @@ func TestTemplateShow_AcceptsYmlExtension(t *testing.T) {
 }
 
 func TestTemplateShow_UnknownName(t *testing.T) {
-	err := runTemplateShow("no_such_template_xyz")
+	err := runTemplateShow("no_such_template_xyz", "")
 	if err == nil {
 		t.Fatal("expected error for unknown template, got nil")
 	}

@@ -1,0 +1,10 @@
+# validate/bearer_simple — valid spec produces no diagnostics and exits 0
+# No testserver needed; validate performs static analysis only.
+# The spec is loaded live from the embedded template.
+
+exec skopos template show -o spec.yml bearer_simple
+exec skopos validate -i spec.yml
+! stderr .
+cmp stdout want_stdout.txt
+
+-- want_stdout.txt --
