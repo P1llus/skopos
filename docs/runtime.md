@@ -43,13 +43,14 @@ The drain sequence:
 
 1. `Store.Load()` seeds scope from the persisted snapshot and merges IR
    `state.fields` defaults.
-2. `progress.seed` runs **once per drain**. It pins
-   `{from_progress: ...}` signals (e.g. `cursor.last_timestamp` →
-   `since=<...>`) so every page in this drain shares the same
-   window-start.
+2. `progress.seed` runs **once per drain**. It pins the active
+   progress signals into `scope.cursor` (e.g. `cursor.last_timestamp`,
+   `cursor.window_start` / `cursor.window_end`) so every page in this
+   drain shares the same window-start.
 3. Page loop:
-   1. `pagination.seed` populates `{from_pagination: ...}` for THIS
-      page.
+   1. `pagination.seed` updates the active pagination cursor fields
+      (`cursor.token`, `cursor.page`, `cursor.offset`, etc.) for THIS
+      page directly in `scope.cursor`.
    2. `scope.extract` and `scope.steps` reset (per-iteration).
    3. Requests run in declared order. `extract[]` writes hit `extract`
       (default) or `cursor`. Step ids cache decoded bodies in
@@ -67,18 +68,16 @@ The drain sequence:
 
 ## 3. Scope lifetimes
 
-`client` exposes four distinct lifetimes for scope namespaces:
+`client` exposes these lifetimes for scope namespaces:
 
-| Field            | Lifetime              | Notes                                                              |
-| ---------------- | --------------------- | ------------------------------------------------------------------ |
-| `state`          | per-drain (persisted) | Seeded from snapshot + IR defaults. Runtime writes persist.        |
-| `cursor`         | per-drain (persisted) | Mutated by pagination/progress drivers + `extract.target=cursor`.  |
-| `extract`        | per-iteration         | Reset at the top of every iteration.                               |
-| `steps`          | per-iteration         | Step bodies do not survive into the next iteration.                |
-| `item`           | per-fan-out-iteration | Reserved; unused until `fan_out` lands.                            |
-| `body`           | per-`complete_when`   | Active only during `complete_when` predicate evaluation.           |
-| `fromPagination` | per-iteration         | Re-seeded each page.                                               |
-| `fromProgress`   | per-drain             | Seeded once; window-start is stable across pages.                  |
+| Field      | Lifetime              | Notes                                                                                                       |
+| ---------- | --------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `state`    | per-drain (persisted) | Seeded from snapshot + IR defaults. Runtime writes persist (`mutability: runtime` fields, cache slots).     |
+| `cursor`   | per-drain (persisted) | Author-facing only. Mutated by pagination/progress drivers + `extract.target=cursor`.                       |
+| `extract`  | per-iteration         | Reset at the top of every iteration.                                                                        |
+| `steps`    | per-iteration         | Step bodies do not survive into the next iteration.                                                         |
+| `item`     | per-fan-out-iteration | Reserved; unused until `fan_out` lands.                                                                     |
+| `response` | per-`complete_when`   | Active only during `complete_when` predicate evaluation (`pagination.scroll_id`, `async_job.poll`).         |
 
 A value that must survive into the next iteration belongs in `state`
 (runtime mutability) or `cursor`. Steps and extracts are explicitly
@@ -204,14 +203,13 @@ state reached so far. A negative value disables the cap (tests only).
 | Variant                                                 | Notes |
 | ------------------------------------------------------- | ----- |
 | `pagination.none`                                       | |
-| `pagination.cursor_token`                               | `pagination.go`. Default completion when `{ref: <token_at>}` resolves to zero. |
-| `pagination.page_number` + `has_more_at` + `batch_size` | |
-| `pagination.offset` + `batch_size`                      | Roles `offset` and (when `batch_size` set) `offset_end`. |
-| `pagination.link_header` (+ optional `pattern`)         | RFC 5988 default; pattern overrides with a regex whose first capture group is the next URL. |
-| `pagination.next_url_in_body`                           | Role `next_url`; missing / non-string / empty value terminates the drain. |
-| `pagination.scroll_id` + `complete_when`                | First iteration leaves the role unset (server opens a fresh session); later iterations replay the id captured at `scroll_id_at`. |
-| `pagination.graphql_relay`                              | Role `relay_cursor` reads from `cursor.<cursor_var>` (the GraphQL variable name); `has_next_page_at` (boolean) drives termination. |
-| `send_as` implicit auto-injection                       | `pagination.go` (`autoInjectSlot` / `paginationAutoInjector`) + `http.go` (`queryDeclared` / `headerDeclared`). Producer-step only; explicit `{from_pagination: ...}` wins when both are present. |
+| `pagination.cursor_token`                               | `pagination.go`. `cursor.token` carries the next-page token. Default completion when `{ref: cursor.token}` resolves to zero. |
+| `pagination.page_number` + `has_more_at` + `batch_size` | `cursor.page` carries the next page number. |
+| `pagination.offset` + `batch_size`                      | `cursor.offset` (and, when `batch_size` is set, `cursor.offset_end`) carry the next window bounds. |
+| `pagination.link_header` (+ optional `pattern`)         | RFC 5988 default; pattern overrides with a regex whose first capture group is the next URL. `cursor.next_link` carries the URL — not auto-injected; read it back in the request's `url` slot. |
+| `pagination.next_url_in_body`                           | `cursor.next_url` carries the URL — not auto-injected; read it back in the request's `url` slot. Missing / non-string / empty value terminates the drain. |
+| `pagination.scroll_id` + `complete_when`                | First iteration leaves the cursor slot unset (server opens a fresh session); later iterations replay the id captured at `scroll_id_at`. |
+| `pagination.graphql_relay`                              | `cursor.<cursor_var>` (the GraphQL variable name) carries the end-cursor; `has_next_page_at` (boolean) drives termination. |
 
 ### 8.5 Progress
 
@@ -219,9 +217,9 @@ state reached so far. A negative value disables the cap (tests only).
 | ----------------------------------------------------------------------------- | ----- |
 | `progress.stateless`                                                          | |
 | `progress.latest_event_timestamp` + `initial.lookback` + per-iter `lookback`  | `progress.go`. |
-| `progress.max_event_field`                                                    | `progress.go`. Role `latest_timestamp`. Shares the `maxEventTime` events-walk helper with `latest_event_timestamp` and async_job's `kind=latest_event_timestamp`. |
+| `progress.max_event_field`                                                    | `progress.go`. `cursor.last_timestamp` carries the high-water mark. Shares the `maxEventTime` events-walk helper with `latest_event_timestamp` and async_job's `kind=latest_event_timestamp`. |
 | `progress.use_now`                                                            | `progress.go`. Advance writes `cursor.last_timestamp = s.now() - lookback`; no events walk. |
-| `progress.time_window`                                                        | `progress.go`. Roles `window_start` / `window_end` (formatted via `cfg.Format`; default `rfc3339`; closed set rfc3339 / rfc3339nano / unix_seconds / unix_millis). First run is `[now() - initial_offset, now()]`; advance slides `window_start` to the just-finished `window_end`. `window_end` clamps to ≥ `window_start` so a backwards-running clock cannot invert the window. |
+| `progress.time_window`                                                        | `progress.go`. `cursor.window_start` / `cursor.window_end` carry the active window (formatted via `cfg.Format`; default `rfc3339`; closed set rfc3339 / rfc3339nano / unix_seconds / unix_millis). First run is `[now() - initial_offset, now()]`; advance slides `window_start` to the just-finished `window_end`. `window_end` clamps to ≥ `window_start` so a backwards-running clock cannot invert the window. |
 | `progress.async_job` (submit / poll / fetch phase machine)                    | `progress.go`. |
 | `async_job.on_complete.cursor_update.kind = stateless`                        | |
 | `async_job.on_complete.cursor_update.kind = use_now`                          | |
@@ -231,14 +229,14 @@ state reached so far. A negative value disables the cap (tests only).
 
 All `Value` discriminator keys are wired: `literal_string`,
 `literal_int`, `literal_bool`, `ref` (+ `default`), `now` (+ `offset`),
-`concat`, `select` (Predicate branches + default), `from_pagination`
-(roles `token` / `page` / `offset` / `offset_end` / `next_link` /
-`next_url` / `scroll_id` / `relay_cursor`), `from_progress`
-(`latest_timestamp` for `latest_event_timestamp` / `max_event_field` /
-`use_now`; `window_start` / `window_end` for `time_window`), `format`
+`concat`, `select` (Predicate branches + default), `format`
 (all verbs: `string`, `int`, `bool`, `rfc3339`, `rfc3339nano`,
 `unix_seconds`, `unix_millis`, `duration`, `url_encode`,
-`parse_duration`), `base64`, `object`, `list`.
+`parse_duration`), `base64`, `object`, `list`. Active
+pagination / progress signals reach a request slot through a plain
+`{ref: cursor.<name>}` (e.g. `cursor.token`, `cursor.last_timestamp`,
+`cursor.window_start`) — there are no role-discriminated Value
+variants for pagination or progress signals.
 
 ### 8.7 Predicate forms
 
@@ -248,14 +246,17 @@ All `Predicate` forms are wired and tested (`predicate.go`,
 
 Ordered comparisons coerce time strings → `time.Time`, int / int64 →
 numeric, otherwise lexicographic fallback. Equality uses
-`reflect.DeepEqual` first, then `toString` fallback. Body-relative
-`body.<path>` predicates are valid only inside `complete_when`.
+`reflect.DeepEqual` first, then `toString` fallback. The
+`response.body.<path>` and `response.header.<name>` roots are valid
+only inside `complete_when` predicates
+(`pagination.scroll_id.complete_when`,
+`progress.async_job.poll.complete_when`).
 
 ### 8.8 Path
 
 Dotted-string and `{parts: [...]}` escape form are decoded by
 `schema.Path`; the runner consumes parsed segments. Namespace
-resolution (`state`, `cursor`, `extract`, `steps`, `item`, `body`)
+resolution (`state`, `cursor`, `extract`, `steps`, `item`, `response`)
 lives in `state.go`. Body-relative traversal — including NDJSON arrays
 — lives in `bodypath.go`.
 
