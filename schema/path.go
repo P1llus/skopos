@@ -11,11 +11,11 @@ import (
 )
 
 // Path is a typed identifier for a dotted-string reference into one of the
-// IR's defined namespaces (state, cursor, extract, steps, item, body).
+// IR's defined namespaces (state, cursor, extract, steps, item, response).
 //
 // Primary form (dotted string):
 //
-//	events_at: data.issues.nodes
+//	events_at: response.body.data.issues.nodes
 //	ref: cursor.last_timestamp
 //
 // Segment-escape form for field names containing dots or other special chars:

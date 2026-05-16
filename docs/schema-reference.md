@@ -74,11 +74,11 @@ Regenerate with `go run ./tools/gen-schema-doc`; CI runs
 _Defined in `schema/path.go`._
 
 Path is a typed identifier for a dotted-string reference into one of the
-IR's defined namespaces (state, cursor, extract, steps, item, body).
+IR's defined namespaces (state, cursor, extract, steps, item, response).
 
 Primary form (dotted string):
 
-	events_at: data.issues.nodes
+	events_at: response.body.data.issues.nodes
 	ref: cursor.last_timestamp
 
 Segment-escape form for field names containing dots or other special chars:
@@ -318,7 +318,7 @@ TokenCache describes how the fetched OAuth2 token is cached across iterations.
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `StoreIn` | `store_in` | `string` | no | StoreIn names the state key the cached token lives in (auto-registered as a runtime string field; not declared in state.fields). |
-| `ExpiryField` | `expiry_field` | `Path` | no | ExpiryField is a body-relative Path locating the response field that carries the token's lifetime. Typed as Path for consistency with every other body-relative locator in the IR; dotted-string YAML decodes cleanly. |
+| `ExpiryField` | `expiry_field` | `Path` | no | ExpiryField is a namespace-rooted Path locating the response field that carries the token's lifetime. Must be rooted at response.body.<path> (the token endpoint's own response) or steps.<id>.body.<path> (a labelled prior step). |
 | `ExpiryBuffer` | `expiry_buffer` | `string` | no | ExpiryBuffer is a Go-style duration; the runtime refreshes the cached token once the remaining lifetime drops below this buffer. |
 
 ## `MultiModeAuth`
@@ -362,7 +362,7 @@ Request describes a single HTTP request in the chain.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `ID` | `id` | `string` | yes | ID is the optional step label. When set it joins the steps.<id>.body namespace and can be named as an async_job role step. |
+| `ID` | `id` | `string` | yes | ID is the optional step label. When set it joins the steps.<id>.body.<path> and steps.<id>.header.<name> namespaces and can be named as an async_job role step. |
 | `Method` | `method` | `string` | no | Method is the HTTP verb (GET/POST/PUT/PATCH/DELETE/HEAD). |
 | `Path` | `path` | `*Value` | yes | Path is the request path; combined with defaults.base_url. Mutually exclusive with URL. |
 | `URL` | `url` | `*Value` | yes | URL is the absolute request URL. Mutually exclusive with Path. |
@@ -390,7 +390,7 @@ expiry_buffer has passed.
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `StoreIn` | `store_in` | `string` | no | StoreIn names the state slot (auto-registered as a runtime string field). Authors must NOT also declare this under state.fields. |
-| `ExpiryField` | `expiry_field` | `Path` | no | ExpiryField is the body-relative path to the response field carrying the value's lifetime (a Go duration string when ExpiryFormat is "duration", a numeric Unix-second timestamp when "unix_seconds", etc.). |
+| `ExpiryField` | `expiry_field` | `Path` | no | ExpiryField is a namespace-rooted Path locating the response field that carries the value's lifetime (a Go duration string when ExpiryFormat is "duration", a numeric Unix-second timestamp when "unix_seconds", etc.). Must be rooted at response.body.<path> (the cached step's own response) or steps.<id>.body.<path> (a labelled prior step). |
 | `ExpiryBuffer` | `expiry_buffer` | `string` | no | ExpiryBuffer is a Go-style duration; the runtime re-runs the step once the remaining lifetime drops below this buffer. |
 | `ExpiryFormat` | `expiry_format` | `string` | yes | ExpiryFormat is one of the format verbs; defaults to "duration". |
 
@@ -441,7 +441,7 @@ Response describes how to decode the response body and locate events.
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `Decode` | `decode` | `string` | no | Decode is the body decoder verb: "json" or "ndjson". |
-| `EventsAt` | `events_at` | `Path` | no | EventsAt is a body Path locating the events list. The zero Path (empty / unset) means "body root": the entire decoded body IS the events list, with no nesting to traverse. |
+| `EventsAt` | `events_at` | `Path` | no | EventsAt is a namespace-rooted Path locating the events list, rooted at response.body.<path> (the active producer step) or steps.<id>.body.<path> (a labelled prior step). The zero Path (empty / unset) means "body root": the entire decoded body IS the events list, with no nesting to traverse. |
 | `PlaceholderEvent` | `placeholder_event` | `*Value` | yes | PlaceholderEvent is the Value emitted in place of an empty page when the prior iteration produced zero events and pagination advanced. Optional. |
 
 ## `Pagination`
@@ -470,7 +470,7 @@ CursorTokenPagination advances via an opaque cursor token in the response body.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `TokenAt` | `token_at` | `Path` | no | TokenAt is the body path of the next-page cursor. |
+| `TokenAt` | `token_at` | `Path` | no | TokenAt is a namespace-rooted Path locating the next-page cursor. Must be rooted at response.body.<path> (the producer step) or steps.<id>.body.<path> (a labelled prior step). |
 
 ## `PageNumberPagination`
 
@@ -481,7 +481,7 @@ PageNumberPagination advances by incrementing a page number query param.
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `PageParam` | `page_param` | `string` | no | PageParam is the URL query parameter that carries the page number. |
-| `HasMoreAt` | `has_more_at` | `Path` | yes | HasMoreAt is the optional body path to a boolean has-more flag. When unset, pagination terminates when an empty page arrives. |
+| `HasMoreAt` | `has_more_at` | `Path` | yes | HasMoreAt is the optional namespace-rooted Path to a boolean has-more flag, rooted at response.body.<path> or steps.<id>.body.<path>. When unset, pagination terminates when an empty page arrives. |
 | `BatchSize` | `batch_size` | `*Value` | yes | BatchSize is the optional per-page size value. |
 
 ## `OffsetPagination`
@@ -513,7 +513,7 @@ NextURLInBodyPagination reads a fully-formed next-page URL from the body.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `NextURLAt` | `next_url_at` | `Path` | no | NextURLAt is the body path to the next-page URL. |
+| `NextURLAt` | `next_url_at` | `Path` | no | NextURLAt is a namespace-rooted Path to the next-page URL. Must be rooted at response.body.<path> (the producer step) or steps.<id>.body.<path> (a labelled prior step). |
 
 ## `ScrollIDPagination`
 
@@ -523,7 +523,7 @@ ScrollIDPagination maintains a server-side scroll session.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `ScrollIDAt` | `scroll_id_at` | `Path` | no | ScrollIDAt is the body path of the server-supplied scroll id. |
+| `ScrollIDAt` | `scroll_id_at` | `Path` | no | ScrollIDAt is a namespace-rooted Path locating the server-supplied scroll id. Must be rooted at response.body.<path> (the producer step) or steps.<id>.body.<path> (a labelled prior step). |
 | `CompleteWhen` | `complete_when` | `*Predicate` | yes | CompleteWhen is an optional predicate evaluated against the producer body that terminates the scroll early. |
 
 ## `GraphQLRelayPagination`
@@ -534,8 +534,8 @@ GraphQLRelayPagination follows GraphQL Relay-style cursor pagination.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `HasNextPageAt` | `has_next_page_at` | `Path` | no | HasNextPageAt is the body path to the boolean has-next-page flag. |
-| `EndCursorAt` | `end_cursor_at` | `Path` | no | EndCursorAt is the body path to the endCursor string. |
+| `HasNextPageAt` | `has_next_page_at` | `Path` | no | HasNextPageAt is a namespace-rooted Path to the boolean has-next-page flag, rooted at response.body.<path> or steps.<id>.body.<path>. |
+| `EndCursorAt` | `end_cursor_at` | `Path` | no | EndCursorAt is a namespace-rooted Path to the endCursor string, rooted at response.body.<path> or steps.<id>.body.<path>. |
 | `CursorVar` | `cursor_var` | `string` | no | CursorVar is the author-chosen GraphQL variable name that carries endCursor on the next request (typically "after"). |
 
 ## `Progress`
@@ -770,7 +770,7 @@ the new field still propagates the secret marker.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `Path` | `ref` | `Path` | no | Path is the namespace-rooted locator (state.<name>, cursor.<name>, extract.<name>, steps.<id>.body.<path>, etc.). |
+| `Path` | `ref` | `Path` | no | Path is the namespace-rooted locator. Legal roots: state.<name>, cursor.<name>, extract.<name>, steps.<id>.body.<path>, steps.<id>.header.<name>, response.body.<path>, response.header.<name>, item.<path>. The response.<...> roots are contextual: valid only at the call sites listed in docs/schema.md ("response.* call-site table") — most commonly inside complete_when predicates. |
 | `Default` | `default` | `*Value` | yes | Default, when set, is the fallback Value used when the reference resolves to nil at evaluation time. |
 
 ## `NowValue`

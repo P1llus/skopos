@@ -196,7 +196,7 @@ auth:
       client_secret: {ref: state.client_secret}
       cache:
         store_in: token
-        expiry_field: expires_in
+        expiry_field: response.body.expires_in
         expiry_buffer: 60s
 ```
 
@@ -329,9 +329,9 @@ explicit has-next signal or when the returned page is shorter than
 ```yaml
 pagination:
   page_number:
-    page_param: page              # just the param name (no "query." prefix)
-    has_more_at: meta.has_next    # optional; body Path to a boolean
-    batch_size: {ref: state.page_size}   # optional; short page also terminates
+    page_param: page                          # just the param name (no "query." prefix)
+    has_more_at: response.body.meta.has_next  # optional; namespace-rooted Path to a boolean
+    batch_size: {ref: state.page_size}        # optional; short page also terminates
 ```
 
 The page number is read by the request via `{ref: cursor.page}` —
@@ -463,7 +463,18 @@ requests:
 
 pagination:
   next_url_in_body:
-    next_url_at: meta.next_page             # or "@odata.nextLink", links.next, etc.
+    next_url_at: response.body.meta.next_page   # or response.body.links.next, etc.
+```
+
+When the source field name contains a literal `.` (e.g. OData's
+`@odata.nextLink`), use the segment-escape form so the dotted parser does
+not split inside the field name:
+
+```yaml
+pagination:
+  next_url_in_body:
+    next_url_at:
+      parts: [response, body, "@odata.nextLink"]
 ```
 
 **Encoded-token URL repair:** some APIs double-encode their next-page
@@ -819,7 +830,7 @@ requests:
         password: {ref: state.password}
     cache:
       store_in: session_token
-      expiry_field: expires_in
+      expiry_field: response.body.expires_in
       expiry_buffer: 60s
       expiry_format: duration
 
