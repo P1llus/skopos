@@ -426,7 +426,7 @@ func (r *Runner) runIteration(
 	client *http.Client,
 	logger *log.Logger,
 	s *scope,
-	pagination paginationPlan,
+	_ paginationPlan,
 	progress progressPlan,
 	errMode string,
 	iter int,

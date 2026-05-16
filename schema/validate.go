@@ -58,15 +58,6 @@ func (v *validator) errorf(path, format string, args ...any) {
 	})
 }
 
-func (v *validator) warnf(path, message, hint string) {
-	v.diags = append(v.diags, Diagnostic{
-		Path:     path,
-		Message:  message,
-		Hint:     hint,
-		Severity: "warning",
-	})
-}
-
 // ns is the namespace context used when validating references inside a
 // particular scope.
 type ns struct {
