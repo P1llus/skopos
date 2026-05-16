@@ -43,7 +43,7 @@ auth:
       client_secret: {ref: state.client_secret}
       cache:
         store_in: token
-        expiry_field: expires_in
+        expiry_field: response.body.expires_in
         expiry_buffer: 60s
 
 requests:
@@ -60,17 +60,17 @@ requests:
           }
         variables:
           object:
-            after: {from_pagination: relay_cursor}
+            after: {ref: cursor.after}
             first: {ref: state.page_size}
 
 response:
   decode: json
-  events_at: data.issues.nodes
+  events_at: response.body.data.issues.nodes
 
 pagination:
   graphql_relay:
-    has_next_page_at: data.issues.pageInfo.hasNextPage
-    end_cursor_at: data.issues.pageInfo.endCursor
+    has_next_page_at: response.body.data.issues.pageInfo.hasNextPage
+    end_cursor_at: response.body.data.issues.pageInfo.endCursor
     cursor_var: after
 
 progress:

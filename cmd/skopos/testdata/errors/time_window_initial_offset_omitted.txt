@@ -15,10 +15,10 @@ requests:
     path: /api/v1/search
     body:
       json:
-        since: {from_progress: window_start}
+        since: {ref: cursor.window_start}
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:

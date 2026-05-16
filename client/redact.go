@@ -106,10 +106,6 @@ func valueShape(v schema.Value) string {
 		return "<concat>"
 	case v.Select != nil:
 		return "<select>"
-	case v.FromPagination != "":
-		return "<from_pagination:" + v.FromPagination + ">"
-	case v.FromProgress != "":
-		return "<from_progress:" + v.FromProgress + ">"
 	case v.Format != nil:
 		return "<format:" + v.Format.Verb + ">"
 	case v.Base64 != nil:

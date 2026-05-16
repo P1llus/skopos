@@ -12,7 +12,7 @@ cmp trace.jsonl want_trace.jsonl
 cmp events.jsonl want_events.jsonl
 
 -- want_trace.jsonl --
-{"elapsed":"<scrubbed>","iteration":1,"method":"GET","query":{"limit":"<format:string>","since":"<from_progress:latest_timestamp>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 348 bytes, object-like","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/bearer_simple/events"}
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","query":{"limit":"<format:string>","since":"<ref cursor.last_timestamp>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 348 bytes, object-like","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/bearer_simple/events"}
 -- want_events.jsonl --
 {"id":"evt-000001","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
 {"id":"evt-000002","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}

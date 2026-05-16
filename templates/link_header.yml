@@ -5,9 +5,8 @@
 # cursor.next_link, and the request's url slot reads it back via
 # {ref: cursor.next_link, default: <bootstrap-url>} — so the first
 # iteration hits the bootstrap URL and every subsequent iteration follows
-# the server's link until it disappears. link_header has no send_as
-# auto-injection: wiring cursor.next_link into the request is the
-# template's job.
+# the server's link until it disappears. Wiring cursor.next_link into the
+# request is the template's job.
 
 ir_version: "1"
 
@@ -46,12 +45,12 @@ requests:
           - {ref: state.url}
           - /link_header/incidents
     query:
-      updated_after: {from_progress: latest_timestamp}
+      updated_after: {ref: cursor.last_timestamp}
       per_page: {format: string, value: {ref: state.page_size}}
 
 response:
   decode: json
-  events_at: incidents
+  events_at: response.body.incidents
 
 # Follows the RFC 5988 Link: <url>; rel="next" response header. When a
 # next-link is absent the drain completes. The default regex pattern is

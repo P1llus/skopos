@@ -37,9 +37,10 @@ auth:
 requests:
   # Step 1 (login): POST /session_login_cached/login. The cache: block
   # captures the response's session_token field into state.session_token and
-  # pairs it with an expiry stamp at cursor.__step_session_token_expires_at.
-  # On the next iteration/drain the step is skipped while the token is still
-  # inside its expiry_buffer.
+  # pairs it with an expiry stamp at state.session_token_expires_at (both
+  # slots are auto-registered as runtime string state fields by the IR
+  # validator). On the next iteration/drain the step is skipped while the
+  # token is still inside its expiry_buffer.
   - id: login
     method: POST
     path: /session_login_cached/login
@@ -49,7 +50,7 @@ requests:
         password: {ref: state.password}
     cache:
       store_in: session_token
-      expiry_field: expires_in
+      expiry_field: response.body.expires_in
       expiry_buffer: 60s
       expiry_format: duration
 
@@ -62,7 +63,7 @@ requests:
 
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 
 pagination:
   none: {}

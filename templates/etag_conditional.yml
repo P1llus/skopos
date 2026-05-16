@@ -48,22 +48,22 @@ requests:
     method: GET
     path: /etag_conditional/data
     query:
-      page: {format: string, value: {from_pagination: page}}
+      page: {format: string, value: {ref: cursor.page}}
     if:
       eq:
         path: state.etag_check
-        equal: true
+        value: true
     on_status:
       304: skip
 
 response:
   decode: json
-  events_at: items
+  events_at: response.body.items
 
 pagination:
   page_number:
     page_param: page
-    has_more_at: meta.has_next
+    has_more_at: response.body.meta.has_next
 
 progress:
   stateless: {}

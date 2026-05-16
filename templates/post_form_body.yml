@@ -29,20 +29,20 @@ auth:
     token: {ref: state.api_key}
 
 # POST with application/x-www-form-urlencoded body. Three fields exercise
-# body.form on the main request: a from_progress value (timestamp filter),
+# body.form on the main request: a cursor.last_timestamp ref (timestamp filter),
 # a state-derived integer formatted to string, and a static literal.
 requests:
   - method: POST
     path: /post_form_body/events
     body:
       form:
-        since: {from_progress: latest_timestamp}
+        since: {ref: cursor.last_timestamp}
         limit: {format: string, value: {ref: state.page_size}}
         format: json
 
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 
 pagination:
   none: {}

@@ -3,6 +3,7 @@
 package client
 
 import (
+	"net/http"
 	"reflect"
 	"testing"
 	"time"
@@ -39,8 +40,6 @@ func vRefDefault(p string, d schema.Value) schema.Value {
 	return schema.Value{Ref: &schema.RefValue{Path: mustPath(p), Default: &d}}
 }
 func vConcat(parts ...schema.Value) schema.Value { return schema.Value{Concat: parts} }
-func vFromPag(name string) schema.Value          { return schema.Value{FromPagination: name} }
-func vFromProg(name string) schema.Value         { return schema.Value{FromProgress: name} }
 func vNow(offset *schema.Value) schema.Value {
 	return schema.Value{Now: &schema.NowValue{Offset: offset}}
 }
@@ -131,21 +130,21 @@ func TestEvalValue(t *testing.T) {
 		},
 
 		{
-			name:  "from_pagination_set",
-			setup: func(s *scope) { s.fromPagination["token"] = "tok-1" },
-			val:   vFromPag("token"),
-			want:  "tok-1",
+			name:   "ref_cursor_pagination_signal",
+			cursor: map[string]any{"token": "tok-1"},
+			val:    vRef("cursor.token"),
+			want:   "tok-1",
 		},
 		{
-			name: "from_pagination_unset_returns_nil",
-			val:  vFromPag("token"),
+			name: "ref_cursor_pagination_unset_returns_nil",
+			val:  vRef("cursor.token"),
 			want: nil,
 		},
 		{
-			name:  "from_progress_set",
-			setup: func(s *scope) { s.fromProgress["latest_timestamp"] = "2026-05-12T00:00:00Z" },
-			val:   vFromProg("latest_timestamp"),
-			want:  "2026-05-12T00:00:00Z",
+			name:   "ref_cursor_progress_signal",
+			cursor: map[string]any{"last_timestamp": "2026-05-12T00:00:00Z"},
+			val:    vRef("cursor.last_timestamp"),
+			want:   "2026-05-12T00:00:00Z",
 		},
 
 		{
@@ -250,14 +249,14 @@ func TestEvalValueSelect(t *testing.T) {
 	bearerBranch := schema.SelectBranch{
 		When: schema.Predicate{Eq: &schema.PredicateEq{
 			Path:  mustPath("state.mode"),
-			Equal: vStr("bearer"),
+			Value: vStr("bearer"),
 		}},
 		Value: vStr("bearer-path"),
 	}
 	apikeyBranch := schema.SelectBranch{
 		When: schema.Predicate{Eq: &schema.PredicateEq{
 			Path:  mustPath("state.mode"),
-			Equal: vStr("api_key"),
+			Value: vStr("api_key"),
 		}},
 		Value: vStr("apikey-path"),
 	}
@@ -316,4 +315,133 @@ func mustTime(s string) time.Time {
 		panic(err)
 	}
 	return t
+}
+
+// TestSliceOneResponseAndStepHeaderRefs covers runtime resolution of the
+// namespace-rooted body/header roots: response.body.<path>,
+// response.header.<name>, and steps.<id>.header.<name>.
+//
+// Slice 2 retired the legacy body.<path> root, so the interchangeability
+// subtest from slice 1 was reframed to assert the response.body.<path>
+// resolver returns the expected scalar/list/missing values directly.
+func TestSliceOneResponseAndStepHeaderRefs(t *testing.T) {
+	t.Run("response_body_resolves_expected_values", func(t *testing.T) {
+		s := newTestScope(t, nil, nil)
+		body := map[string]any{
+			"status": "complete",
+			"meta":   map[string]any{"page": int64(7)},
+			"items":  []any{map[string]any{"id": "a"}, map[string]any{"id": "b"}},
+		}
+		s.body = body
+
+		cases := []struct {
+			label    string
+			response string
+			want     any
+			wantOK   bool
+		}{
+			{"top-level scalar", "response.body.status", "complete", true},
+			{"nested object", "response.body.meta.page", int64(7), true},
+			{"list index", "response.body.items.1.id", "b", true},
+			{"missing leaf", "response.body.meta.missing", nil, false},
+		}
+		for _, c := range cases {
+			t.Run(c.label, func(t *testing.T) {
+				got, ok, err := s.resolveNamespaceRef(mustPath(c.response))
+				if err != nil {
+					t.Fatalf("resolve(%s): %v", c.response, err)
+				}
+				if ok != c.wantOK {
+					t.Fatalf("ok = %v, want %v", ok, c.wantOK)
+				}
+				if !reflect.DeepEqual(got, c.want) {
+					t.Errorf("value = %#v, want %#v", got, c.want)
+				}
+			})
+		}
+	})
+
+	t.Run("response_header_case_insensitive", func(t *testing.T) {
+		s := newTestScope(t, nil, nil)
+		s.responseHeaders = http.Header{}
+		s.responseHeaders.Set("ETag", "abc-1")
+		s.responseHeaders.Set("X-Total-Count", "42")
+
+		cases := []struct {
+			ref  string
+			want any
+		}{
+			{"response.header.ETag", "abc-1"},
+			{"response.header.etag", "abc-1"},
+			{"response.header.X-Total-Count", "42"},
+			{"response.header.x-total-count", "42"},
+		}
+		for _, c := range cases {
+			got, ok, err := s.resolveNamespaceRef(mustPath(c.ref))
+			if err != nil {
+				t.Fatalf("resolve(%s): %v", c.ref, err)
+			}
+			if !ok || got != c.want {
+				t.Errorf("resolve(%s) = (%v, %v); want (%v, true)", c.ref, got, ok, c.want)
+			}
+		}
+
+		// Absent header resolves as nil/!ok (the {default: ...} path on Ref
+		// handles first-iteration absence at the Value layer).
+		got, ok, err := s.resolveNamespaceRef(mustPath("response.header.X-Missing"))
+		if err != nil {
+			t.Fatalf("absent resolve: %v", err)
+		}
+		if ok || got != nil {
+			t.Errorf("absent header should resolve as (nil,false); got (%v,%v)", got, ok)
+		}
+	})
+
+	t.Run("steps_id_header_resolves_from_stepHeaders", func(t *testing.T) {
+		s := newTestScope(t, nil, nil)
+		h := http.Header{}
+		h.Set("Set-Cookie", "session=xyz")
+		h.Set("ETag", "v1")
+		s.stepHeaders["login"] = h
+
+		got, ok, err := s.resolveNamespaceRef(mustPath("steps.login.header.Set-Cookie"))
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if !ok || got != "session=xyz" {
+			t.Errorf("steps.login.header.Set-Cookie = (%v, %v); want (\"session=xyz\", true)", got, ok)
+		}
+
+		// Case-insensitive match.
+		got, ok, err = s.resolveNamespaceRef(mustPath("steps.login.header.etag"))
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if !ok || got != "v1" {
+			t.Errorf("steps.login.header.etag = (%v, %v); want (\"v1\", true)", got, ok)
+		}
+
+		// Unknown step id resolves as (nil, false).
+		got, ok, err = s.resolveNamespaceRef(mustPath("steps.unknown.header.ETag"))
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if ok || got != nil {
+			t.Errorf("unknown step header should resolve as (nil,false); got (%v,%v)", got, ok)
+		}
+	})
+
+	t.Run("response_body_unset_resolves_as_nil", func(t *testing.T) {
+		s := newTestScope(t, nil, nil)
+		// Outside complete_when, s.body is nil — every response.body ref
+		// resolves as (nil, false). The validator already rejects such use
+		// at parse time; the runtime guard is the second line of defence.
+		got, ok, err := s.resolveNamespaceRef(mustPath("response.body.anything"))
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if ok || got != nil {
+			t.Errorf("response.body with no body context should resolve as (nil,false); got (%v,%v)", got, ok)
+		}
+	})
 }

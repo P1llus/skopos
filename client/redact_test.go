@@ -153,8 +153,8 @@ func TestRedactValue_ShapeOnly(t *testing.T) {
 	}{
 		{"zero", schema.Value{IsZero: true}, "<zero>"},
 		{"now", schema.Value{Now: &schema.NowValue{}}, "<now>"},
-		{"from_pagination", vFromPag("token"), "<from_pagination:token>"},
-		{"from_progress", vFromProg("latest_timestamp"), "<from_progress:latest_timestamp>"},
+		{"ref_cursor_token", vRef("cursor.token"), "<ref cursor.token>"},
+		{"ref_cursor_last_timestamp", vRef("cursor.last_timestamp"), "<ref cursor.last_timestamp>"},
 		{"format", vFormat("rfc3339", vRef("cursor.last_timestamp")), "<format:rfc3339>"},
 	}
 	for _, tc := range tests {
@@ -196,7 +196,7 @@ func TestDrain_APIKeyInQuery_DoesNotLeak(t *testing.T) {
 			Method: "GET",
 			Path:   ptrValue(vStr("/api/v1/events")),
 		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress:   schema.Progress{Stateless: &struct{}{}},
 		Error:      &schema.ErrorBlock{Mode: "fail"},
@@ -245,7 +245,7 @@ func TestDrain_TransportError_RedactsQuerySecret(t *testing.T) {
 			Method: "GET",
 			Path:   ptrValue(vStr("/api/v1/events")),
 		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("events")},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Progress:   schema.Progress{Stateless: &struct{}{}},
 		Error:      &schema.ErrorBlock{Mode: "fail"},

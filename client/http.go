@@ -38,14 +38,11 @@ type stepResult struct {
 // timing, body metadata) — the caller composes a public Exchange from
 // the scratchpad plus iteration/phase context only it knows.
 //
-// inject is the optional pagination auto-injection slot for this request.
-// The caller (runIteration) passes a non-nil pointer ONLY for the producer
-// step and ONLY when the active pagination strategy carries `send_as`
-// (cursor_token / scroll_id). When set AND the template did NOT itself
-// declare the slot (req.Query / req.Headers key absent), executeRequest
-// writes scope.fromPagination[inject.role] into the slot — the implicit
-// form of `send_as`. See the paginationAutoInjector contract in pagination.go.
-func (s *scope) executeRequest(ctx context.Context, client *http.Client, req schema.Request, trace *httpTrace, inject *autoInjectSlot) (*stepResult, error) {
+// Pagination cursors reach the wire only through the template's own
+// `query:` / `headers:` / `body:` declarations. Slice 5 deleted the
+// implicit `send_as` auto-injector that used to fabricate a producer-step
+// slot from the active pagination strategy.
+func (s *scope) executeRequest(ctx context.Context, client *http.Client, req schema.Request, trace *httpTrace) (*stepResult, error) {
 	u, err := s.buildURL(req)
 	if err != nil {
 		return nil, fmt.Errorf("url: %w", redactURLError(err))
@@ -63,18 +60,6 @@ func (s *scope) executeRequest(ctx context.Context, client *http.Client, req sch
 			continue
 		}
 		q.Set(k, toString(got))
-	}
-
-	// Implicit `send_as` lowering for the query slot. Only fires when the
-	// caller flagged this as the producer step AND the template did NOT
-	// declare the slot key itself — detection is by IR presence
-	// (req.Query[name]) so a first-iteration nil cursor doesn't get
-	// double-handled. The explicit form (template declares the key) wins;
-	// the runtime skips auto-injection in that case.
-	if inject != nil && inject.kind == "query" && !queryDeclared(req, inject.name) {
-		if v, ok := s.fromPagination[inject.role]; ok && v != nil {
-			q.Set(inject.name, toString(v))
-		}
 	}
 
 	var body io.Reader
@@ -116,19 +101,6 @@ func (s *scope) executeRequest(ctx context.Context, client *http.Client, req sch
 			return nil, fmt.Errorf("headers.%s: %w", k, err)
 		}
 		httpReq.Header.Set(k, toString(got))
-	}
-
-	// Implicit `send_as` lowering for the header slot. Mirrors the query
-	// branch above. Sits BEFORE applyAuth so an auth header that happens
-	// to collide with the send_as slot still wins — pagination headers
-	// are treated as template-supplied. Detection is by IR presence with
-	// case-insensitive comparison (HTTP header names are case-insensitive
-	// per RFC 7230 §3.2; http.CanonicalHeaderKey is the standard
-	// normalisation).
-	if inject != nil && inject.kind == "header" && !headerDeclared(req, inject.name) {
-		if v, ok := s.fromPagination[inject.role]; ok && v != nil {
-			httpReq.Header.Set(inject.name, toString(v))
-		}
 	}
 
 	if err := s.applyAuth(ctx, client, httpReq, s.doc.Auth); err != nil {
@@ -396,31 +368,6 @@ func (e *unexpectedStatusError) Error() string {
 		return fmt.Sprintf("unexpected status %d (expected 200)", e.status)
 	}
 	return fmt.Sprintf("unexpected status %d (expected one of %v)", e.status, e.expect)
-}
-
-// queryDeclared reports whether req.Query declares a key matching name.
-// Query parameter names are case-sensitive (RFC 3986 reserves no case
-// folding for query components); the comparison is exact. Used by the
-// implicit `send_as` lowering in executeRequest to detect explicit-form
-// templates and skip auto-injection at that slot.
-func queryDeclared(req schema.Request, name string) bool {
-	_, ok := req.Query[name]
-	return ok
-}
-
-// headerDeclared reports whether req.Headers declares a header whose name
-// matches (case-insensitively) the given target. HTTP header names are
-// case-insensitive per RFC 7230 §3.2, so a template that writes
-// `X-API-Token` and a send_as of `header.x-api-token` refer to the same
-// slot. Used by the implicit `send_as` lowering in executeRequest.
-func headerDeclared(req schema.Request, name string) bool {
-	target := http.CanonicalHeaderKey(name)
-	for k := range req.Headers {
-		if http.CanonicalHeaderKey(k) == target {
-			return true
-		}
-	}
-	return false
 }
 
 // bodyMetadata returns a redaction-safe description of a response body for

@@ -3,6 +3,7 @@
 package schema
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -20,11 +21,11 @@ import (
 //
 // Forms:
 //
-//	{eq:  {path: cursor.phase,  equal: "submit"}}
-//	{gt:  {path: cursor.page,   equal: {ref: state.total_pages}}}
-//	{lt:  {path: cursor.page,   equal: {ref: state.total_pages}}}
-//	{gte: {path: state.retries, equal: 3}}
-//	{lte: {path: state.retries, equal: 3}}
+//	{eq:  {path: cursor.phase,  value: "submit"}}
+//	{gt:  {path: cursor.page,   value: {ref: state.total_pages}}}
+//	{lt:  {path: cursor.page,   value: {ref: state.total_pages}}}
+//	{gte: {path: state.retries, value: 3}}
+//	{lte: {path: state.retries, value: 3}}
 //	{present: state.etag}
 //	{and: [{eq: ...}, {present: ...}]}
 //	{or:  [{eq: ...}, {eq: ...}]}
@@ -37,15 +38,15 @@ import (
 // cannot type-check both operands (e.g. when the path resolves to a string)
 // must surface a lowering error rather than silently coercing.
 type Predicate struct {
-	// Eq is the {eq: {path, equal}} form: equality comparison.
+	// Eq is the {eq: {path, value}} form: equality comparison.
 	Eq *PredicateEq
-	// Gt is the {gt: {path, equal}} form: greater-than comparison.
+	// Gt is the {gt: {path, value}} form: greater-than comparison.
 	Gt *PredicateEq
-	// Lt is the {lt: {path, equal}} form: less-than comparison.
+	// Lt is the {lt: {path, value}} form: less-than comparison.
 	Lt *PredicateEq
-	// Gte is the {gte: {path, equal}} form: greater-than-or-equal.
+	// Gte is the {gte: {path, value}} form: greater-than-or-equal.
 	Gte *PredicateEq
-	// Lte is the {lte: {path, equal}} form: less-than-or-equal.
+	// Lte is the {lte: {path, value}} form: less-than-or-equal.
 	Lte *PredicateEq
 	// Present is the {present: <path>} form: true when the path
 	// resolves to a non-nil value.
@@ -61,15 +62,70 @@ type Predicate struct {
 	LiteralBool *bool
 }
 
-// PredicateEq is the {<verb>: {path: <Path>, equal: <Value>}} shape, shared
-// by eq / gt / lt / gte / lte. The field name "Equal" is historical (eq was
-// the first verb) and reads as "the right-hand-side Value" for the
-// comparison verbs.
+// PredicateEq is the {<verb>: {path: <Path>, value: <Value>}} shape, shared
+// by eq / gt / lt / gte / lte. The Go type name keeps the "Eq" prefix for
+// historical reasons (eq was the first verb to use this shape); the right-
+// hand-side field is named Value (renamed from Equal in slice 6) so the
+// shape reads naturally under the ordered verbs too.
 type PredicateEq struct {
 	// Path is the left-hand-side namespace-rooted locator.
 	Path Path `yaml:"path" json:"path"`
-	// Equal is the right-hand-side Value compared against Path.
-	Equal Value `yaml:"equal" json:"equal"`
+	// Value is the right-hand-side Value compared against Path.
+	Value Value `yaml:"value" json:"value"`
+}
+
+// predicateEqRaw is the on-wire shadow of PredicateEq, used by the codec to
+// detect the legacy `equal:` key (renamed to `value:` in slice 6) and
+// surface a precise migration hint at parse time.
+type predicateEqRaw struct {
+	Path  Path  `yaml:"path"  json:"path"`
+	Value Value `yaml:"value" json:"value"`
+}
+
+const predicateEqEqualRenamedHint = "predicate eq.equal was renamed to eq.value in slice 6 (shared across eq / gt / lt / gte / lte); use value: instead"
+
+// UnmarshalYAML implements yaml.Unmarshaler. The legacy `equal:` key (renamed
+// to `value:` in slice 6) is rejected at parse time with a migration hint.
+func (pe *PredicateEq) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("schema.PredicateEq at line %d: expected a mapping, got %v", node.Line, node.Kind)
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if key.Value == "equal" {
+			return fmt.Errorf("schema.PredicateEq at line %d: %s", key.Line, predicateEqEqualRenamedHint)
+		}
+	}
+	var raw predicateEqRaw
+	if err := node.Decode(&raw); err != nil {
+		return fmt.Errorf("schema.PredicateEq at line %d: %w", node.Line, err)
+	}
+	pe.Path = raw.Path
+	pe.Value = raw.Value
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler. The legacy `equal:` key is
+// rejected with the same migration hint as the YAML form.
+func (pe *PredicateEq) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return fmt.Errorf("schema.PredicateEq: expected an object")
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return fmt.Errorf("schema.PredicateEq: %w", err)
+	}
+	if _, ok := probe["equal"]; ok {
+		return fmt.Errorf("schema.PredicateEq: %s", predicateEqEqualRenamedHint)
+	}
+	var raw predicateEqRaw
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("schema.PredicateEq: %w", err)
+	}
+	pe.Path = raw.Path
+	pe.Value = raw.Value
+	return nil
 }
 
 // predicateDiscriminatorKeys is the closed set of map keys that select a

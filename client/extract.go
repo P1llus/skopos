@@ -10,27 +10,21 @@ import (
 
 // runExtracts applies extract[] to a step result. Each ExtractVar lands in
 // either scope.extract (default target) or scope.cursor (target=cursor).
-// The path is body-relative for source=body; for source=header the value
-// comes from the named response header.
+//
+// The from Path's root selects the source:
+//
+//   - response.body.<path>     walks res.body
+//   - response.header.<name>   reads res.headers via headerLookup
+//   - steps.<id>.body.<path>   walks s.steps[id]
+//   - steps.<id>.header.<name> reads s.stepHeaders[id] via headerLookup
+//
+// The codec + validator together guarantee one of these shapes; mismatches
+// surface as an error rather than silently dropping the extract.
 func (s *scope) runExtracts(res *stepResult, vars []schema.ExtractVar) error {
 	for _, ev := range vars {
-		var raw any
-		switch src := ev.Source; src {
-		case "", "body":
-			parts := pathParts(ev.Path)
-			got, ok, err := lookupBodyPath(res.body, parts)
-			if err != nil {
-				return fmt.Errorf("extract.%s: %w", ev.Name, err)
-			}
-			if !ok {
-				raw = nil
-			} else {
-				raw = got
-			}
-		case "header":
-			raw = res.headers.Get(ev.Header)
-		default:
-			return fmt.Errorf("extract.%s: unknown source %q", ev.Name, src)
+		raw, err := s.resolveExtractFrom(res, ev.From)
+		if err != nil {
+			return fmt.Errorf("extract.%s: %w", ev.Name, err)
 		}
 
 		if ev.Coerce != "" && raw != nil {
@@ -53,10 +47,59 @@ func (s *scope) runExtracts(res *stepResult, vars []schema.ExtractVar) error {
 	return nil
 }
 
-// pathParts returns the Path's segments, or nil when the path is empty.
-func pathParts(p schema.Path) []string {
+// resolveExtractFrom walks p against the extract's source. Mirrors the four
+// arms allowed by checkExtractFromPath: response.body / response.header /
+// steps.<id>.body / steps.<id>.header. Returns nil for unresolved leaves so
+// the caller stores explicit-null values the same way as missing fields.
+func (s *scope) resolveExtractFrom(res *stepResult, p schema.Path) (any, error) {
 	if p.IsEmpty() {
-		return nil
+		return nil, fmt.Errorf("from is required")
 	}
-	return p.Parts
+	switch p.Parts[0] {
+	case "response":
+		if len(p.Parts) < 2 {
+			return nil, fmt.Errorf("response ref requires a kind segment: response.body.<path> or response.header.<name>")
+		}
+		switch p.Parts[1] {
+		case "body":
+			got, _, err := lookupBodyPath(res.body, p.Parts[2:])
+			return got, err
+		case "header":
+			if len(p.Parts) < 3 {
+				return nil, fmt.Errorf("response.header ref requires a header name")
+			}
+			got, _, err := headerLookup(res.headers, p.Parts[2])
+			return got, err
+		default:
+			return nil, fmt.Errorf("response ref must be response.body.<path> or response.header.<name>")
+		}
+	case "steps":
+		if len(p.Parts) < 3 {
+			return nil, fmt.Errorf("steps ref requires steps.<id>.body.<path> or steps.<id>.header.<name>")
+		}
+		stepID := p.Parts[1]
+		switch p.Parts[2] {
+		case "body":
+			body, ok := s.steps[stepID]
+			if !ok {
+				return nil, nil
+			}
+			got, _, err := lookupBodyPath(body, p.Parts[3:])
+			return got, err
+		case "header":
+			if len(p.Parts) < 4 {
+				return nil, fmt.Errorf("steps.<id>.header ref requires a header name")
+			}
+			h, ok := s.stepHeaders[stepID]
+			if !ok {
+				return nil, nil
+			}
+			got, _, err := headerLookup(h, p.Parts[3])
+			return got, err
+		default:
+			return nil, fmt.Errorf("steps ref must be steps.<id>.body.<path> or steps.<id>.header.<name>")
+		}
+	default:
+		return nil, fmt.Errorf("extract.from %q must be namespace-rooted (response.body.<path>, response.header.<name>, or steps.<id>.{body|header}.<...>)", p.String())
+	}
 }

@@ -23,7 +23,7 @@ requests:
     produces_events: true
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:
@@ -32,7 +32,7 @@ progress:
       step: submit
     poll:
       step: poll
-      complete_when: {eq: {path: cursor.status, equal: "done"}}
+      complete_when: {eq: {path: cursor.status, value: "done"}}
     fetch:
       step: fetch
     on_complete:

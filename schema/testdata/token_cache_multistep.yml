@@ -45,7 +45,7 @@ auth:
       client_secret: {ref: state.client_secret}
       cache:
         store_in: token
-        expiry_field: expires_in
+        expiry_field: response.body.expires_in
         expiry_buffer: 60s
 
 requests:
@@ -53,7 +53,7 @@ requests:
     method: GET
     path: /api/v1/incidents
     query:
-      page: {format: string, value: {from_pagination: page}}
+      page: {format: string, value: {ref: cursor.page}}
       limit: {format: string, value: {ref: state.list_page_size}}
 
   - id: detail

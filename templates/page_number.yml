@@ -31,18 +31,18 @@ requests:
   - method: GET
     path: /page_number/findings
     query:
-      since: {from_progress: latest_timestamp}
-      page: {format: string, value: {from_pagination: page}}
+      since: {ref: cursor.last_timestamp}
+      page: {format: string, value: {ref: cursor.page}}
       page_size: {format: string, value: {ref: state.page_size}}
 
 response:
   decode: json
-  events_at: data
+  events_at: response.body.data
 
 pagination:
   page_number:
     page_param: page
-    has_more_at: meta.has_next
+    has_more_at: response.body.meta.has_next
 
 progress:
   latest_event_timestamp:

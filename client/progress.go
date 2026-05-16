@@ -12,8 +12,8 @@ import (
 // progressPlan describes the active progress strategy for one drain. It
 // has two responsibilities:
 //
-//  1. seed scope.fromProgress ONCE PER DRAIN (not per iteration — see
-//     Runner.Drain's loop contract) so {from_progress: <role>} Values
+//  1. seed scope.cursor ONCE PER DRAIN (not per iteration — see
+//     Runner.Drain's loop contract) so {ref: cursor.<name>} Values
 //     resolve to a stable window-start for every page in this drain.
 //  2. advance() updates scope.cursor after the producer step's events have
 //     been emitted. For most strategies this is a single map write; for
@@ -23,28 +23,32 @@ import (
 // (via cursor.phase); the runner consults shouldSkipForPhase() before
 // executing each step. Other strategies return false here unconditionally.
 //
-// # Strategy catalogue and role contract
+// # Strategy catalogue and cursor name contract
 //
-// The role names referenced by {from_progress: <role>} in a template are
-// resolved against scope.fromProgress, which each plan populates in seed.
-// The legal role names are strategy-specific:
+// Templates read progress signals via {ref: cursor.<name>}, which resolves
+// against scope.cursor. The cursor names each plan writes are:
 //
-//	stateless              (no roles — {from_progress: ...} resolves to nil)
-//	latest_event_timestamp "latest_timestamp" (RFC 3339 string; the drain's
-//	                       window-start)
-//	max_event_field        "latest_timestamp" (RFC 3339 string; advance walks
-//	                       the accumulated events and writes
-//	                       cursor.last_timestamp to the max value at
-//	                       cfg.EventTime.Path — shares the events-walk helper
-//	                       with latest_event_timestamp)
-//	async_job              (no from_progress roles — async_job uses cursor.*
-//	                       directly via {ref: cursor.<name>};
-//	                       on_complete.cursor_update kinds: stateless,
-//	                       use_now, latest_event_timestamp — see applyOnComplete)
+//	stateless              (no cursor names — progress is a no-op.)
+//	latest_event_timestamp "last_timestamp" (RFC 3339 string; seed pre-seeds
+//	                       initial.lookback on first drain, advance walks
+//	                       events at cfg.EventTime.Path and writes the max.)
+//	max_event_field        "last_timestamp" (same code path as
+//	                       latest_event_timestamp; the IR-level distinction
+//	                       is documentation-only — both walk-and-max events
+//	                       in the runner.)
+//	async_job              "phase" ("submit" | "poll" | "fetch"; seed defaults
+//	                       to firstPhase when absent), plus "last_timestamp"
+//	                       written by on_complete.cursor_update (kind=use_now
+//	                       or latest_event_timestamp; stateless leaves the
+//	                       cursor untouched). Templates that wire the
+//	                       last-timestamp into a request body read it via
+//	                       {ref: cursor.last_timestamp}; first drain has no
+//	                       cursor.last_timestamp so the ref resolves to nil
+//	                       (template adds {default: ""} for servers that
+//	                       require an explicit empty since=).
 //	time_window            "window_start" / "window_end" (formatted via
-//	                       cfg.Format — default rfc3339 — and persisted to
-//	                       cursor.window_start / cursor.window_end. seed pins
-//	                       the window once per drain: first drain starts at
+//	                       cfg.Format — default rfc3339. seed pins the
+//	                       window once per drain: first drain starts at
 //	                       now() - initial_offset and ends at now(); resumes
 //	                       carry cursor.window_start forward and recompute
 //	                       window_end against the new now(). advance slides
@@ -52,14 +56,15 @@ import (
 //	                       cursor.window_end. The drain end is clamped to
 //	                       >= window_start so a backwards-running clock
 //	                       cannot produce an inverted window.)
-//	use_now                "latest_timestamp" (RFC 3339 string; advance writes
+//	use_now                "last_timestamp" (RFC 3339 string; advance writes
 //	                       cursor.last_timestamp = s.now() - lookback. No
-//	                       events walk. seed mirrors the existing cursor
-//	                       value — use_now has no initial.lookback.)
+//	                       events walk. seed is a no-op — use_now has no
+//	                       initial.lookback, so cursor.last_timestamp is
+//	                       absent on first drain.)
 //
-// Authors of a new progress variant should document the role names their
-// seed() writes here AND in the variant's own comment so template authors
-// have a single place to look.
+// Authors of a new progress variant should document the cursor names their
+// seed() / advance() write here AND in the variant's own comment so
+// template authors have a single place to look.
 type progressPlan interface {
 	seed(s *scope) error
 	advance(s *scope, events []any) error
@@ -132,19 +137,18 @@ func (p *latestTimestampProgress) phaseTransition(*scope, string, *stepResult) (
 
 // ---- max_event_field ----
 //
-// Behaviourally the same shape as latest_event_timestamp: seed exposes the
-// cursor.last_timestamp (or initial.lookback on first drain) via
-// {from_progress: latest_timestamp}, and advance walks the accumulated events
-// at advance time, picks the max value at cfg.EventTime.Path, and writes it to
-// cursor.last_timestamp. The IR-level difference is intent — latest semantics
-// assume server-ordered events ("last item's timestamp"), max semantics
-// assume unordered events ("max across the page"). The runner walks-and-maxes
-// in both cases (the only safe choice when ordering is not guaranteed), so
-// the wire behaviour matches; the distinction stays a documentation signal
-// for template authors.
+// Behaviourally the same shape as latest_event_timestamp: seed pre-seeds
+// cursor.last_timestamp on first drain (initial.lookback applied to s.now()),
+// and advance walks the accumulated events at advance time, picks the max
+// value at cfg.EventTime.Path, and writes it to cursor.last_timestamp. The
+// IR-level difference is intent — latest semantics assume server-ordered
+// events ("last item's timestamp"), max semantics assume unordered events
+// ("max across the page"). The runner walks-and-maxes in both cases (the
+// only safe choice when ordering is not guaranteed), so the wire behaviour
+// matches; the distinction stays a documentation signal for template authors.
 //
-// Roles: {from_progress: latest_timestamp} — RFC 3339 string. Cursor key:
-// cursor.last_timestamp.
+// Cursor key: cursor.last_timestamp (RFC 3339 string). Read in templates as
+// {ref: cursor.last_timestamp}.
 
 type maxEventFieldProgress struct {
 	cfg *schema.TimestampProgress
@@ -175,22 +179,17 @@ func (p *maxEventFieldProgress) phaseTransition(*scope, string, *stepResult) (st
 // kind=use_now branch — same s.now() / evalValue / toDuration sequence, same
 // cursor.last_timestamp key, same RFC 3339 format.
 //
-// Roles: {from_progress: latest_timestamp} — RFC 3339 string. Cursor key:
-// cursor.last_timestamp. use_now has no initial.lookback in the schema; seed
-// is a strict mirror of the existing cursor (empty string on first drain).
+// Cursor key: cursor.last_timestamp (RFC 3339 string). Read in templates as
+// {ref: cursor.last_timestamp}. use_now has no initial.lookback in the
+// schema; seed is a no-op so cursor.last_timestamp is absent on first drain
+// (templates that need an explicit since="" on the bootstrap call out a
+// {default: ""} branch on the ref).
 
 type useNowProgress struct {
 	cfg *schema.UseNowProgress
 }
 
-func (p *useNowProgress) seed(s *scope) error {
-	if cur, ok := s.cursor["last_timestamp"]; ok {
-		s.fromProgress["latest_timestamp"] = cur
-	} else {
-		s.fromProgress["latest_timestamp"] = ""
-	}
-	return nil
-}
+func (p *useNowProgress) seed(*scope) error { return nil }
 
 func (p *useNowProgress) advance(s *scope, _ []any) error {
 	t := s.now()
@@ -217,33 +216,27 @@ func (p *useNowProgress) phaseTransition(*scope, string, *stepResult) (string, b
 
 // seedTimestampCursor implements the shared seed contract for the timestamp
 // progress variants (latest_event_timestamp, max_event_field): on first drain
-// compute now() - initial.lookback (if declared) and write it to
-// fromProgress[latest_timestamp] AND cursor.last_timestamp so the very first
-// since=<...> matches the persisted high-water mark; on resume mirror the
-// existing cursor.last_timestamp into fromProgress without re-applying the
-// initial lookback. errLabel scopes wrapped errors (e.g.
-// "progress.max_event_field.initial.lookback").
+// (cursor.last_timestamp absent) compute now() - initial.lookback (if
+// declared) and write it to cursor.last_timestamp so the very first
+// since=<...> matches the persisted high-water mark. On resume the cursor
+// already carries the prior high-water mark — we leave it alone. errLabel
+// scopes wrapped errors (e.g. "progress.max_event_field.initial.lookback").
 func seedTimestampCursor(s *scope, cfg *schema.TimestampProgress, errLabel string) error {
-	cur, ok := s.cursor["last_timestamp"]
-	if !ok {
-		if cfg.Initial != nil {
-			got, err := s.evalValue(cfg.Initial.Lookback)
-			if err != nil {
-				return fmt.Errorf("%s.initial.lookback: %w", errLabel, err)
-			}
-			d, err := toDuration(got)
-			if err != nil {
-				return fmt.Errorf("%s.initial.lookback: %w", errLabel, err)
-			}
-			ref := s.now().Add(-d).UTC().Format(time.RFC3339)
-			s.fromProgress["latest_timestamp"] = ref
-			s.cursor["last_timestamp"] = ref
-			return nil
-		}
-		s.fromProgress["latest_timestamp"] = ""
+	if _, ok := s.cursor["last_timestamp"]; ok {
 		return nil
 	}
-	s.fromProgress["latest_timestamp"] = cur
+	if cfg.Initial == nil {
+		return nil
+	}
+	got, err := s.evalValue(cfg.Initial.Lookback)
+	if err != nil {
+		return fmt.Errorf("%s.initial.lookback: %w", errLabel, err)
+	}
+	d, err := toDuration(got)
+	if err != nil {
+		return fmt.Errorf("%s.initial.lookback: %w", errLabel, err)
+	}
+	s.cursor["last_timestamp"] = s.now().Add(-d).UTC().Format(time.RFC3339)
 	return nil
 }
 
@@ -321,9 +314,9 @@ func maxEventTime(events []any, path schema.Path, errLabel string) (time.Time, e
 //
 // The window's wire representation is governed by cfg.Format (one of the
 // timestamp-producing format verbs — rfc3339, rfc3339nano, unix_seconds,
-// unix_millis; default rfc3339). Both cursor and from_progress
-// values share the same format so a Value reading cursor.window_start and a
-// Value reading {from_progress: window_start} produce identical bytes.
+// unix_millis; default rfc3339). seed writes the formatted strings to
+// cursor.window_start / cursor.window_end so templates read them via
+// {ref: cursor.window_start} / {ref: cursor.window_end}.
 //
 // Forward-clock guard: if a previously-persisted window_start sits in the
 // future relative to s.now() (skew, restored backup, etc.), seed clamps
@@ -380,8 +373,6 @@ func (p *timeWindowProgress) seed(s *scope) error {
 
 	s.cursor["window_start"] = startV
 	s.cursor["window_end"] = endV
-	s.fromProgress["window_start"] = startV
-	s.fromProgress["window_end"] = endV
 	return nil
 }
 
@@ -502,24 +493,17 @@ func (p *asyncJobProgress) seed(s *scope) error {
 	if _, ok := s.cursor["phase"]; !ok {
 		s.cursor["phase"] = p.firstPhase()
 	}
-	// Mirror cursor.last_timestamp into fromProgress["latest_timestamp"] so
-	// {from_progress: latest_timestamp} resolves identically to the
-	// non-async timestamp variants. The cursor key is written by
-	// on_complete.cursor_update (use_now or latest_event_timestamp) and is
-	// absent on first drain.
+	// cursor.last_timestamp is written by on_complete.cursor_update
+	// (kind=use_now or latest_event_timestamp) at drain end — it is absent
+	// on first drain. Templates that wire {ref: cursor.last_timestamp}
+	// into a submit body send no since= value on first drain (the http
+	// layer skips nil values); authors who need an explicit since="" can
+	// add a {default: ""} branch on the ref. Operators who need a bounded
+	// first window should pre-seed cursor.last_timestamp via the snapshot
+	// file.
 	//
-	// Note: async_job has no initial.lookback slot in its IR schema. On the
-	// FIRST drain, fromProgress["latest_timestamp"] is the empty string —
-	// templates that wire {from_progress: latest_timestamp} into a submit
-	// body therefore send since="" to the server on first drain. A server
-	// that interprets that as "since the beginning of time" may receive an
-	// unbounded first query; operators who need a bounded first window
-	// should pre-seed cursor.last_timestamp via the snapshot file.
-	if cur, ok := s.cursor["last_timestamp"]; ok {
-		s.fromProgress["latest_timestamp"] = cur
-	} else {
-		s.fromProgress["latest_timestamp"] = ""
-	}
+	// async_job has no initial.lookback slot in its IR schema, so seed
+	// performs no extra cursor writes here.
 	return nil
 }
 
@@ -581,12 +565,20 @@ func (p *asyncJobProgress) phaseTransition(s *scope, stepID string, res *stepRes
 		done := true
 		if p.cfg.Poll != nil && p.cfg.Poll.CompleteWhen != nil {
 			// Defer-based restore so a future panic inside evalPredicate
-			// cannot leak the poll body into the next iteration's scope.
-			// scope.body must be "scoped to the complete_when predicate
-			// evaluation" — enforce that with the language.
-			prev := s.body
+			// cannot leak the poll body / headers into the next iteration's
+			// scope. scope.body / scope.responseHeaders must be "scoped to
+			// the complete_when predicate evaluation" — enforce that with
+			// the language. The predicate may reference either the legacy
+			// body.<path> root or the new response.body.<path> /
+			// response.header.<name> roots; both resolve against res.
+			prevBody := s.body
+			prevHeaders := s.responseHeaders
 			s.body = res.body
-			defer func() { s.body = prev }()
+			s.responseHeaders = res.headers
+			defer func() {
+				s.body = prevBody
+				s.responseHeaders = prevHeaders
+			}()
 			ok, err := s.evalPredicate(*p.cfg.Poll.CompleteWhen)
 			if err != nil {
 				return phase, false, false, fmt.Errorf("async_job.poll.complete_when: %w", err)
@@ -632,7 +624,7 @@ func (p *asyncJobProgress) phaseTransition(s *scope, stepID string, res *stepRes
 
 func (p *asyncJobProgress) captureExtracts(s *scope, body any, ex map[string]schema.AsyncExtract) error {
 	for name, axc := range ex {
-		got, ok, err := lookupBodyPath(body, pathParts(axc.Path))
+		got, ok, err := s.resolveBodyPath(body, axc.From)
 		if err != nil {
 			return fmt.Errorf("async_job.<phase>.extract.%s: %w", name, err)
 		}
@@ -691,7 +683,23 @@ func (p *asyncJobProgress) applyOnComplete(s *scope, producerBody any) error {
 		if cu.EventTime == nil {
 			return fmt.Errorf("async_job.on_complete.cursor_update.event_time: required for kind=latest_event_timestamp")
 		}
-		events, err := locateEvents(producerBody, pathParts(p.eventsAt), p.ndjson)
+		// p.eventsAt mirrors doc.Response.EventsAt; the validator enforces
+		// response.body.<path> at that slot, so stripBodyRoot trims the two
+		// leading segments and the locateEvents walk runs against the
+		// producer body.
+		parts, stepID, err := stripBodyRoot(p.eventsAt)
+		if err != nil {
+			return fmt.Errorf("async_job.on_complete.cursor_update: response.events_at: %w", err)
+		}
+		body := producerBody
+		if stepID != "" {
+			b, ok := s.steps[stepID]
+			if !ok {
+				return fmt.Errorf("async_job.on_complete.cursor_update: response.events_at references step %q with no captured body", stepID)
+			}
+			body = b
+		}
+		events, err := locateEvents(body, parts, p.ndjson)
 		if err != nil {
 			return fmt.Errorf("async_job.on_complete.cursor_update: locate events: %w", err)
 		}

@@ -37,24 +37,23 @@ auth:
       client_secret: {ref: state.client_secret}
       cache:
         store_in: token
-        expiry_field: expires_in
+        expiry_field: response.body.expires_in
         expiry_buffer: 60s
 
 requests:
   - method: GET
     path: /api/v1/findings
     query:
-      cursor: {from_pagination: token}
+      cursor: {ref: cursor.token, default: ""}
       limit: {format: string, value: {ref: state.page_size}}
 
 response:
   decode: json
-  events_at: findings
+  events_at: response.body.findings
 
 pagination:
   cursor_token:
-    token_at: next_cursor
-    send_as: query.cursor
+    token_at: response.body.next_cursor
 
 progress:
   latest_event_timestamp:

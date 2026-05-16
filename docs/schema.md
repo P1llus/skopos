@@ -31,8 +31,9 @@ Cross-cutting:
 
 - [Values](#values) — the universal dynamic-field type used everywhere
   a string, number, or boolean could appear.
-- [Paths](#paths) — dotted-string references into the decoded body /
-  namespaces (`state`, `cursor`, `extract`, `steps`, `item`, `body`).
+- [Paths](#paths) — dotted-string references into the runtime
+  namespaces (`state`, `cursor`, `extract`, `steps`, `response`,
+  `item`).
 - [Predicates](#predicates) — boolean expressions for `if:`,
   `complete_when:`, `multi_mode.branches[].when:`,
   `Value.select.branches[].when:`.
@@ -270,7 +271,7 @@ over state or cursor.
 auth:
   multi_mode:
     branches:
-      - when: {eq: {path: state.region, equal: "gov"}}
+      - when: {eq: {path: state.region, value: "gov"}}
         auth: {bearer: {token: {ref: state.gov_token}}}
     default:
       auth: {bearer: {token: {ref: state.commercial_token}}}
@@ -371,8 +372,8 @@ Per-entry fields:
   rejects obvious non-list top-level forms (literal scalars,
   `{now: ...}`, `{format: ...}`, `{base64: ...}`, `{object: ...}`);
   list-ness for composite forms (`{ref: ...}`, `{concat: ...}`,
-  `{list: ...}`, `{from_pagination: ...}`, `{from_progress: ...}`) is
-  decided at lowering time when the runtime can see the resolved type.
+  `{list: ...}`) is decided at lowering time when the runtime can see
+  the resolved type.
 - At most one request may carry `produces_events: true`. When no step
   is marked explicitly:
   - For non-`async_job` documents, the **last** request in
@@ -384,14 +385,12 @@ Per-entry fields:
 
 ### ExtractVar
 
-| Field    | Required | Description                                                                                                |
-|----------|----------|------------------------------------------------------------------------------------------------------------|
-| `name`   | yes      | Binding name.                                                                                              |
-| `path`   | no       | Body-relative [Path](#paths). Default: body root.                                                          |
-| `coerce` | no       | Type coercion verb (e.g. `to_string`, `to_int`).                                                           |
-| `source` | no       | `body` (default) or `header`.                                                                              |
-| `header` | when `source: header` | Header name when reading from headers.                                                                     |
-| `target` | no       | `extract` (default; per-iteration) or `cursor` (persisted; auto-registers a cursor field).                 |
+| Field    | Required | Description                                                                                                                                                          |
+|----------|----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `name`   | yes      | Binding name.                                                                                                                                                        |
+| `from`   | yes      | Namespace-rooted [Path](#paths). One of `response.body.<path>`, `response.header.<name>`, `steps.<id>.body.<path>`, `steps.<id>.header.<name>`. The runner dispatches body-walk vs header-lookup off the path root. |
+| `coerce` | no       | Type coercion verb (e.g. `to_string`, `to_int`).                                                                                                                     |
+| `target` | no       | `extract` (default; per-iteration) or `cursor` (persisted; auto-registers a cursor field).                                                                            |
 
 `target: cursor` auto-registers a `cursor.<name>` field that persists
 across iterations. This is the structured form for multi-field cursors
@@ -418,14 +417,15 @@ cached token is still inside its expiry buffer.
 
 | Field           | Required | Description                                                                                                                       |
 |-----------------|----------|-----------------------------------------------------------------------------------------------------------------------------------|
-| `store_in`      | yes      | Names *both* the top-level response field captured *and* the state slot it lands in. Auto-registers as a runtime `string` field — do NOT declare under `state`. |
-| `expiry_field`  | yes      | Body-relative [Path](#paths) to the response field carrying the token's lifetime / expiry instant.                                |
+| `store_in`      | yes      | Names *both* the top-level response field captured *and* the state slot it lands in. Auto-registers as a runtime `string` field — do NOT declare under `state`. The paired expiry slot (`<store_in>_expires_at`) auto-registers the same way. |
+| `expiry_field`  | yes      | [Path](#paths) rooted at `response.body.<path>` (of the cached step's own response) carrying the token's lifetime / expiry instant.                                |
 | `expiry_buffer` | yes      | Go-style duration — re-run the step when the remaining lifetime drops below this.                                                 |
 | `expiry_format` | no       | How `expiry_field` is read: `duration` (default — a remaining lifetime) or an absolute-instant format (`unix_seconds`, `unix_millis`, `rfc3339`, `rfc3339nano`). |
 
-The expiry timestamp is tracked at `cursor.__step_<store_in>_expires_at` as
-an RFC 3339 string. A `on_status: invalidate_cache` verb clears the slot
-(see [`on_status`](#request-rules)), forcing a re-login on the next drain.
+The expiry timestamp is tracked at `state.<store_in>_expires_at` as an
+RFC 3339 string. A `on_status: invalidate_cache` verb clears both slots
+(see [`on_status`](#request-rules)), forcing a re-login on the next
+drain.
 
 ```yaml
 requests:
@@ -437,10 +437,10 @@ requests:
         username: {ref: state.username}
         password: {ref: state.password}
     cache:
-      store_in: session_token        # body field captured + state slot (auto-registered as runtime)
-      expiry_field: expires_in       # body-relative Path
-      expiry_buffer: 60s             # Go duration; re-run ahead of expiry
-      expiry_format: duration        # optional; default "duration"
+      store_in: session_token                       # body field captured + state slot (auto-registered as runtime)
+      expiry_field: response.body.expires_in        # namespace-rooted Path
+      expiry_buffer: 60s                            # Go duration; re-run ahead of expiry
+      expiry_format: duration                       # optional; default "duration"
 ```
 
 ---
@@ -450,29 +450,30 @@ requests:
 How to decode the producer step's body and where to find the events
 list.
 
-| Field               | Required | Description                                                                                                                |
-|---------------------|----------|----------------------------------------------------------------------------------------------------------------------------|
-| `decode`            | yes      | `json` or `ndjson`.                                                                                                        |
-| `events_at`         | yes      | Body [Path](#paths) to the events list. The zero (empty) Path means "the body root IS the events list".                    |
-| `placeholder_event` | no       | [Value](#values) used when `events_at` resolves to an empty list and pagination wants another iteration.                   |
+| Field               | Required | Description                                                                                                                                                                            |
+|---------------------|----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `decode`            | yes      | `json` or `ndjson`.                                                                                                                                                                    |
+| `events_at`         | yes      | [Path](#paths) rooted at `response.body.<path>` (or `steps.<id>.body.<path>`) locating the events list. The zero (empty) Path means "the body root IS the events list".                |
+| `placeholder_event` | no       | [Value](#values) used when `events_at` resolves to an empty list and pagination wants another iteration.                                                                               |
 
 ```yaml
 response:
   decode: json
-  events_at: data.events
+  events_at: response.body.data.events
 ```
 
 ### Response rules
 
-- `events_at` is a **body-relative `Path`**. Its segments are not
-  resolved against the namespace table; they index into the
-  events-bearing step's decoded body. The zero `Path` means "body
+- `events_at` is namespace-rooted: `response.body.<path>` reads from the
+  events-bearing step's own response; `steps.<id>.body.<path>` reads
+  from a labelled prior step's response. The zero `Path` means "body
   root" — the whole decoded body IS the events list (or single event
-  when ndjson).
+  when ndjson). Bare dotted strings (`data.events`) are rejected.
 - When `decode: ndjson` and `events_at` is empty (zero Path), each
   decoded line IS one event. When `decode: ndjson` and `events_at` is
-  non-empty, the `events_at` Path is applied to EACH decoded line and
-  the flattened sequence is the events list.
+  non-empty, the trailing body segments below the namespace root are
+  applied to EACH decoded line and the flattened sequence is the
+  events list.
 - The HTTP status-code success set is configured per-step via
   `requests[].expect_status`. There is no `response.success_status`.
 
@@ -492,34 +493,42 @@ pagination: {none: {}}
 
 ### `pagination.cursor_token`
 
-Opaque server cursor token round-tripped on each page.
+Opaque server cursor token round-tripped on each page. The runner
+captures the next token into `cursor.token`; the request reads it back
+on the next iteration via an explicit `{ref: cursor.token, default: ""}`
+in whichever slot (query / header / body) it belongs.
 
-| Field      | Required | Description                                                                          |
-|------------|----------|--------------------------------------------------------------------------------------|
-| `token_at` | yes      | Body [Path](#paths) to the next-cursor field.                                        |
-| `send_as`  | yes      | `query.<param>` or `header.<name>`. Auto-injected on the producer step.              |
+| Field      | Required | Description                                                                                                |
+|------------|----------|------------------------------------------------------------------------------------------------------------|
+| `token_at` | yes      | [Path](#paths) rooted at `response.body.<path>` (or `steps.<id>.body.<path>`) to the next-cursor field.    |
 
-Default completion fires when `{ref: <token_at>}` resolves to a zero
-`Value` (empty / null).
+Default completion fires when `{ref: cursor.token}` resolves to a zero
+`Value` (empty / null) after `token_at` is applied to the response.
 
 ### `pagination.page_number`
 
-Incrementing 1-based page number.
+Incrementing 1-based page number. The active page lives at
+`cursor.page`; read it back into a request slot with
+`{ref: cursor.page}` (commonly under a `{format: string, ...}` wrapper
+for query placement).
 
-| Field         | Required | Description                                                            |
-|---------------|----------|------------------------------------------------------------------------|
-| `page_param`  | yes      | Query-param name carrying the page number.                             |
-| `has_more_at` | no       | Body [Path](#paths) to a bool flag; loop stops when false.             |
-| `batch_size`  | no       | [Value](#values) — page size hint; not auto-injected.                  |
+| Field         | Required | Description                                                                                                |
+|---------------|----------|------------------------------------------------------------------------------------------------------------|
+| `page_param`  | yes      | Author-supplied param name. Diagnostic-only — it does NOT control placement; placement follows the ref.    |
+| `has_more_at` | no       | [Path](#paths) rooted at `response.body.<path>` (or `steps.<id>.body.<path>`) to a bool flag; loop stops when false. |
+| `batch_size`  | no       | [Value](#values) — page size hint; the author writes it into the request explicitly.                       |
 
 ### `pagination.offset`
 
 0-based offset, increments by `batch_size` (or observed event count).
+The active offset lives at `cursor.offset` (and `cursor.offset_end`
+when `batch_size` is set); read them back with
+`{ref: cursor.offset}` / `{ref: cursor.offset_end}`.
 
-| Field          | Required | Description                                          |
-|----------------|----------|------------------------------------------------------|
-| `offset_param` | yes      | Query-param name carrying the offset.                |
-| `batch_size`   | no       | [Value](#values).                                    |
+| Field          | Required | Description                                                                                                |
+|----------------|----------|------------------------------------------------------------------------------------------------------------|
+| `offset_param` | yes      | Author-supplied param name. Diagnostic-only — placement follows the ref.                                   |
+| `batch_size`   | no       | [Value](#values).                                                                                          |
 
 ### `pagination.link_header`
 
@@ -538,55 +547,61 @@ response carries no `rel="next"` entry.
 
 Fully-formed next-page URL inside the body.
 
-| Field         | Required | Description                          |
-|---------------|----------|--------------------------------------|
-| `next_url_at` | yes      | Body [Path](#paths) to the URL.      |
+| Field         | Required | Description                                                                                                |
+|---------------|----------|------------------------------------------------------------------------------------------------------------|
+| `next_url_at` | yes      | [Path](#paths) rooted at `response.body.<path>` (or `steps.<id>.body.<path>`) to the URL.                  |
 
-The runner parses the URL into `cursor.next_url`; it is **not**
-auto-injected. The request must read it back in its `url` slot via
-`{ref: cursor.next_url, default: <bootstrap-url>}`. A missing, non-string,
-or empty value terminates the drain.
+The runner parses the URL into `cursor.next_url`. The request must read
+it back in its `url` slot via
+`{ref: cursor.next_url, default: <bootstrap-url>}`. A missing,
+non-string, or empty value terminates the drain.
 
 ### `pagination.scroll_id`
 
-Server-side scroll session.
+Server-side scroll session. The active id lives at `cursor.scroll_id`;
+the request reads it back via `{ref: cursor.scroll_id}` (typically with
+no `default:` so the bootstrap iteration omits the slot and the server
+opens a fresh session).
 
-| Field            | Required | Description                                                                            |
-|------------------|----------|----------------------------------------------------------------------------------------|
-| `scroll_id_at`   | yes      | Body [Path](#paths) to the scroll id.                                                  |
-| `send_as`        | yes      | `query.<param>` or `header.<name>` (`body.<key>` is deferred).                         |
-| `complete_when`  | no       | [Predicate](#predicates) — terminates the scroll when true and clears the scroll id.   |
+| Field            | Required | Description                                                                                                |
+|------------------|----------|------------------------------------------------------------------------------------------------------------|
+| `scroll_id_at`   | yes      | [Path](#paths) rooted at `response.body.<path>` (or `steps.<id>.body.<path>`) to the scroll id.            |
+| `complete_when`  | no       | [Predicate](#predicates) — terminates the scroll when true and clears the scroll id.                       |
 
 Default completion (when `complete_when` is omitted) fires when
-`{ref: <scroll_id_at>}` resolves to a zero `Value`.
+`{ref: cursor.scroll_id}` resolves to a zero `Value` after `scroll_id_at`
+is applied to the response.
 
 ### `pagination.graphql_relay`
 
-GraphQL Relay-style cursors.
+GraphQL Relay-style cursors. The active end-cursor lives at
+`cursor.<cursor_var>`; the request reads it back via
+`{ref: cursor.<cursor_var>}` inside the GraphQL `variables:` object.
 
-| Field              | Required | Description                                                          |
-|--------------------|----------|----------------------------------------------------------------------|
-| `has_next_page_at` | yes      | Body [Path](#paths) to the `pageInfo.hasNextPage` bool.              |
-| `end_cursor_at`    | yes      | Body [Path](#paths) to the `pageInfo.endCursor` string.              |
-| `cursor_var`       | yes      | Author-named cursor variable (typically `after`).                    |
+| Field              | Required | Description                                                                                                |
+|--------------------|----------|------------------------------------------------------------------------------------------------------------|
+| `has_next_page_at` | yes      | [Path](#paths) rooted at `response.body.<path>` (or `steps.<id>.body.<path>`) to the `pageInfo.hasNextPage` bool. |
+| `end_cursor_at`    | yes      | [Path](#paths) rooted at `response.body.<path>` (or `steps.<id>.body.<path>`) to the `pageInfo.endCursor` string. |
+| `cursor_var`       | yes      | Author-named cursor variable (typically `after`).                                                          |
 
 ### Pagination rules
 
-- `send_as` is required for `cursor_token` and `scroll_id` and is the
-  single source of truth for the auto-injection slot. The codec
-  rejects values that do not start with `query.` or `header.`.
-- `cursor_token` and `scroll_id` are auto-injected at the producer
-  step. Authors may also write `{from_pagination: token}` /
-  `{from_pagination: scroll_id}` explicitly at any request slot
-  (`query`, `headers`, `body.json` / `body.form`). When both forms are
-  present, the explicit Value wins; the slot named by `send_as` MUST
-  agree with the slot where the explicit Value lives.
-- `page_number.page_param` and `offset.offset_param` name the **param
-  key**, not its placement. Placement follows the
-  `{from_pagination: ...}` Value's location in the request
-  (`query: {<name>: {from_pagination: page}}` rides as a query param;
-  `body: {json: {<name>: {from_pagination: offset}}}` rides in the
-  JSON body).
+- The active value for every strategy lives on `cursor.<name>` (see the
+  [cursor namespace table](#cursor-namespace-inferred)). Authors wire it
+  into a request explicitly with `{ref: cursor.<name>}` — there is no
+  auto-injection. Placement follows where the ref is written
+  (`query: {p: {ref: cursor.token}}` rides as a query param;
+  `body: {json: {p: {ref: cursor.offset}}}` rides in the JSON body).
+- `cursor_token` accepts an empty default (`{ref: cursor.token, default: ""}`)
+  on the bootstrap iteration to preserve the historical
+  `?cursor=` wire shape; without a default, the slot is simply absent
+  until the cursor populates.
+- `scroll_id` typically omits `default:` so the bootstrap iteration
+  opens a fresh server session.
+- `link_header` and `next_url_in_body` carry the next URL in
+  `cursor.next_link` / `cursor.next_url`; read them back in the request's
+  `url` slot via `{ref: cursor.next_link, default: <bootstrap-url>}` /
+  `{ref: cursor.next_url, default: <bootstrap-url>}`.
 
 ---
 
@@ -648,20 +663,21 @@ membership but not the timestamp-only subset.
 Three-phase submit → poll → fetch loop. State machine lives on
 `cursor.phase`.
 
-| Field         | Required | Description                                                                                                       |
-|---------------|----------|-------------------------------------------------------------------------------------------------------------------|
-| `submit`      | one of   | `{step: <id>, extract: {<name>: {path: <Path>}, ...}}` — submit step + per-extract bindings.                      |
-| `poll`        | one of   | `{step: <id>, complete_when: <Predicate>, extract: {...}}` — poll step + completion predicate.                    |
-| `fetch`       | one of   | `{step: <id>}` — fetch step (the producer).                                                                       |
-| `on_complete` | no       | `{cursor_update: <CursorUpdateDirective>}` — how to advance the cursor after a completed fetch.                   |
+| Field         | Required | Description                                                                                                                                                                  |
+|---------------|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `submit`      | one of   | `{step: <id>, extract: {<name>: {from: <Path>}, ...}}` — submit step + per-extract bindings. Each `from` is rooted at `response.body.<path>` or `steps.<id>.body.<path>`.    |
+| `poll`        | one of   | `{step: <id>, complete_when: <Predicate>, extract: {...}}` — poll step + completion predicate. `extract` follows the same `{from: <Path>}` shape as `submit.extract`.        |
+| `fetch`       | one of   | `{step: <id>}` — fetch step (the producer).                                                                                                                                  |
+| `on_complete` | no       | `{cursor_update: <CursorUpdateDirective>}` — how to advance the cursor after a completed fetch.                                                                              |
 
 At least one of `submit`, `poll`, `fetch` must be set; the IR does not
 encode a fixed three-phase contract. Each role is independently
 optional and is exercised in declared order.
 
 `poll.complete_when` is a `Predicate` that evaluates against the poll
-step's response body. The `body.<path>` namespace IS valid inside this
-predicate (and only inside `complete_when` predicates —
+step's response body. The `response.body.<path>` and
+`response.header.<name>` roots ARE valid inside this predicate (and
+only inside `complete_when` predicates —
 `pagination.scroll_id.complete_when` follows the same rule).
 
 The async job's events-bearing step is the last-declared role
@@ -697,16 +713,16 @@ rejected at parse time.
   from the chosen reference on EVERY advance, not just the first run.
   It pairs with `initial.lookback` (first-run only) for time cursors
   that need both a first-run lookback and an every-iteration lag.
-- The `{from_progress: <role>}` Value's role must match the active
-  progress strategy: `latest_timestamp` is valid for
-  `latest_event_timestamp` / `max_event_field` / `use_now`;
-  `window_start` and `window_end` are valid for `time_window`;
-  `stateless` accepts no role. `async_job` advances
-  `cursor.last_timestamp` via
-  `on_complete.cursor_update.kind: latest_event_timestamp` — the
-  validator cannot resolve that statically, so role/strategy matching
-  is not enforced for async_job documents and stays a
-  target-lowering responsibility.
+- Every progress strategy publishes its active value on
+  `cursor.<name>` (see the
+  [cursor namespace table](#cursor-namespace-inferred)) — read it into
+  a request slot with `{ref: cursor.<name>}`. The validator rejects
+  `{ref: cursor.<name>}` for any name no active strategy populates, so
+  e.g. `cursor.window_start` is rejected outside `progress.time_window`.
+  `async_job` advances `cursor.last_timestamp` lazily via
+  `on_complete.cursor_update.kind: latest_event_timestamp`, so the
+  cursor namespace stays populated even when the value is unset on
+  the first iteration.
 
 ---
 
@@ -753,13 +769,11 @@ structured forms use a discriminator key.
 |--------------------------------------------------------|-----------------------------------------------------------------------------------------------|
 | `/api/v1/events`, `100`, `true`, `null`                 | LiteralString, LiteralInt, LiteralBool, zero.                                                 |
 | `{literal_string: "x"}`                                 | Explicit literal string form (when YAML would otherwise misparse as int/bool).                |
-| `{ref: cursor.last_timestamp}`                          | Reference into a namespace.                                                                   |
+| `{ref: cursor.last_timestamp}`                          | Reference into a namespace. Active pagination / progress signals (`cursor.token`, `cursor.page`, `cursor.last_timestamp`, `cursor.window_start`, …) ride through plain `ref` Values. |
 | `{ref: state.url, default: "https://…"}`                | Reference with fallback when unset.                                                           |
 | `{now: true, offset: "-1h"}`                            | Current time, optionally offset. Wrap with `{format: <verb>, value: {now: true}}` to coerce.  |
 | `{concat: [<Value>, ...]}`                              | String concatenation; at least 2 elements (`{concat: []}` and `{concat: [<single>]}` are rejected). |
 | `{select: {branches: [...], default: <Value>}}`         | Conditional select; first matching branch wins.                                               |
-| `{from_pagination: token}`                              | Active pagination signal for THIS page. Roles: `token`, `page`, `offset`, `offset_end`, `scroll_id`, `relay_cursor`. |
-| `{from_progress: latest_timestamp}`                     | Active progress signal for THIS drain. Roles: `latest_timestamp`, `window_start`, `window_end`. |
 | `{format: rfc3339, value: <Value>}`                     | Coerce `value` to a formatted representation.                                                 |
 | `{base64: <Value>}`                                     | Base64-encode the inner Value's string.                                                       |
 | `{list: [<Value>, ...]}`                                | List literal.                                                                                 |
@@ -804,11 +818,8 @@ Not in the set today: `regex_extract`, `sha256`, `hmac_sign`,
   authoring errors. Use `{literal_bool: true | false}` for a constant
   predicate.
 - `{ref: cursor.<name>}` is valid only when the cursor namespace
-  provides `<name>` for the active strategies.
-- `{from_pagination: ...}` and `{from_progress: ...}` are
-  semantic-role Values. They do not hard-code a cursor path; the
-  runtime resolves them to the appropriate cursor field based on the
-  active strategy.
+  provides `<name>` for the active strategies (see the
+  [cursor namespace table](#cursor-namespace-inferred)).
 
 ---
 
@@ -816,81 +827,83 @@ Not in the set today: `regex_extract`, `sha256`, `hmac_sign`,
 
 `Path` is the typed kind for dotted-string identifiers used in
 `{ref: ...}`, `{present: ...}`, `{eq: {path: ...}}`, `events_at`,
-`extract.path`, `fan_out.over`, `pagination.*.token_at`, etc.
+`extract[].from`, `fan_out.over`, `pagination.*.token_at`, etc.
 
-Primary form: `data.issues.nodes` (dotted string).
+Primary form: `response.body.data.issues.nodes` (dotted string with a
+namespace-root prefix).
 
 Escape form for field names containing dots:
 
 ```yaml
-{parts: ["steps", "my.weird.id", "body"]}
+{parts: ["steps", "my.weird.id", "body", "events"]}
 ```
 
 The IR encoder emits the escape form **whenever any segment contains a
 `.`**; all other paths emit as a dotted string. This guarantees
 byte-stable round-trips through the dotted parser.
 
-### Two Path flavours
-
-- **Namespace-rooted Paths** appear in `{ref: ...}`, `{present: ...}`,
-  and `{eq: {path: ...}}`. The root segment is resolved against the
-  namespace table below; the validator rejects unknown roots and
-  unresolved leaves.
-- **Body-relative Paths** appear in `response.events_at`,
-  `extract[].path`, `pagination.*.token_at` / `scroll_id_at` /
-  `next_url_at` / `has_next_page_at` / `end_cursor_at` /
-  `has_more_at`, `progress.async_job.<phase>.extract.<name>.path`,
-  `auth.oauth2.<grant>.cache.expiry_field`, and
-  `requests[].cache.expiry_field`. The validator only checks the
-  structural parse; segments index into a response body whose shape
-  is target-specific.
-
 A Path is **empty** when `IsZero` is true OR `Parts` is
 nil / zero-length. Both forms are equivalent at every reference site;
 the validator and codec call `Path.IsEmpty()` for this combined
 condition.
 
-### Namespace shadow warning
-
-Body-relative paths whose first segment matches one of the namespace
-roots (`state`, `cursor`, `extract`, `steps`, `item`, `body`) are
-accepted but emit a `warning`-severity diagnostic. The path resolves
-against the body, NOT the namespace table — but it reads like a
-namespace ref to a human, which is a common authoring trap. Authors
-who genuinely have a body field named `state` / `cursor` / etc. can
-silence the warning by renaming the body field; the IR will not break
-the document.
-
 ### Namespace table
 
-| Root        | Valid in                                  | Populated by                                                              |
-|-------------|-------------------------------------------|---------------------------------------------------------------------------|
-| `state.<name>` | anywhere                                | `state.fields` declarations.                                              |
-| `cursor.<name>` | anywhere                               | Inferred from `pagination` + `progress` + `async_job`.                    |
-| `extract.<name>` | requests that follow the producing step | `requests[].extract`.                                                    |
-| `steps.<id>.body.<path>` | requests that follow step `<id>` | Previous step's response body.                                            |
-| `item.<path>` | inside a step with `fan_out:`             | `fan_out.as` name (deferred).                                             |
-| `body.<path>` | inside `complete_when` predicates         | The predicate-step's decoded body.                                        |
+Every Path begins with one of the roots below. Bare dotted strings
+(e.g. `data.events` with no namespace prefix) are rejected at parse /
+validate time, with a hint pointing at the new form.
+
+| Root                       | Valid in                                                                                          | Populated by                                                          |
+|----------------------------|---------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------|
+| `state.<name>`             | anywhere                                                                                          | `state.fields` declarations + cache `store_in` auto-registrations.    |
+| `cursor.<name>`            | anywhere                                                                                          | Inferred from `pagination` + `progress` + `async_job`; `extract.target=cursor`. |
+| `extract.<name>`           | requests that follow the producing step                                                           | `requests[].extract`.                                                 |
+| `steps.<id>.body.<path>`   | anywhere (after step `<id>` has run)                                                              | Prior step's decoded response body.                                   |
+| `steps.<id>.header.<name>` | anywhere (after step `<id>` has run)                                                              | Prior step's response headers.                                        |
+| `response.body.<path>`     | body-rooted IR slots (`events_at`, `token_at`, `scroll_id_at`, etc.) AND inside `complete_when`   | The active step's decoded response body.                              |
+| `response.header.<name>`   | `extract[].from` AND inside `complete_when`                                                       | The active step's response headers.                                   |
+| `item.<path>`              | inside a step with `fan_out:`                                                                     | `fan_out.as` binding (deferred).                                      |
+
+Body-rooted IR slots — `response.events_at`, `pagination.*.token_at` /
+`scroll_id_at` / `next_url_at` / `has_next_page_at` / `end_cursor_at` /
+`has_more_at`, `progress.async_job.<phase>.extract.<name>.from`,
+`auth.oauth2.<grant>.cache.expiry_field`,
+`requests[].cache.expiry_field` — accept the body-flavoured roots
+(`response.body.<path>`, `steps.<id>.body.<path>`) only.
+`extract[].from` additionally accepts the matching header roots.
+`complete_when` predicates (`pagination.scroll_id.complete_when`,
+`progress.async_job.poll.complete_when`) are the only sites where the
+bare `response.<...>` roots resolve against the predicate-step's
+response without an `id:` qualifier.
+
+Per-event sub-paths under `event_time: {path: ...}`
+(`progress.{latest_event_timestamp,max_event_field}.event_time.path`,
+`async_job.on_complete.cursor_update.event_time.path`) stay bare —
+they index into each element of the events list and reject any
+namespace root.
 
 ### Cursor namespace (inferred)
 
 The following cursor fields are auto-provided based on active
-strategies:
+strategies. Authors read them with plain `{ref: cursor.<name>}` Values;
+they do not need to be declared anywhere.
 
-| Strategy / form                       | Cursor fields provided |
-|---------------------------------------|----------------------|
-| `pagination: cursor_token`            | `cursor.token` |
-| `pagination: page_number`             | `cursor.page` |
-| `pagination: offset`                  | `cursor.offset` |
-| `pagination: scroll_id`               | `cursor.scroll_id` |
-| `pagination: next_url_in_body`        | `cursor.next_url` |
-| `pagination: graphql_relay`           | `cursor.<cursor_var>` (the declared var name) |
-| `pagination: link_header`             | `cursor.next_link` |
-| `progress: latest_event_timestamp`    | `cursor.last_timestamp` |
-| `progress: max_event_field`           | `cursor.last_timestamp` |
-| `progress: use_now`                   | `cursor.last_timestamp` |
-| `progress: time_window`               | `cursor.window_start`, `cursor.window_end` |
-| `progress: async_job`                 | `cursor.phase`, plus all names from `submit.extract` + `poll.extract` |
+| Strategy / form                       | Cursor fields provided                                                |
+|---------------------------------------|------------------------------------------------------------------------|
+| `pagination: cursor_token`            | `cursor.token`                                                         |
+| `pagination: page_number`             | `cursor.page`                                                          |
+| `pagination: offset`                  | `cursor.offset`; `cursor.offset_end` when `batch_size` is set          |
+| `pagination: scroll_id`               | `cursor.scroll_id`                                                     |
+| `pagination: next_url_in_body`        | `cursor.next_url`                                                      |
+| `pagination: graphql_relay`           | `cursor.<cursor_var>` (the declared var name)                          |
+| `pagination: link_header`             | `cursor.next_link`                                                     |
+| `progress: latest_event_timestamp`    | `cursor.last_timestamp`                                                |
+| `progress: max_event_field`           | `cursor.last_timestamp`                                                |
+| `progress: use_now`                   | `cursor.last_timestamp`                                                |
+| `progress: async_job` (when `on_complete.cursor_update.kind` is `use_now` or `latest_event_timestamp`) | `cursor.last_timestamp`         |
+| `progress: time_window`               | `cursor.window_start`, `cursor.window_end`                             |
+| `progress: async_job`                 | `cursor.phase`, plus all names from `submit.extract` + `poll.extract`  |
+| `requests[].extract[].target: cursor` | `cursor.<name>` for each author-declared binding                       |
 
 ---
 
@@ -904,11 +917,11 @@ one variant key.
 
 | Form                                                | Meaning                                                  |
 |-----------------------------------------------------|----------------------------------------------------------|
-| `{eq:  {path: <Path>, equal: <Value>}}`             | Path equals Value.                                       |
-| `{gt:  {path: <Path>, equal: <Value>}}`             | Path > Value (numbers, durations, RFC 3339 timestamps).  |
-| `{lt:  {path: <Path>, equal: <Value>}}`             | Path < Value.                                            |
-| `{gte: {path: <Path>, equal: <Value>}}`             | Path >= Value.                                           |
-| `{lte: {path: <Path>, equal: <Value>}}`             | Path <= Value.                                           |
+| `{eq:  {path: <Path>, value: <Value>}}`             | Path equals Value.                                       |
+| `{gt:  {path: <Path>, value: <Value>}}`             | Path > Value (numbers, durations, RFC 3339 timestamps).  |
+| `{lt:  {path: <Path>, value: <Value>}}`             | Path < Value.                                            |
+| `{gte: {path: <Path>, value: <Value>}}`             | Path >= Value.                                           |
+| `{lte: {path: <Path>, value: <Value>}}`             | Path <= Value.                                           |
 | `{present: <Path>}`                                 | Path resolves to a non-null value.                       |
 | `{not: <Predicate>}`                                | Negation.                                                |
 | `{and: [<Predicate>, ...]}`                         | Conjunction (short-circuits).                            |
@@ -916,7 +929,7 @@ one variant key.
 | `{literal_bool: true \| false}`                     | Constant truth value.                                    |
 
 `gt | lt | gte | lte` are ordered comparisons. The LHS (`path`)
-resolves to a namespace ref; the RHS (`equal`) is any Value. Targets
+resolves to a namespace ref; the RHS (`value`) is any Value. Targets
 that cannot type-check both operands at lower time (e.g. when the path
 resolves to a string and the Value is an int literal) MUST surface a
 lowering error rather than silently coercing.

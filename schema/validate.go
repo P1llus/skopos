@@ -5,7 +5,6 @@ package schema
 import (
 	"fmt"
 	"math"
-	"strings"
 	"time"
 )
 
@@ -72,13 +71,11 @@ func (v *validator) warnf(path, message, hint string) {
 // particular scope.
 type ns struct {
 	state              map[string]struct{} // declared state field names
-	cursor             map[string]struct{} // inferred cursor field names
-	extract            map[string]struct{} // available extract.<name> bindings
-	stepBodies         map[string]struct{} // available steps.<id> bindings
-	itemNamespace      string              // fan_out.as value active in this scope
-	oauthStoreIn       string              // auto-registered oauth2 cache state key
-	paginationStrategy string              // active strategy name (e.g. "cursor_token", "offset")
-	progressStrategy   string              // active progress strategy name (e.g. "latest_event_timestamp", "time_window")
+	cursor        map[string]struct{} // inferred cursor field names
+	extract       map[string]struct{} // available extract.<name> bindings
+	stepBodies    map[string]struct{} // available steps.<id> bindings
+	itemNamespace string              // fan_out.as value active in this scope
+	oauthStoreIn  string              // auto-registered oauth2 cache state key
 }
 
 func (n *ns) hasStateField(name string) bool {
@@ -113,12 +110,10 @@ func (v *validator) run(d *Doc) {
 	// (defaults, auth, requests, response, async_job) sees a fully-populated
 	// namespace.
 	namespace := &ns{
-		state:              make(map[string]struct{}),
-		cursor:             cursorSchema(d),
-		extract:            make(map[string]struct{}),
-		stepBodies:         make(map[string]struct{}),
-		paginationStrategy: paginationStrategy(d.Pagination),
-		progressStrategy:   progressStrategy(d.Progress),
+		state:      make(map[string]struct{}),
+		cursor:     cursorSchema(d),
+		extract:    make(map[string]struct{}),
+		stepBodies: make(map[string]struct{}),
 	}
 
 	// Snapshot author-declared state.fields keys before preregisterStateAndCursor
@@ -168,9 +163,11 @@ func (v *validator) run(d *Doc) {
 // Auto-registered runtime state slots (auth.oauth2.<grant>.cache.store_in and
 // requests[].cache.store_in) are also materialised in d.State.Fields as
 // FieldDecl{Type: "string", Mutability: "runtime"} when no explicit
-// declaration exists. Targets that walk d.State.Fields to emit a typed
-// state/cursor struct must see the auto-registered slot the same way they see
-// a declared one.
+// declaration exists. The paired expiry timestamp slot
+// (<store_in>_expires_at) auto-registers the same way: slice 7 moved the
+// expiry slot from cursor.__*_expires_at into state.<store_in>_expires_at,
+// so authors that walk d.State.Fields see both the token slot and its
+// expiry slot as runtime-mutable string fields.
 func preregisterStateAndCursor(d *Doc, namespace *ns) {
 	if d.State != nil {
 		for name := range d.State.Fields {
@@ -192,13 +189,20 @@ func preregisterStateAndCursor(d *Doc, namespace *ns) {
 			d.State.Fields[name] = FieldDecl{Type: "string", Mutability: "runtime"}
 		}
 	}
+	autoRegisterCache := func(storeIn string) {
+		if storeIn == "" {
+			return
+		}
+		autoRegister(storeIn)
+		autoRegister(storeIn + "_expires_at")
+	}
 	if d.Auth.OAuth2 != nil {
 		if cc := d.Auth.OAuth2.ClientCredentials; cc != nil && cc.Cache != nil && cc.Cache.StoreIn != "" {
-			autoRegister(cc.Cache.StoreIn)
+			autoRegisterCache(cc.Cache.StoreIn)
 			namespace.oauthStoreIn = cc.Cache.StoreIn
 		}
 		if pg := d.Auth.OAuth2.PasswordGrant; pg != nil && pg.Cache != nil && pg.Cache.StoreIn != "" {
-			autoRegister(pg.Cache.StoreIn)
+			autoRegisterCache(pg.Cache.StoreIn)
 			namespace.oauthStoreIn = pg.Cache.StoreIn
 		}
 	}
@@ -207,7 +211,7 @@ func preregisterStateAndCursor(d *Doc, namespace *ns) {
 			namespace.stepBodies[req.ID] = struct{}{}
 		}
 		if req.Cache != nil && req.Cache.StoreIn != "" {
-			autoRegister(req.Cache.StoreIn)
+			autoRegisterCache(req.Cache.StoreIn)
 		}
 		for _, ex := range req.Extract {
 			if ex.Target == "cursor" && ex.Name != "" {
@@ -234,26 +238,6 @@ func implicitAsyncJobProducerStep(d *Doc) string {
 	}
 	if aj.Submit != nil {
 		return aj.Submit.Step
-	}
-	return ""
-}
-
-// progressStrategy returns the active progress strategy name, or "" when no
-// variant is set.
-func progressStrategy(p Progress) string {
-	switch {
-	case p.Stateless != nil:
-		return "stateless"
-	case p.LatestEventTimestamp != nil:
-		return "latest_event_timestamp"
-	case p.MaxEventField != nil:
-		return "max_event_field"
-	case p.UseNow != nil:
-		return "use_now"
-	case p.TimeWindow != nil:
-		return "time_window"
-	case p.AsyncJob != nil:
-		return "async_job"
 	}
 	return ""
 }
@@ -432,7 +416,7 @@ func (v *validator) checkOAuth2(path string, o *OAuth2Auth, namespace *ns, decla
 		v.checkValue(p+".token_url", cc.TokenURL, namespace, false)
 		v.checkValue(p+".client_id", cc.ClientID, namespace, false)
 		v.checkValue(p+".client_secret", cc.ClientSecret, namespace, false)
-		v.checkTokenCache(p+".cache", cc.Cache, declaredStateFields)
+		v.checkTokenCache(p+".cache", cc.Cache, namespace, declaredStateFields)
 	}
 	if pg := o.PasswordGrant; pg != nil {
 		p := path + ".password_grant"
@@ -442,23 +426,32 @@ func (v *validator) checkOAuth2(path string, o *OAuth2Auth, namespace *ns, decla
 		if pg.ClientID != nil {
 			v.checkValue(p+".client_id", *pg.ClientID, namespace, false)
 		}
-		v.checkTokenCache(p+".cache", pg.Cache, declaredStateFields)
+		v.checkTokenCache(p+".cache", pg.Cache, namespace, declaredStateFields)
 	}
 }
 
 // checkTokenCache validates an OAuth2 token cache block, shared across grants.
-func (v *validator) checkTokenCache(path string, c *TokenCache, declaredStateFields map[string]struct{}) {
+func (v *validator) checkTokenCache(path string, c *TokenCache, namespace *ns, declaredStateFields map[string]struct{}) {
 	if c == nil {
 		return
 	}
 	if c.StoreIn == "" {
 		v.errorf(path+".store_in", "store_in is required")
-	} else if _, conflict := declaredStateFields[c.StoreIn]; conflict {
-		v.errorf(path+".store_in", "store_in %q conflicts with a declared state.fields key", c.StoreIn)
+	} else {
+		if _, conflict := declaredStateFields[c.StoreIn]; conflict {
+			v.errorf(path+".store_in", "store_in %q conflicts with a declared state.fields key", c.StoreIn)
+		}
+		// Slice 7: the paired expiry timestamp auto-registers as
+		// state.<store_in>_expires_at, so an author-declared
+		// state.fields.<store_in>_expires_at collides with the slot the
+		// cache block claims.
+		if _, conflict := declaredStateFields[c.StoreIn+"_expires_at"]; conflict {
+			v.errorf(path+".store_in",
+				"store_in %q conflicts with a declared state.fields key %q (auto-registered by the cache block as the paired expiry slot)",
+				c.StoreIn, c.StoreIn+"_expires_at")
+		}
 	}
-	if c.ExpiryField.IsEmpty() {
-		v.errorf(path+".expiry_field", "expiry_field is required (body-relative path of the lifetime field)")
-	}
+	v.checkBodyRootedPath(path+".expiry_field", c.ExpiryField, namespace, false)
 	v.checkDuration(path+".expiry_buffer", "expiry_buffer", c.ExpiryBuffer)
 }
 
@@ -527,6 +520,15 @@ func (v *validator) checkRequests(d *Doc, namespace *ns, declaredStateFields map
 			cp := fmt.Sprintf("%s.cache.store_in", p)
 			if _, conflict := declaredStateFields[req.Cache.StoreIn]; conflict {
 				v.errorf(cp, "store_in %q conflicts with a declared state.fields key", req.Cache.StoreIn)
+			}
+			// Slice 7: the paired expiry timestamp auto-registers as
+			// state.<store_in>_expires_at; an author-declared
+			// state.fields.<store_in>_expires_at collides with the slot
+			// the cache block claims.
+			if _, conflict := declaredStateFields[req.Cache.StoreIn+"_expires_at"]; conflict {
+				v.errorf(cp,
+					"store_in %q conflicts with a declared state.fields key %q (auto-registered by the cache block as the paired expiry slot)",
+					req.Cache.StoreIn, req.Cache.StoreIn+"_expires_at")
 			}
 			if namespace.oauthStoreIn == req.Cache.StoreIn {
 				v.errorf(cp, "store_in %q conflicts with auth.oauth2.<grant>.cache.store_in", req.Cache.StoreIn)
@@ -661,24 +663,7 @@ func (v *validator) checkRequest(path string, req Request, namespace *ns) {
 		if ex.Name == "" {
 			v.errorf(ep+".name", "extract name is required")
 		}
-		switch ex.Source {
-		case "header":
-			if ex.Header == "" {
-				v.errorf(ep+".header", "header is required when source is 'header'")
-			}
-		case "body", "":
-			// extract[].path is a body-relative Path; structural shape is
-			// already enforced by Path's parser. Just require non-zero.
-			if ex.Path.IsEmpty() {
-				v.errorf(ep+".path", "path is required when source is 'body' (the default)")
-			} else if root := ex.Path.Root(); isNamespaceRoot(root) {
-				v.warnf(ep+".path",
-					fmt.Sprintf("extract.path %q starts with the namespace root %q, but the path is body-relative — it indexes into the response body, not the namespace", ex.Path.String(), root),
-					"extract[].path is body-relative; rename the body field or use {parts: [...]} to silence this warning")
-			}
-		default:
-			v.errorf(ep+".source", "source must be 'body' or 'header', got %q", ex.Source)
-		}
+		v.checkExtractFromPath(ep+".from", ex.From, namespace)
 		if ex.Coerce != "" && !validFormatVerb(ex.Coerce) {
 			v.errorf(ep+".coerce", "unknown coerce verb %q; want one of the format-verb set", ex.Coerce)
 		}
@@ -763,11 +748,11 @@ func (v *validator) checkFanOut(path string, f FanOut, namespace *ns) {
 }
 
 // checkFanOutOverForm rejects fan_out.over Values whose top-level form is
-// obviously not list-typed. Ref / Select / List / Concat / FromPagination /
-// FromProgress / IsZero are allowed (the actual list-ness is decided at
-// target lowering time when the runtime can see the resolved type), but
-// literal scalars, Now, Format, Base64, and Object can never produce a list
-// and are almost certainly an authoring error (e.g. `over: items` vs
+// obviously not list-typed. Ref / Select / List / Concat / IsZero are
+// allowed (the actual list-ness is decided at target lowering time when the
+// runtime can see the resolved type), but literal scalars, Now, Format,
+// Base64, and Object can never produce a list and are almost certainly an
+// authoring error (e.g. `over: items` vs
 // `over: {ref: steps.list.body.items}`).
 func (v *validator) checkFanOutOverForm(path string, val Value) {
 	switch {
@@ -794,7 +779,7 @@ func (v *validator) checkFanOutOverForm(path string, val Value) {
 func (v *validator) checkFanOutAsShadow(path, as string, namespace *ns) {
 	reserved := map[string]struct{}{
 		"state": {}, "cursor": {}, "extract": {},
-		"steps": {}, "item": {}, "body": {},
+		"steps": {}, "item": {}, "body": {}, "response": {},
 	}
 	if _, ok := reserved[as]; ok {
 		v.errorf(path, "fan_out.as %q shadows the reserved namespace name %q", as, as)
@@ -828,10 +813,10 @@ func (v *validator) checkResponse(path string, r Response, namespace *ns) {
 	default:
 		v.errorf(path+".decode", "unknown decode value %q; want json|ndjson", r.Decode)
 	}
-	// events_at is a body-relative Path. The zero Path means "body root"
-	// (the whole decoded body IS the events list / event). Non-empty paths
-	// are validated structurally by the Path codec; no namespace check
-	// applies here because the path is intrinsically body-rooted.
+	// events_at is a Path rooted at response.body.*. The zero Path
+	// keeps its "body root" semantics (the whole decoded body IS the
+	// events list / event).
+	v.checkBodyRootedPath(path+".events_at", r.EventsAt, namespace, true)
 	if r.PlaceholderEvent != nil {
 		v.checkValue(path+".placeholder_event", *r.PlaceholderEvent, namespace, false)
 	}
@@ -852,14 +837,14 @@ func (v *validator) checkPagination(path string, p Pagination, namespace *ns) {
 
 	switch {
 	case p.CursorToken != nil:
-		if p.CursorToken.TokenAt.IsEmpty() {
-			v.errorf(path+".cursor_token.token_at", "token_at is required")
-		}
-		v.checkSendAs(path+".cursor_token.send_as", p.CursorToken.SendAs)
+		v.checkBodyRootedPath(path+".cursor_token.token_at", p.CursorToken.TokenAt, namespace, false)
 
 	case p.PageNumber != nil:
 		if p.PageNumber.PageParam == "" {
 			v.errorf(path+".page_number.page_param", "page_param is required")
+		}
+		if !p.PageNumber.HasMoreAt.IsEmpty() {
+			v.checkBodyRootedPath(path+".page_number.has_more_at", p.PageNumber.HasMoreAt, namespace, false)
 		}
 
 	case p.Offset != nil:
@@ -870,27 +855,18 @@ func (v *validator) checkPagination(path string, p Pagination, namespace *ns) {
 	case p.LinkHeader != nil:
 
 	case p.NextURLInBody != nil:
-		if p.NextURLInBody.NextURLAt.IsEmpty() {
-			v.errorf(path+".next_url_in_body.next_url_at", "next_url_at is required")
-		}
+		v.checkBodyRootedPath(path+".next_url_in_body.next_url_at", p.NextURLInBody.NextURLAt, namespace, false)
 
 	case p.ScrollID != nil:
-		if p.ScrollID.ScrollIDAt.IsEmpty() {
-			v.errorf(path+".scroll_id.scroll_id_at", "scroll_id_at is required")
-		}
-		v.checkSendAs(path+".scroll_id.send_as", p.ScrollID.SendAs)
+		v.checkBodyRootedPath(path+".scroll_id.scroll_id_at", p.ScrollID.ScrollIDAt, namespace, false)
 		if p.ScrollID.CompleteWhen != nil {
 			v.checkPredicate(path+".scroll_id.complete_when", *p.ScrollID.CompleteWhen, namespace, true)
 		}
 
 	case p.GraphQLRelay != nil:
 		g := p.GraphQLRelay
-		if g.HasNextPageAt.IsEmpty() {
-			v.errorf(path+".graphql_relay.has_next_page_at", "has_next_page_at is required")
-		}
-		if g.EndCursorAt.IsEmpty() {
-			v.errorf(path+".graphql_relay.end_cursor_at", "end_cursor_at is required")
-		}
+		v.checkBodyRootedPath(path+".graphql_relay.has_next_page_at", g.HasNextPageAt, namespace, false)
+		v.checkBodyRootedPath(path+".graphql_relay.end_cursor_at", g.EndCursorAt, namespace, false)
 		if g.CursorVar == "" {
 			v.errorf(path+".graphql_relay.cursor_var", "cursor_var is required")
 		}
@@ -939,9 +915,7 @@ func (v *validator) checkProgress(path string, p Progress, namespace *ns) {
 }
 
 func (v *validator) checkTimestampProgress(path string, tp TimestampProgress, namespace *ns) {
-	if tp.EventTime.Path.IsEmpty() {
-		v.errorf(path+".event_time.path", "event_time.path is required")
-	}
+	v.checkPerEventPath(path+".event_time.path", tp.EventTime.Path)
 	if tp.Lookback != nil {
 		v.checkValue(path+".lookback", *tp.Lookback, namespace, false)
 	}
@@ -955,10 +929,8 @@ func (v *validator) checkAsyncJob(path string, aj *AsyncJobProgress, namespace *
 	if aj.Submit != nil {
 		v.checkAsyncStepRef(path+".submit.step", aj.Submit.Step, namespace)
 		for name, ax := range aj.Submit.Extract {
-			ep := fmt.Sprintf("%s.submit.extract.%s.path", path, name)
-			if ax.Path.IsEmpty() {
-				v.errorf(ep, "path is required (resolves against the named step's response body)")
-			}
+			ep := fmt.Sprintf("%s.submit.extract.%s.from", path, name)
+			v.checkBodyRootedPath(ep, ax.From, namespace, false)
 		}
 	}
 	if aj.Poll != nil {
@@ -967,14 +939,13 @@ func (v *validator) checkAsyncJob(path string, aj *AsyncJobProgress, namespace *
 			v.errorf(path+".poll.complete_when",
 				"complete_when is required when poll is declared")
 		} else {
-			// complete_when evaluates against the poll step's body; body.* refs are valid.
+			// complete_when evaluates against the poll step's body; response.body.*
+			// refs resolve against it (legacy body.* form is rejected).
 			v.checkPredicate(path+".poll.complete_when", *aj.Poll.CompleteWhen, namespace, true)
 		}
 		for name, ax := range aj.Poll.Extract {
-			ep := fmt.Sprintf("%s.poll.extract.%s.path", path, name)
-			if ax.Path.IsEmpty() {
-				v.errorf(ep, "path is required (resolves against the named step's response body)")
-			}
+			ep := fmt.Sprintf("%s.poll.extract.%s.from", path, name)
+			v.checkBodyRootedPath(ep, ax.From, namespace, false)
 		}
 	}
 	if aj.Fetch != nil {
@@ -1008,9 +979,8 @@ func (v *validator) checkAsyncJob(path string, aj *AsyncJobProgress, namespace *
 			if cu.EventTime == nil {
 				v.errorf(cuPath+".event_time",
 					"event_time is required when kind is 'latest_event_timestamp' (names the body path to the per-event timestamp field)")
-			} else if cu.EventTime.Path.IsEmpty() {
-				v.errorf(cuPath+".event_time.path",
-					"event_time.path is required")
+			} else {
+				v.checkPerEventPath(cuPath+".event_time.path", cu.EventTime.Path)
 			}
 		case "use_now", "stateless":
 			if cu.EventTime != nil {
@@ -1026,13 +996,10 @@ func (v *validator) checkAsyncJob(path string, aj *AsyncJobProgress, namespace *
 // The store_in slot is auto-registered as a runtime state field by the pre-pass
 // in checkRequests, so this function only checks structure, not registration.
 func (v *validator) checkRequestCache(path string, c RequestCache, namespace *ns) {
-	_ = namespace // contract: state.<store_in> already registered upstream
 	if c.StoreIn == "" {
 		v.errorf(path+".store_in", "store_in is required")
 	}
-	if c.ExpiryField.IsEmpty() {
-		v.errorf(path+".expiry_field", "expiry_field is required (body-relative path of the lifetime field)")
-	}
+	v.checkBodyRootedPath(path+".expiry_field", c.ExpiryField, namespace, false)
 	v.checkDuration(path+".expiry_buffer", "expiry_buffer", c.ExpiryBuffer)
 	if c.ExpiryFormat != "" && !validFormatVerb(c.ExpiryFormat) {
 		v.errorf(path+".expiry_format", "expiry_format %q is not in the format-verb set", c.ExpiryFormat)
@@ -1066,8 +1033,11 @@ func (v *validator) checkError(path string, e ErrorBlock) {
 // ---- value reference checking ----
 
 // checkValue validates a Value within a namespace context.
-// allowBody indicates whether "body.<path>" refs are valid here (they are only
-// valid inside extract.path and response.events_at, not in top-level Value fields).
+// allowBody indicates whether the contextual response.* roots are valid
+// here ("response.body.<path>" / "response.header.<name>"). Set true at
+// complete_when predicate sites; false everywhere else (top-level Value
+// fields, request query/header/body maps, etc.). The legacy bare body.*
+// root was deleted in slice 2 and is rejected unconditionally.
 func (v *validator) checkValue(path string, val Value, namespace *ns, allowBody bool) {
 	if val.IsZero || val.LiteralString != nil || val.LiteralInt != nil || val.LiteralBool != nil {
 		return
@@ -1116,32 +1086,154 @@ func (v *validator) checkValue(path string, val Value, namespace *ns, allowBody 
 		for k, el := range val.Object {
 			v.checkValue(fmt.Sprintf("%s.object.%s", path, k), el, namespace, false)
 		}
+	}
+}
 
-	case val.FromPagination != "":
-		if !validPaginationRole(val.FromPagination) {
-			v.errorf(path+".from_pagination", "unknown pagination role %q; want token|page|offset|offset_end|scroll_id|relay_cursor", val.FromPagination)
-			break
+// checkBodyRootedPath validates a Path slot whose grammar is restricted to
+// body-rooted forms. Accepted shapes:
+//
+//   - response.body.<path>     the active step's response body
+//   - steps.<id>.body.<path>   a labelled prior step's response body
+//
+// Used at every §1.2 read site (events_at, token_at, scroll_id_at,
+// next_url_at, has_more_at, has_next_page_at, end_cursor_at, expiry_field,
+// async_job extract.from). The error messages name the new namespace form
+// so a bare body-relative dotted string surfaces a precise migration hint.
+//
+// When allowEmpty is true the zero Path is accepted (events_at's "body
+// root" semantics: the whole decoded body IS the events list).
+//
+// stepBodies is consulted for steps.<id>.body.<path> to verify the
+// referenced id is declared.
+func (v *validator) checkBodyRootedPath(path string, p Path, namespace *ns, allowEmpty bool) {
+	if p.IsEmpty() {
+		if !allowEmpty {
+			v.errorf(path, "is required; want response.body.<path> (or steps.<id>.body.<path>)")
 		}
-		if expected := rolesForStrategy(namespace.paginationStrategy); expected != nil {
-			if !expected[val.FromPagination] {
-				v.errorf(path+".from_pagination",
-					"role %q does not match the active pagination strategy %q; expected one of %v",
-					val.FromPagination, namespace.paginationStrategy, sortedKeys(expected))
-			}
+		return
+	}
+	switch p.Parts[0] {
+	case "response":
+		if len(p.Parts) < 2 || p.Parts[1] != "body" {
+			v.errorf(path, "ref %q: at this slot the response root must be response.body.<path>; response.header.<name> is not valid here", p.String())
+			return
 		}
+		if len(p.Parts) < 3 {
+			v.errorf(path, "ref %q: response.body root requires a sub-path segment: response.body.<path>", p.String())
+		}
+	case "steps":
+		if len(p.Parts) < 2 {
+			v.errorf(path, "ref %q: steps ref requires an id: steps.<id>.body.<path>", p.String())
+			return
+		}
+		id := p.Parts[1]
+		if !namespace.hasStepBody(id) {
+			v.errorf(path, "ref %q: step %q has no id or has not been declared", p.String(), id)
+			return
+		}
+		if len(p.Parts) < 3 || p.Parts[2] != "body" {
+			v.errorf(path, "ref %q: at this slot the steps ref must be steps.<id>.body.<path>; steps.<id>.header.<name> is not valid here", p.String())
+			return
+		}
+		if len(p.Parts) < 4 {
+			v.errorf(path, "ref %q: steps.<id>.body root requires a sub-path segment: steps.%s.body.<path>", p.String(), id)
+		}
+	default:
+		v.errorf(path,
+			"%q must be namespace-rooted; use response.body.%s (or steps.<id>.body.%s for a labelled prior step)",
+			p.String(), p.String(), p.String())
+	}
+}
 
-	case val.FromProgress != "":
-		if !validProgressRole(val.FromProgress) {
-			v.errorf(path+".from_progress", "unknown progress role %q; want latest_timestamp|window_start|window_end", val.FromProgress)
-			break
+// checkExtractFromPath validates a requests[].extract[].from Path slot.
+//
+// Accepted shapes (a strict superset of checkBodyRootedPath — the from slot
+// also reaches headers via the symmetric *.header.<name> roots):
+//
+//   - response.body.<path>     the active step's response body
+//   - response.header.<name>   the active step's response headers
+//   - steps.<id>.body.<path>   a labelled prior step's response body
+//   - steps.<id>.header.<name> a labelled prior step's response headers
+//
+// stepBodies is consulted for the steps.<id>.* arms to verify the referenced
+// id is declared. The empty Path is rejected — the from slot is always
+// required (an extract that resolves to nothing has no purpose).
+func (v *validator) checkExtractFromPath(path string, p Path, namespace *ns) {
+	if p.IsEmpty() {
+		v.errorf(path, "is required; want response.body.<path>, response.header.<name>, or steps.<id>.{body|header}.<...>")
+		return
+	}
+	switch p.Parts[0] {
+	case "response":
+		if len(p.Parts) < 2 {
+			v.errorf(path, "ref %q: response ref requires a kind segment: response.body.<path> or response.header.<name>", p.String())
+			return
 		}
-		if expected := rolesForProgressStrategy(namespace.progressStrategy); expected != nil {
-			if !expected[val.FromProgress] {
-				v.errorf(path+".from_progress",
-					"role %q does not match the active progress strategy %q; expected one of %v",
-					val.FromProgress, namespace.progressStrategy, sortedKeys(expected))
+		switch p.Parts[1] {
+		case "body":
+			if len(p.Parts) < 3 {
+				v.errorf(path, "ref %q: response.body root requires a sub-path segment: response.body.<path>", p.String())
 			}
+		case "header":
+			if len(p.Parts) < 3 {
+				v.errorf(path, "ref %q: response.header root requires a header name: response.header.<name>", p.String())
+			}
+		default:
+			v.errorf(path, "ref %q: response second segment must be \"body\" or \"header\" (got %q); only response.body.<path> and response.header.<name> are valid", p.String(), p.Parts[1])
 		}
+	case "steps":
+		if len(p.Parts) < 2 {
+			v.errorf(path, "ref %q: steps ref requires an id: steps.<id>.body.<path> or steps.<id>.header.<name>", p.String())
+			return
+		}
+		id := p.Parts[1]
+		if !namespace.hasStepBody(id) {
+			v.errorf(path, "ref %q: step %q has no id or has not been declared", p.String(), id)
+			return
+		}
+		if len(p.Parts) < 3 {
+			v.errorf(path, "ref %q: steps ref must include a kind segment: steps.%s.body.<path> or steps.%s.header.<name>", p.String(), id, id)
+			return
+		}
+		switch p.Parts[2] {
+		case "body":
+			if len(p.Parts) < 4 {
+				v.errorf(path, "ref %q: steps.<id>.body root requires a sub-path segment: steps.%s.body.<path>", p.String(), id)
+			}
+		case "header":
+			if len(p.Parts) < 4 {
+				v.errorf(path, "ref %q: steps.<id>.header ref requires a header name: steps.%s.header.<name>", p.String(), id)
+			}
+		default:
+			v.errorf(path, "ref %q: steps ref second segment must be \"body\" or \"header\" (got %q); only steps.<id>.body.<path> and steps.<id>.header.<name> are valid", p.String(), p.Parts[2])
+		}
+	default:
+		v.errorf(path,
+			"%q must be namespace-rooted; use response.body.<path>, response.header.<name>, or steps.<id>.{body|header}.<...> for a labelled prior step",
+			p.String())
+	}
+}
+
+// checkPerEventPath validates a Path at one of the per-event sites
+// (progress.latest_event_timestamp.event_time.path,
+// progress.max_event_field.event_time.path,
+// progress.async_job.on_complete.cursor_update.event_time.path).
+//
+// Per §1.5 these slots stay body-relative — the runner walks the
+// events list located by response.events_at and reads this path from
+// each element, so the segments are per-event, not document-rooted.
+// A leading namespace root (response, steps, state, cursor, extract,
+// body) is rejected so authors don't expect namespace resolution
+// at the per-event reader.
+func (v *validator) checkPerEventPath(path string, p Path) {
+	if p.IsEmpty() {
+		v.errorf(path, "event_time.path is required (per-event sub-path; the runner walks the events list at response.events_at and reads this path from each element)")
+		return
+	}
+	if root := p.Root(); isNamespaceRoot(root) {
+		v.errorf(path,
+			"event_time.path %q must be a per-event sub-path; the runner walks the events list at response.events_at and reads this path from each element — namespace roots (state|cursor|extract|steps|item|body|response) are not valid here",
+			p.String())
 	}
 }
 
@@ -1193,7 +1285,7 @@ func (v *validator) checkPathRef(path string, p Path, namespace *ns, allowBody b
 
 	case "steps":
 		if len(p.Parts) < 2 {
-			v.errorf(path, "steps ref requires an id: steps.<id>.body.<path>")
+			v.errorf(path, "steps ref requires an id: steps.<id>.body.<path> or steps.<id>.header.<name>")
 			return
 		}
 		id := p.Parts[1]
@@ -1202,24 +1294,55 @@ func (v *validator) checkPathRef(path string, p Path, namespace *ns, allowBody b
 			return
 		}
 		if len(p.Parts) < 3 {
-			v.errorf(path, "ref %q: steps ref must include the body segment: steps.%s.body.<path>", p.String(), id)
+			v.errorf(path, "ref %q: steps ref must include a kind segment: steps.%s.body.<path> or steps.%s.header.<name>", p.String(), id, id)
 			return
 		}
-		if p.Parts[2] != "body" {
-			v.errorf(path, "ref %q: steps ref second segment must be \"body\" (got %q); only steps.<id>.body.<path> is valid", p.String(), p.Parts[2])
+		switch p.Parts[2] {
+		case "body":
+			// steps.<id>.body.<path> — body segments are validated structurally
+			// by the Path codec; no further checks required here.
+		case "header":
+			if len(p.Parts) < 4 {
+				v.errorf(path, "ref %q: steps.<id>.header ref requires a header name: steps.%s.header.<name>", p.String(), id)
+			}
+		default:
+			v.errorf(path, "ref %q: steps ref second segment must be \"body\" or \"header\" (got %q); only steps.<id>.body.<path> and steps.<id>.header.<name> are valid", p.String(), p.Parts[2])
+		}
+
+	case "response":
+		if !allowBody {
+			v.errorf(path, "ref %q: response namespace is only valid inside complete_when predicates (pagination.scroll_id.complete_when, progress.async_job.poll.complete_when)", p.String())
+			return
+		}
+		if len(p.Parts) < 2 {
+			v.errorf(path, "ref %q: response ref requires a kind segment: response.body.<path> or response.header.<name>", p.String())
+			return
+		}
+		switch p.Parts[1] {
+		case "body":
+			// response.body.<path> — body segments are validated structurally
+			// by the Path codec.
+		case "header":
+			if len(p.Parts) < 3 {
+				v.errorf(path, "ref %q: response.header ref requires a header name: response.header.<name>", p.String())
+			}
+		default:
+			v.errorf(path, "ref %q: response second segment must be \"body\" or \"header\" (got %q); only response.body.<path> and response.header.<name> are valid", p.String(), p.Parts[1])
 		}
 
 	case "body":
-		if !allowBody {
-			v.errorf(path, "ref %q: body namespace is only valid inside complete_when predicates (pagination.scroll_id.complete_when, progress.async_job.poll.complete_when)", p.String())
-		}
+		// The legacy body.<path> root is gone — every body-relative ref
+		// is now namespace-rooted. Predicate sites that historically used
+		// body.<path> migrate to response.body.<path>; the runtime resolver
+		// proved interchangeable in slice 1.
+		v.errorf(path, "ref %q: body namespace was removed; use response.body.<path> (resolves against the same response context inside complete_when predicates)", p.String())
 
 	default:
 		if namespace.itemNamespace != "" {
-			v.errorf(path, "ref %q: unknown namespace root %q; want state|cursor|extract|steps|body|%s",
+			v.errorf(path, "ref %q: unknown namespace root %q; want state|cursor|extract|steps|response|%s",
 				p.String(), root, namespace.itemNamespace)
 		} else {
-			v.errorf(path, "ref %q: unknown namespace root %q; want state|cursor|extract|steps|body (or the fan_out.as name inside a fan_out step)",
+			v.errorf(path, "ref %q: unknown namespace root %q; want state|cursor|extract|steps|response (or the fan_out.as name inside a fan_out step)",
 				p.String(), root)
 		}
 	}
@@ -1228,9 +1351,11 @@ func (v *validator) checkPathRef(path string, p Path, namespace *ns, allowBody b
 // ---- predicate checking ----
 
 // checkPredicate validates a Predicate within a namespace context.
-// allowBody indicates whether "body.<path>" refs are valid (they are for
-// complete_when predicates that evaluate against a step's response body,
-// and for scroll_id.complete_when).
+// allowBody indicates whether the contextual response roots are valid — the
+// legacy "body.<path>" and the new "response.body.<path>" /
+// "response.header.<name>" forms. Both are accepted at complete_when
+// predicate sites (pagination.scroll_id.complete_when,
+// progress.async_job.poll.complete_when).
 func (v *validator) checkPredicate(path string, p Predicate, namespace *ns, allowBody bool) {
 	if p.IsZero() {
 		v.errorf(path, "predicate must not be empty")
@@ -1239,23 +1364,23 @@ func (v *validator) checkPredicate(path string, p Predicate, namespace *ns, allo
 	switch {
 	case p.Eq != nil:
 		v.checkPathRef(path+".eq.path", p.Eq.Path, namespace, allowBody)
-		v.checkValue(path+".eq.equal", p.Eq.Equal, namespace, false)
+		v.checkValue(path+".eq.value", p.Eq.Value, namespace, false)
 
 	case p.Gt != nil:
 		v.checkPathRef(path+".gt.path", p.Gt.Path, namespace, allowBody)
-		v.checkValue(path+".gt.equal", p.Gt.Equal, namespace, false)
+		v.checkValue(path+".gt.value", p.Gt.Value, namespace, false)
 
 	case p.Lt != nil:
 		v.checkPathRef(path+".lt.path", p.Lt.Path, namespace, allowBody)
-		v.checkValue(path+".lt.equal", p.Lt.Equal, namespace, false)
+		v.checkValue(path+".lt.value", p.Lt.Value, namespace, false)
 
 	case p.Gte != nil:
 		v.checkPathRef(path+".gte.path", p.Gte.Path, namespace, allowBody)
-		v.checkValue(path+".gte.equal", p.Gte.Equal, namespace, false)
+		v.checkValue(path+".gte.value", p.Gte.Value, namespace, false)
 
 	case p.Lte != nil:
 		v.checkPathRef(path+".lte.path", p.Lte.Path, namespace, allowBody)
-		v.checkValue(path+".lte.equal", p.Lte.Equal, namespace, false)
+		v.checkValue(path+".lte.value", p.Lte.Value, namespace, false)
 
 	case p.Present != nil:
 		v.checkPathRef(path+".present", *p.Present, namespace, allowBody)
@@ -1275,104 +1400,14 @@ func (v *validator) checkPredicate(path string, p Predicate, namespace *ns, allo
 	}
 }
 
-// validPaginationRole reports whether name is a recognised from_pagination role.
-func validPaginationRole(name string) bool {
-	switch name {
-	case "token", "page", "offset", "offset_end", "scroll_id", "relay_cursor":
-		return true
-	}
-	return false
-}
-
-// validProgressRole reports whether name is a recognised from_progress role.
-func validProgressRole(name string) bool {
-	switch name {
-	case "latest_timestamp", "window_start", "window_end":
-		return true
-	}
-	return false
-}
-
-// rolesForProgressStrategy returns the set of from_progress roles allowed by
-// the active progress strategy. Returns nil when no strategy-specific
-// restriction applies (async_job exposes cursor.last_timestamp via
-// on_complete.cursor_update.kind, which the IR cannot resolve statically;
-// targets that need a stricter check apply it at lowering time).
-func rolesForProgressStrategy(strategy string) map[string]bool {
-	switch strategy {
-	case "latest_event_timestamp", "max_event_field", "use_now":
-		return map[string]bool{"latest_timestamp": true}
-	case "time_window":
-		return map[string]bool{"window_start": true, "window_end": true}
-	case "stateless":
-		return map[string]bool{}
-	}
-	// async_job and unset strategies: graceful fallback, no constraint.
-	return nil
-}
-
-// rolesForStrategy returns the set of from_pagination roles allowed by the
-// active pagination strategy. Returns nil when no strategy-specific
-// restriction applies (e.g. "none", "link_header", "next_url_in_body" — these
-// either provide no role-form Values or only one).
-func rolesForStrategy(strategy string) map[string]bool {
-	switch strategy {
-	case "cursor_token":
-		return map[string]bool{"token": true}
-	case "page_number":
-		return map[string]bool{"page": true}
-	case "offset":
-		return map[string]bool{"offset": true, "offset_end": true}
-	case "scroll_id":
-		return map[string]bool{"scroll_id": true}
-	case "graphql_relay":
-		return map[string]bool{"relay_cursor": true}
-	case "none", "link_header", "next_url_in_body":
-		// These strategies expose no from_pagination role-form Value:
-		// link_header auto-provides cursor.next_link (a cursor namespace ref),
-		// next_url_in_body auto-extracts the next URL into cursor.next_url, and
-		// none has no pagination machinery. Return an empty map so any
-		// from_pagination ref surfaces "role does not match the active pagination
-		// strategy" instead of silently passing.
-		return map[string]bool{}
-	}
-	return nil
-}
-
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	// Stable order for deterministic error messages.
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1] > out[j]; j-- {
-			out[j-1], out[j] = out[j], out[j-1]
-		}
-	}
-	return out
-}
-
-// checkSendAs validates the "query.<param>" / "header.<name>" form used for
-// pagination send_as fields. Required: a non-empty value with a recognised
-// kind prefix.
-func (v *validator) checkSendAs(path, s string) {
-	if s == "" {
-		v.errorf(path, "send_as is required (\"query.<param>\" or \"header.<name>\")")
-		return
-	}
-	if _, _, err := splitSendAs(s); err != nil {
-		v.errorf(path, "%v", err)
-	}
-}
-
 // ---- helpers ----
 
 // isNamespaceRoot reports whether s is one of the reserved namespace-root
-// names. Used by the extract.path namespace-shadow warning.
+// names. Used by checkPerEventPath to reject namespace-root prefixes on
+// per-event sub-paths.
 func isNamespaceRoot(s string) bool {
 	switch s {
-	case "state", "cursor", "extract", "steps", "item", "body":
+	case "state", "cursor", "extract", "steps", "item", "body", "response":
 		return true
 	}
 	return false
@@ -1391,6 +1426,13 @@ func validFormatVerb(v string) bool {
 // cursorSchema returns the set of cursor field names that the active
 // pagination and progress strategies provide for doc d. Used by Validate to
 // reject {ref: cursor.<name>} for names no active strategy populates.
+//
+// The offset strategy registers "offset_end" only when batch_size is set,
+// matching offsetPagination.seed's runtime behaviour (offset_end = offset +
+// batch_size; absent without batch_size). async_job registers
+// "last_timestamp" whenever on_complete.cursor_update.kind drives a
+// timestamp write (use_now / latest_event_timestamp); the stateless kind
+// leaves the cursor untouched and so registers nothing.
 func cursorSchema(d *Doc) map[string]struct{} {
 	cs := make(map[string]struct{})
 
@@ -1403,6 +1445,9 @@ func cursorSchema(d *Doc) map[string]struct{} {
 		cs["page"] = struct{}{}
 	case p.Offset != nil:
 		cs["offset"] = struct{}{}
+		if p.Offset.BatchSize != nil {
+			cs["offset_end"] = struct{}{}
+		}
 	case p.LinkHeader != nil:
 		cs["next_link"] = struct{}{}
 	case p.NextURLInBody != nil:
@@ -1434,17 +1479,13 @@ func cursorSchema(d *Doc) map[string]struct{} {
 				cs[name] = struct{}{}
 			}
 		}
+		if aj.OnComplete != nil && aj.OnComplete.CursorUpdate != nil {
+			switch aj.OnComplete.CursorUpdate.Kind {
+			case "use_now", "latest_event_timestamp":
+				cs["last_timestamp"] = struct{}{}
+			}
+		}
 	}
 	return cs
 }
 
-// splitSendAs parses "query.<param>" or "header.<name>" into (kind, name).
-func splitSendAs(s string) (string, string, error) {
-	if strings.HasPrefix(s, "query.") {
-		return "query", strings.TrimPrefix(s, "query."), nil
-	}
-	if strings.HasPrefix(s, "header.") {
-		return "header", strings.TrimPrefix(s, "header."), nil
-	}
-	return "", "", fmt.Errorf("send_as must be 'query.<param>' or 'header.<name>', got %q", s)
-}

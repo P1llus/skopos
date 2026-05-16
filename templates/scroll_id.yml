@@ -31,21 +31,23 @@ requests:
   - method: GET
     path: /scroll_id/scroll
     query:
-      since: {from_progress: latest_timestamp}
-      scroll: {from_pagination: scroll_id}
+      since: {ref: cursor.last_timestamp}
+      # Bootstrap iteration: cursor.scroll_id is unset → the slot is
+      # omitted (no default) so the server opens a fresh scroll session.
+      # Subsequent iterations send the captured scroll id.
+      scroll: {ref: cursor.scroll_id}
 
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 
 pagination:
   scroll_id:
-    scroll_id_at: request_metadata.scroll
-    send_as: query.scroll
+    scroll_id_at: response.body.request_metadata.scroll
     complete_when:
       eq:
-        path: body.request_metadata.complete
-        equal: "true"
+        path: response.body.request_metadata.complete
+        value: "true"
 
 progress:
   latest_event_timestamp:

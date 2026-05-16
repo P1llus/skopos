@@ -5,6 +5,7 @@ package client
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/p1llus/skopos/schema"
@@ -22,10 +23,11 @@ type Snapshot struct {
 	// state.<cache.store_in>, custom-login session tokens, etc.
 	State map[string]any `json:"state,omitempty"`
 	// Cursor holds every inferred cursor field for the active
-	// pagination + progress + async_job strategies, plus
-	// framework-internal expiry-tracking slots paired with cached auth
-	// tokens (the __oauth2_<store_in>_expires_at key catalogued in
-	// scope's cursor catalogue).
+	// pagination + progress + async_job strategies. Slice 7 moved the
+	// framework-internal expiry-tracking slots out of cursor and into
+	// state (paired with the token they describe), so Snapshot.Cursor
+	// now carries only author-facing pagination / progress / async_job
+	// state.
 	Cursor map[string]any `json:"cursor,omitempty"`
 }
 
@@ -68,33 +70,35 @@ func (m *MemoryStore) Save(s Snapshot) error { m.snap = s; return nil }
 //
 //   - state:          PER-DRAIN. Seeded once from Snapshot.State + IR defaults
 //     in newScope; runtime-mutable writes (OAuth2 token cache, custom-login
-//     session tokens) accumulate within a drain and persist across drains
-//     via the deferred store.Save in Runner.Drain.
+//     session tokens, plus their paired <store_in>_expires_at slots after
+//     slice 7) accumulate within a drain and persist across drains via the
+//     deferred store.Save in Runner.Drain.
 //
 //   - cursor:         PER-DRAIN, PERSISTED. Seeded once from Snapshot.Cursor
-//     in newScope. Mutated by pagination.advance + progress.advance + the
-//     async_job phase machine + extract[].target=cursor. Persisted whole on
-//     drain end (even on error) so the next drain resumes from the
-//     high-water mark. The schema is inferred from the document's active
-//     strategies — there's no central registry. The keys written by each
-//     strategy in the runner today:
+//     in newScope. Mutated by pagination.seed + pagination.advance +
+//     progress.seed + progress.advance + the async_job phase machine +
+//     extract[].target=cursor. Persisted whole on drain end (even on
+//     error) so the next drain resumes from the high-water mark. The
+//     schema is inferred from the document's active strategies — there's
+//     no central registry. The keys written by each strategy in the
+//     runner today:
 //
-//     pagination.cursor_token         "token"            (opaque server-supplied cursor)
-//     pagination.page_number          "page"             (1-based, increments by advance)
-//     pagination.offset               "offset"           (0-based; advances by batch_size or observed event count)
-//     pagination.link_header          "next_link"        (full next-page URL parsed from the Link header)
-//     pagination.next_url_in_body     "next_url"         (full next-page URL read from the producer body at next_url_at)
-//     pagination.scroll_id            "scroll_id"        (server-supplied scroll session id; cleared on complete_when termination)
-//     pagination.graphql_relay        <cursor_var>       (Relay endCursor; author-named via cfg.CursorVar — typically "after"; cleared when has_next_page=false)
-//     progress.latest_event_timestamp "last_timestamp"   (RFC 3339 string)
-//     progress.max_event_field        "last_timestamp"   (RFC 3339 string; advance walks events and picks the max value at cfg.EventTime.Path)
-//     progress.time_window            "window_start", "window_end" (formatted via cfg.Format — default rfc3339; advance slides window_start to the just-finished window_end)
-//     progress.use_now                "last_timestamp"   (advance writes s.now() - lookback; no events walk)
-//     progress.async_job              "phase"            ("submit" | "poll" | "fetch")
+//     pagination.cursor_token         "token"            (opaque server-supplied cursor; absent on first iteration — advance writes only when token_at returns a non-zero value, so {ref: cursor.token} resolves to nil and the slot is skipped on the bootstrap request)
+//     pagination.page_number          "page"             (1-based; seed defaults to 1 on first iteration, advance increments)
+//     pagination.offset               "offset"           (0-based; seed defaults to 0; advance bumps by batch_size or observed event count)
+//     pagination.offset (with batch)  "offset_end"       (offset + batch_size; seed writes alongside cursor.offset when batch_size is declared and evaluates cleanly)
+//     pagination.link_header          "next_link"        (full next-page URL parsed from the Link header; absent on first iteration so templates default to the bootstrap URL)
+//     pagination.next_url_in_body     "next_url"         (full next-page URL read from the producer body at next_url_at; absent on first iteration)
+//     pagination.scroll_id            "scroll_id"        (server-supplied scroll session id; absent on first iteration so the bootstrap request opens a new session; cleared on complete_when termination)
+//     pagination.graphql_relay        <cursor_var>       (Relay endCursor; author-named via cfg.CursorVar — typically "after"; absent on first iteration so the GraphQL variable rides as null; cleared when has_next_page=false)
+//     progress.latest_event_timestamp "last_timestamp"   (RFC 3339 string; seed pre-seeds initial.lookback on first drain, advance bumps to max(events))
+//     progress.max_event_field        "last_timestamp"   (RFC 3339 string; same code path as latest_event_timestamp)
+//     progress.time_window            "window_start", "window_end" (formatted via cfg.Format — default rfc3339; seed pins the window once per drain, advance slides window_start to the just-finished window_end)
+//     progress.use_now                "last_timestamp"   (advance writes s.now() - lookback; no events walk; seed leaves the cursor untouched)
+//     progress.async_job              "phase"            ("submit" | "poll" | "fetch"; seed defaults to firstPhase when absent)
 //     async_job.{submit,poll}.extract <author-named>     (auth tokens, job ids, etc.)
 //     async_job.on_complete=use_now   "last_timestamp"   (set at producer completion)
 //     async_job.on_complete=latest_event_timestamp "last_timestamp" (max value at cu.event_time.path inside the producer body's events list)
-//     auth.oauth2.<grant>.cache       "__oauth2_<store_in>_expires_at" (RFC 3339 string; paired with state.<store_in> which holds the access token. Refreshed when now+expiry_buffer catches the cached value)
 //     extract[].target=cursor         <extract.name>     (author-declared)
 //
 //     Unset keys read as nil at Value-eval time; the {default: ...} branch
@@ -113,31 +117,40 @@ func (m *MemoryStore) Save(s Snapshot) error { m.snap = s; return nil }
 //   - item:           PER-FAN-OUT-ITERATION. Reserved for fan_out's
 //     per-item binding.
 //
-//   - body:           SCOPED to the complete_when predicate evaluation in
-//     async_job. Outside that narrow window the field is unset.
+//   - body:           SCOPED to complete_when predicate evaluation
+//     (pagination.scroll_id.complete_when, progress.async_job.poll.complete_when).
+//     Outside that narrow window the field is unset. The
+//     response.body.<path> ref resolves against this field; the legacy
+//     body.<path> root was deleted in slice 2.
 //
-//   - fromPagination: PER-ITERATION. Reset by paginationPlan.seed at the
-//     top of every iteration.
+//   - responseHeaders: SCOPED, mirrors body. Set alongside scope.body
+//     whenever the response context is active (currently only
+//     complete_when predicate evaluation). Resolves response.header.<name>
+//     refs case-insensitively via http.Header.Get.
 //
-//   - fromProgress:   PER-DRAIN. Seeded once by progressPlan.seed before
-//     the loop starts. NOT re-seeded per iteration — that would shift
-//     since=<...> mid-drain and cause every page after the first to query
-//     a moving window. The window-end advance happens once via
-//     progress.advance after the drain completes.
+//   - stepHeaders:    PER-ITERATION, mirrors steps. Populated after every
+//     completed request whose req.ID is set. Resolves
+//     steps.<id>.header.<name> refs.
+//
+// Note on pagination / progress signals: there is no separate
+// fromPagination / fromProgress map any more — pagination.seed and
+// progress.seed write directly into scope.cursor, and templates read those
+// values via {ref: cursor.<name>}. This collapses two namespaces into one
+// and matches the §1.6 design (the stable cursor.<role> names ARE the
+// progression signal). pagination.seed runs once per iteration before the
+// producer step's request bodies / queries are evaluated; progress.seed
+// runs once per drain so the window-start stays stable across pages.
 type scope struct {
-	doc     *schema.Doc
-	state   map[string]any
-	cursor  map[string]any
-	extract map[string]any
-	steps   map[string]any // step id → decoded body
-	item    any            // per-item binding when inside fan_out
-	body    any            // active complete_when body (unused outside the predicate)
-
-	// Active pagination/progress signals exposed to Value via
-	// {from_pagination: ...} / {from_progress: ...}. Populated by the
-	// pagination + progress drivers each iteration before requests run.
-	fromPagination map[string]any
-	fromProgress   map[string]any
+	doc             *schema.Doc
+	state           map[string]any
+	cursor          map[string]any
+	extract         map[string]any
+	steps           map[string]any         // step id → decoded body
+	item            any                    // per-item binding when inside fan_out
+	body            any                    // active response context body (unused outside the predicate);
+	                                       // resolves response.body.<path> via lookupBodyPath
+	responseHeaders http.Header            // active response context headers (mirrors body)
+	stepHeaders     map[string]http.Header // step id → response headers
 
 	// nowFn is the clock; defaults to time.Now. Per-scope (not package
 	// global) so concurrent runners can use independent clocks.
@@ -159,14 +172,13 @@ func newScope(doc *schema.Doc, snap Snapshot, now func() time.Time) (*scope, err
 		now = time.Now
 	}
 	s := &scope{
-		doc:            doc,
-		state:          make(map[string]any),
-		cursor:         make(map[string]any),
-		extract:        make(map[string]any),
-		steps:          make(map[string]any),
-		fromPagination: make(map[string]any),
-		fromProgress:   make(map[string]any),
-		nowFn:          now,
+		doc:         doc,
+		state:       make(map[string]any),
+		cursor:      make(map[string]any),
+		extract:     make(map[string]any),
+		steps:       make(map[string]any),
+		stepHeaders: make(map[string]http.Header),
+		nowFn:       now,
 	}
 
 	// Seed state from defaults, overriding with snapshot writes.
@@ -256,30 +268,87 @@ func (s *scope) resolveNamespaceRef(p schema.Path) (any, bool, error) {
 		}
 		return walk(v, rest[1:])
 	case "steps":
-		// steps.<id>.body.<path>
-		if len(rest) < 2 || rest[1] != "body" {
-			return nil, false, fmt.Errorf("steps ref must be steps.<id>.body[.<path>]")
+		// steps.<id>.body.<path>  → decoded response body
+		// steps.<id>.header.<name> → response header value (first match)
+		if len(rest) < 2 {
+			return nil, false, fmt.Errorf("steps ref must be steps.<id>.body[.<path>] or steps.<id>.header.<name>")
 		}
 		stepID := rest[0]
-		body, ok := s.steps[stepID]
-		if !ok {
-			return nil, false, nil
+		switch rest[1] {
+		case "body":
+			body, ok := s.steps[stepID]
+			if !ok {
+				return nil, false, nil
+			}
+			top = body
+			return walk(top, rest[2:])
+		case "header":
+			if len(rest) < 3 {
+				return nil, false, fmt.Errorf("steps.<id>.header ref requires a header name")
+			}
+			h, ok := s.stepHeaders[stepID]
+			if !ok || h == nil {
+				return nil, false, nil
+			}
+			return headerLookup(h, rest[2])
+		default:
+			return nil, false, fmt.Errorf("steps ref must be steps.<id>.body[.<path>] or steps.<id>.header.<name>")
 		}
-		top = body
-		return walk(top, rest[2:])
 	case "item":
 		if s.item == nil {
 			return nil, false, nil
 		}
 		return walk(s.item, rest)
-	case "body":
-		if s.body == nil {
-			return nil, false, nil
+	case "response":
+		// response.body.<path>    → s.body (the active response context;
+		//                          uses lookupBodyPath so list indexing
+		//                          matches the body-walk used everywhere
+		//                          else in the runtime)
+		// response.header.<name>  → s.responseHeaders[name] (first value, case-insensitive)
+		if len(rest) < 1 {
+			return nil, false, fmt.Errorf("response ref requires a kind segment: response.body[.<path>] or response.header.<name>")
 		}
-		return walk(s.body, rest)
+		switch rest[0] {
+		case "body":
+			if s.body == nil {
+				return nil, false, nil
+			}
+			return lookupBodyPath(s.body, rest[1:])
+		case "header":
+			if len(rest) < 2 {
+				return nil, false, fmt.Errorf("response.header ref requires a header name")
+			}
+			if s.responseHeaders == nil {
+				return nil, false, nil
+			}
+			return headerLookup(s.responseHeaders, rest[1])
+		default:
+			return nil, false, fmt.Errorf("response ref must be response.body[.<path>] or response.header.<name>")
+		}
 	default:
 		return nil, false, fmt.Errorf("unknown namespace root %q", root)
 	}
+}
+
+// headerLookup returns the first value for header `name` in h. The lookup is
+// case-insensitive via http.Header.Get (which canonicalises the key). Returns
+// (nil, false, nil) when the header is absent — callers decide whether that
+// counts as unresolved.
+func headerLookup(h http.Header, name string) (any, bool, error) {
+	if h == nil {
+		return nil, false, nil
+	}
+	if v := h.Get(name); v != "" {
+		return v, true, nil
+	}
+	// An explicitly-empty header value is still "present" for predicate
+	// purposes. Distinguish "absent" (no key) from "present but empty"
+	// via the canonical-key map lookup.
+	canonical := http.CanonicalHeaderKey(name)
+	if vs, ok := h[canonical]; ok && len(vs) > 0 {
+		return vs[0], true, nil
+	}
+	return nil, false, nil
 }
 
 // walk descends rest steps into v, treating each step as a map key. NDJSON

@@ -19,13 +19,12 @@ import (
 // The discriminator set mirrors schema.Value:
 //
 //	literal_string, literal_int, literal_bool, ref, now, concat, select,
-//	from_pagination, from_progress, format, base64, list, object
+//	format, base64, list, object
 //
-// from_pagination and from_progress role names are strategy-specific and
-// catalogued in paginationPlan / progressPlan godoc (pagination.go,
-// progress.go). An unknown role resolves to nil — the runtime does not
-// validate role names against the active plan, since that's the IR
-// validator's job before Drain ever runs.
+// Pagination / progress signals reach Values via {ref: cursor.<name>}; the
+// driver's seed() call writes the same names into scope.cursor before the
+// iteration's requests are evaluated. The cursor name catalogue lives in
+// scope's godoc (state.go).
 func (s *scope) evalValue(v schema.Value) (any, error) {
 	switch {
 	case v.IsZero:
@@ -90,20 +89,6 @@ func (s *scope) evalValue(v schema.Value) (any, error) {
 			}
 		}
 		return s.evalValue(v.Select.Default)
-
-	case v.FromPagination != "":
-		got, ok := s.fromPagination[v.FromPagination]
-		if !ok {
-			return nil, nil
-		}
-		return got, nil
-
-	case v.FromProgress != "":
-		got, ok := s.fromProgress[v.FromProgress]
-		if !ok {
-			return nil, nil
-		}
-		return got, nil
 
 	case v.Format != nil:
 		inner, err := s.evalValue(v.Format.Value)

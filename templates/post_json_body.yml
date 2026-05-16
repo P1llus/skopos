@@ -29,21 +29,22 @@ auth:
     token: {ref: state.api_key}
 
 # POST search with JSON body. time_window progress provides window_start and
-# window_end; the body embeds them directly via from_progress semantic roles.
-# The offset pagination layer slides over the window on each page.
+# window_end; the body reads them directly via {ref: cursor.window_start} /
+# {ref: cursor.window_end}. The offset pagination layer slides over the
+# window on each page via {ref: cursor.offset} / {ref: cursor.offset_end}.
 requests:
   - method: POST
     path: /post_json_body/search
     body:
       json:
-        from_date: {from_progress: window_start}
-        to_date: {from_progress: window_end}
-        search_from: {from_pagination: offset}
-        search_to: {from_pagination: offset_end}
+        from_date: {ref: cursor.window_start}
+        to_date: {ref: cursor.window_end}
+        search_from: {ref: cursor.offset}
+        search_to: {ref: cursor.offset_end}
 
 response:
   decode: json
-  events_at: data.alerts
+  events_at: response.body.data.alerts
 
 pagination:
   offset:

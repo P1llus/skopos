@@ -31,12 +31,12 @@ requests:
   - method: GET
     path: /bearer_simple/events
     query:
-      since: {from_progress: latest_timestamp}
+      since: {ref: cursor.last_timestamp}
       limit: {format: string, value: {ref: state.page_size}}
 
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 
 pagination:
   none: {}

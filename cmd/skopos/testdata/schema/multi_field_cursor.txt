@@ -1,12 +1,15 @@
-# schema/multi_field_cursor — valid spec; surfaces a known body-relative
-# namespace-root warning on extract[1].path "state.frozen". The Go fixture
-# test (TestSpecFixtures) tolerates warning-severity diagnostics; only
-# error-severity diagnostics fail validation. Validate exits 0 and prints
-# the warning on stdout.
+# schema/multi_field_cursor — valid spec; validates clean.
+#
+# Pre-slice-3 this file pinned the legacy extract.path namespace-shadow
+# warning that fired when the body field was genuinely named "state".
+# Slice 3 collapsed extract[].path/source/header into a namespace-rooted
+# from: Path, so the body locator is unambiguous regardless of the
+# leading body-field name and the warning is gone.
 
 exec skopos validate -i spec.yml
 ! stderr .
-stdout 'warning: extract\.path "state\.frozen" starts with the namespace root "state", but the path is body-relative'
+! stdout '\bwarning\b'
+! stdout '\berror\b'
 
 -- spec.yml --
 ir_version: "1"
@@ -42,26 +45,24 @@ requests:
     path: /api/v1/segments
     query:
       partition: {format: string, value: {ref: cursor.next_partition_id, default: 0}}
-      since: {from_progress: latest_timestamp}
+      since: {ref: cursor.last_timestamp}
     extract:
       - name: next_partition_id
-        path: next_partition_id
+        from: response.body.next_partition_id
         target: cursor
         coerce: int
       - name: freeze_flag
-        # The body field is genuinely named "state" → emits a known false-
-        # positive namespace-root warning on every validate. The validator's
-        # warning text suggests using {parts: [...]} but the Path struct
-        # doesn't track the authoring form so the warning still fires;
-        # silencing it cleanly requires a schema change tracked under
-        # E-fixture-14 in REVIEW.md.
-        path: state.frozen
+        # The body field is genuinely named "state". With slice 3's
+        # namespace-rooted from: Path the prior namespace-shadow false-
+        # positive is gone — the response.body.<...> root makes the body
+        # locator unambiguous regardless of the field name underneath.
+        from: response.body.state.frozen
         target: cursor
         coerce: bool
 
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 
 pagination:
   none: {}

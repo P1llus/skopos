@@ -30,25 +30,26 @@ func TestNonePagination(t *testing.T) {
 	}
 }
 
-// TestCursorTokenPagination_SeedFirstIteration: cursor.token unset, so the
-// {from_pagination: token} role is absent. This is the first-page case.
+// TestCursorTokenPagination_SeedFirstIteration: cursor.token unset, so a
+// template's {ref: cursor.token} resolves to nil on the first page. seed
+// is a no-op for cursor_token after slice 4.
 func TestCursorTokenPagination_SeedFirstIteration(t *testing.T) {
 	p := &cursorTokenPagination{cfg: &schema.CursorTokenPagination{
-		TokenAt: mustPath("next_cursor"),
+		TokenAt: mustPath("response.body.next_cursor"),
 	}}
 	s := newTestScope(t, nil, nil)
 	p.seed(s)
-	if _, ok := s.fromPagination["token"]; ok {
-		t.Errorf("first-iteration seed left a fromPagination[token]; expected absent")
+	if _, ok := s.cursor["token"]; ok {
+		t.Errorf("first-iteration seed wrote cursor.token; expected absent")
 	}
 }
 
 // TestCursorTokenPagination_AdvanceMid: token_at resolves to a non-zero
-// value → cursor.token is updated, wantMore=true. Next seed exposes that
-// token via fromPagination.
+// value → cursor.token is updated, wantMore=true. The next iteration's
+// {ref: cursor.token} reads the same map seed never touches.
 func TestCursorTokenPagination_AdvanceMid(t *testing.T) {
 	p := &cursorTokenPagination{cfg: &schema.CursorTokenPagination{
-		TokenAt: mustPath("next_cursor"),
+		TokenAt: mustPath("response.body.next_cursor"),
 	}}
 	s := newTestScope(t, nil, nil)
 
@@ -65,8 +66,8 @@ func TestCursorTokenPagination_AdvanceMid(t *testing.T) {
 	}
 
 	p.seed(s)
-	if got := s.fromPagination["token"]; got != "tok-2" {
-		t.Errorf("fromPagination[token] = %v, want tok-2", got)
+	if got := s.cursor["token"]; got != "tok-2" {
+		t.Errorf("cursor.token after re-seed = %v, want tok-2 (seed must not clobber advance writes)", got)
 	}
 }
 
@@ -74,7 +75,7 @@ func TestCursorTokenPagination_AdvanceMid(t *testing.T) {
 // cursor cleared, wantMore=false (drain done).
 func TestCursorTokenPagination_AdvanceTerminate(t *testing.T) {
 	p := &cursorTokenPagination{cfg: &schema.CursorTokenPagination{
-		TokenAt: mustPath("next_cursor"),
+		TokenAt: mustPath("response.body.next_cursor"),
 	}}
 	s := newTestScope(t, nil, map[string]any{"token": "tok-1"})
 
@@ -91,15 +92,13 @@ func TestCursorTokenPagination_AdvanceTerminate(t *testing.T) {
 	}
 }
 
-// TestPageNumberPagination_SeedFirstIteration: cursor.page absent ⇒ exposes
-// 1 and writes it back to cursor (so {from_pagination: page} renders "1").
+// TestPageNumberPagination_SeedFirstIteration: cursor.page absent ⇒ seed
+// writes int64(1) into the cursor so {ref: cursor.page} renders "1" on
+// the bootstrap iteration.
 func TestPageNumberPagination_SeedFirstIteration(t *testing.T) {
 	p := &pageNumberPagination{cfg: &schema.PageNumberPagination{}}
 	s := newTestScope(t, nil, nil)
 	p.seed(s)
-	if got := s.fromPagination["page"]; got != int64(1) {
-		t.Errorf("fromPagination[page] = %v, want 1", got)
-	}
 	if got := s.cursor["page"]; got != int64(1) {
 		t.Errorf("cursor.page = %v, want 1", got)
 	}
@@ -109,7 +108,7 @@ func TestPageNumberPagination_SeedFirstIteration(t *testing.T) {
 // page, has_more_at=false → reset to 1.
 func TestPageNumberPagination_AdvanceHasMore(t *testing.T) {
 	p := &pageNumberPagination{cfg: &schema.PageNumberPagination{
-		HasMoreAt: mustPath("meta.has_next"),
+		HasMoreAt: mustPath("response.body.meta.has_next"),
 	}}
 	s := newTestScope(t, nil, map[string]any{"page": int64(2)})
 
@@ -176,38 +175,36 @@ func TestPageNumberPagination_BatchSizeStopsShort(t *testing.T) {
 	}
 }
 
-// TestOffsetPagination_SeedFirstIteration: cursor.offset absent ⇒ exposes
-// 0 and writes it back to cursor (so {ref: cursor.offset} resolves the same
-// way {from_pagination: offset} does).
+// TestOffsetPagination_SeedFirstIteration: cursor.offset absent ⇒ seed
+// writes int64(0) so {ref: cursor.offset} renders "0" on the bootstrap.
+// offset_end is unset when batch_size is absent (cursorSchema rejects
+// {ref: cursor.offset_end} in that case).
 func TestOffsetPagination_SeedFirstIteration(t *testing.T) {
 	p := &offsetPagination{cfg: &schema.OffsetPagination{}}
 	s := newTestScope(t, nil, nil)
 	p.seed(s)
-	if got := s.fromPagination["offset"]; got != int64(0) {
-		t.Errorf("fromPagination[offset] = %v, want 0", got)
-	}
 	if got := s.cursor["offset"]; got != int64(0) {
 		t.Errorf("cursor.offset = %v, want 0", got)
 	}
-	// offset_end is unset when batch_size is absent.
-	if _, ok := s.fromPagination["offset_end"]; ok {
-		t.Errorf("fromPagination[offset_end] should be absent when batch_size unset")
+	if _, ok := s.cursor["offset_end"]; ok {
+		t.Errorf("cursor.offset_end should be absent when batch_size unset")
 	}
 }
 
 // TestOffsetPagination_SeedWithBatchSize_OffsetEnd: when batch_size is set,
-// seed exposes offset_end = offset + batch_size so APIs that take an
-// exclusive upper bound (e.g. ?from=N&to=N+50) can render the role.
+// seed writes offset_end = offset + batch_size into the cursor so APIs
+// that take an exclusive upper bound (e.g. ?from=N&to=N+50) can render
+// {ref: cursor.offset_end}.
 func TestOffsetPagination_SeedWithBatchSize_OffsetEnd(t *testing.T) {
 	bs := vInt(50)
 	p := &offsetPagination{cfg: &schema.OffsetPagination{BatchSize: &bs}}
 	s := newTestScope(t, nil, map[string]any{"offset": int64(100)})
 	p.seed(s)
-	if got := s.fromPagination["offset"]; got != int64(100) {
-		t.Errorf("fromPagination[offset] = %v, want 100", got)
+	if got := s.cursor["offset"]; got != int64(100) {
+		t.Errorf("cursor.offset = %v, want 100", got)
 	}
-	if got := s.fromPagination["offset_end"]; got != int64(150) {
-		t.Errorf("fromPagination[offset_end] = %v, want 150", got)
+	if got := s.cursor["offset_end"]; got != int64(150) {
+		t.Errorf("cursor.offset_end = %v, want 150", got)
 	}
 }
 
@@ -273,9 +270,9 @@ func TestUnsupportedPaginationVariants(t *testing.T) {
 }
 
 // TestLinkHeaderPagination_SeedFirstIteration: cursor.next_link absent ⇒
-// {from_pagination: next_link} resolves to nil so the template's
-// {ref: cursor.next_link, default: ...} branch wins. Mirrors the
-// cursor_token first-iteration shape.
+// {ref: cursor.next_link} resolves to nil so the template's
+// {ref: cursor.next_link, default: ...} branch wins. seed is a no-op for
+// link_header after slice 4.
 func TestLinkHeaderPagination_SeedFirstIteration(t *testing.T) {
 	p, err := newLinkHeaderPagination(&schema.LinkHeaderPagination{})
 	if err != nil {
@@ -283,14 +280,14 @@ func TestLinkHeaderPagination_SeedFirstIteration(t *testing.T) {
 	}
 	s := newTestScope(t, nil, nil)
 	p.seed(s)
-	if _, ok := s.fromPagination["next_link"]; ok {
-		t.Errorf("first-iteration seed left a fromPagination[next_link]; expected absent")
+	if _, ok := s.cursor["next_link"]; ok {
+		t.Errorf("first-iteration seed wrote cursor.next_link; expected absent")
 	}
 }
 
 // TestLinkHeaderPagination_AdvanceNext: Link header with rel="next" →
-// cursor.next_link captured, wantMore=true. Next seed surfaces it via
-// fromPagination.
+// cursor.next_link captured, wantMore=true. The next iteration's
+// {ref: cursor.next_link} reads the same map seed never touches.
 func TestLinkHeaderPagination_AdvanceNext(t *testing.T) {
 	p, err := newLinkHeaderPagination(&schema.LinkHeaderPagination{})
 	if err != nil {
@@ -314,8 +311,8 @@ func TestLinkHeaderPagination_AdvanceNext(t *testing.T) {
 	}
 
 	p.seed(s)
-	if got := s.fromPagination["next_link"]; got != want {
-		t.Errorf("fromPagination[next_link] = %v, want %q", got, want)
+	if got := s.cursor["next_link"]; got != want {
+		t.Errorf("cursor.next_link after re-seed = %v, want %q (seed must not clobber advance writes)", got, want)
 	}
 }
 
@@ -477,26 +474,26 @@ func TestLinkHeaderPagination_InvalidPatternRejectedAtConstruction(t *testing.T)
 }
 
 // TestNextURLInBodyPagination_SeedFirstIteration: cursor.next_url absent ⇒
-// {from_pagination: next_url} resolves to nil so the template's
-// {ref: cursor.next_url, default: ...} branch wins. Mirrors the
-// link_header first-iteration shape.
+// {ref: cursor.next_url} resolves to nil so the template's
+// {ref: cursor.next_url, default: ...} branch wins. seed is a no-op for
+// next_url_in_body after slice 4.
 func TestNextURLInBodyPagination_SeedFirstIteration(t *testing.T) {
 	p := &nextURLInBodyPagination{cfg: &schema.NextURLInBodyPagination{
-		NextURLAt: mustPath("paging.next"),
+		NextURLAt: mustPath("response.body.paging.next"),
 	}}
 	s := newTestScope(t, nil, nil)
 	p.seed(s)
-	if _, ok := s.fromPagination["next_url"]; ok {
-		t.Errorf("first-iteration seed left a fromPagination[next_url]; expected absent")
+	if _, ok := s.cursor["next_url"]; ok {
+		t.Errorf("first-iteration seed wrote cursor.next_url; expected absent")
 	}
 }
 
 // TestNextURLInBodyPagination_AdvanceNext: a body carrying a non-empty
-// string at next_url_at → cursor.next_url captured, wantMore=true. Next
-// seed surfaces it via fromPagination.
+// string at next_url_at → cursor.next_url captured, wantMore=true. The
+// next iteration's {ref: cursor.next_url} reads the same map.
 func TestNextURLInBodyPagination_AdvanceNext(t *testing.T) {
 	p := &nextURLInBodyPagination{cfg: &schema.NextURLInBodyPagination{
-		NextURLAt: mustPath("paging.next"),
+		NextURLAt: mustPath("response.body.paging.next"),
 	}}
 	s := newTestScope(t, nil, nil)
 
@@ -517,8 +514,8 @@ func TestNextURLInBodyPagination_AdvanceNext(t *testing.T) {
 	}
 
 	p.seed(s)
-	if got := s.fromPagination["next_url"]; got != want {
-		t.Errorf("fromPagination[next_url] = %v, want %q", got, want)
+	if got := s.cursor["next_url"]; got != want {
+		t.Errorf("cursor.next_url after re-seed = %v, want %q (seed must not clobber advance writes)", got, want)
 	}
 }
 
@@ -527,7 +524,7 @@ func TestNextURLInBodyPagination_AdvanceNext(t *testing.T) {
 // next drain starts from the bootstrap URL again.
 func TestNextURLInBodyPagination_AdvanceTerminate(t *testing.T) {
 	p := &nextURLInBodyPagination{cfg: &schema.NextURLInBodyPagination{
-		NextURLAt: mustPath("paging.next"),
+		NextURLAt: mustPath("response.body.paging.next"),
 	}}
 	s := newTestScope(t, nil, map[string]any{"next_url": "https://api.example.com/events?cursor=p9"})
 
@@ -552,7 +549,7 @@ func TestNextURLInBodyPagination_AdvanceTerminate(t *testing.T) {
 // "missing path is a zero Value" rule.
 func TestNextURLInBodyPagination_AdvanceMissingPath(t *testing.T) {
 	p := &nextURLInBodyPagination{cfg: &schema.NextURLInBodyPagination{
-		NextURLAt: mustPath("paging.next"),
+		NextURLAt: mustPath("response.body.paging.next"),
 	}}
 	s := newTestScope(t, nil, map[string]any{"next_url": "https://api.example.com/events?cursor=p2"})
 
@@ -575,7 +572,7 @@ func TestNextURLInBodyPagination_AdvanceMissingPath(t *testing.T) {
 // both the same way per the §15 zero-Value rule.
 func TestNextURLInBodyPagination_AdvanceNilValue(t *testing.T) {
 	p := &nextURLInBodyPagination{cfg: &schema.NextURLInBodyPagination{
-		NextURLAt: mustPath("paging.next"),
+		NextURLAt: mustPath("response.body.paging.next"),
 	}}
 	s := newTestScope(t, nil, map[string]any{"next_url": "https://api.example.com/events?cursor=p2"})
 
@@ -598,7 +595,7 @@ func TestNextURLInBodyPagination_AdvanceNilValue(t *testing.T) {
 // but the runner refuses to fabricate a URL from a number.
 func TestNextURLInBodyPagination_AdvanceNonString(t *testing.T) {
 	p := &nextURLInBodyPagination{cfg: &schema.NextURLInBodyPagination{
-		NextURLAt: mustPath("paging.next"),
+		NextURLAt: mustPath("response.body.paging.next"),
 	}}
 	s := newTestScope(t, nil, map[string]any{"next_url": "https://api.example.com/events?cursor=p2"})
 
@@ -616,26 +613,26 @@ func TestNextURLInBodyPagination_AdvanceNonString(t *testing.T) {
 }
 
 // TestScrollIDPagination_SeedFirstIteration: cursor.scroll_id absent ⇒
-// {from_pagination: scroll_id} resolves to nil so the server opens a new
-// scroll session on the bootstrap request. Mirrors the cursor_token
-// first-iteration shape.
+// {ref: cursor.scroll_id} resolves to nil so the server opens a new
+// scroll session on the bootstrap request. seed is a no-op for scroll_id
+// after slice 4.
 func TestScrollIDPagination_SeedFirstIteration(t *testing.T) {
 	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt: mustPath("request_metadata.scroll"),
+		ScrollIDAt: mustPath("response.body.request_metadata.scroll"),
 	}}
 	s := newTestScope(t, nil, nil)
 	p.seed(s)
-	if _, ok := s.fromPagination["scroll_id"]; ok {
-		t.Errorf("first-iteration seed left a fromPagination[scroll_id]; expected absent")
+	if _, ok := s.cursor["scroll_id"]; ok {
+		t.Errorf("first-iteration seed wrote cursor.scroll_id; expected absent")
 	}
 }
 
 // TestScrollIDPagination_AdvanceNext: a body carrying a non-empty scroll id
-// at scroll_id_at → cursor.scroll_id captured, wantMore=true. Next seed
-// surfaces it via fromPagination.
+// at scroll_id_at → cursor.scroll_id captured, wantMore=true. The next
+// iteration's {ref: cursor.scroll_id} reads the same map.
 func TestScrollIDPagination_AdvanceNext(t *testing.T) {
 	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt: mustPath("request_metadata.scroll"),
+		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
 	}}
 	s := newTestScope(t, nil, nil)
 
@@ -655,8 +652,8 @@ func TestScrollIDPagination_AdvanceNext(t *testing.T) {
 	}
 
 	p.seed(s)
-	if got := s.fromPagination["scroll_id"]; got != "scroll-tok-2" {
-		t.Errorf("fromPagination[scroll_id] = %v, want scroll-tok-2", got)
+	if got := s.cursor["scroll_id"]; got != "scroll-tok-2" {
+		t.Errorf("cursor.scroll_id after re-seed = %v, want scroll-tok-2 (seed must not clobber advance writes)", got)
 	}
 }
 
@@ -665,7 +662,7 @@ func TestScrollIDPagination_AdvanceNext(t *testing.T) {
 // cursor. Mirrors §15's implicit-default contract for scroll_id.
 func TestScrollIDPagination_AdvanceTerminateOnZeroID(t *testing.T) {
 	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt: mustPath("request_metadata.scroll"),
+		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
 	}}
 	s := newTestScope(t, nil, map[string]any{"scroll_id": "scroll-tok-1"})
 
@@ -690,7 +687,7 @@ func TestScrollIDPagination_AdvanceTerminateOnZeroID(t *testing.T) {
 // path is a zero Value" rule.
 func TestScrollIDPagination_AdvanceMissingPath(t *testing.T) {
 	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt: mustPath("request_metadata.scroll"),
+		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
 	}}
 	s := newTestScope(t, nil, map[string]any{"scroll_id": "scroll-tok-1"})
 
@@ -713,11 +710,11 @@ func TestScrollIDPagination_AdvanceMissingPath(t *testing.T) {
 // {body: ...} scope mechanic async_job.poll uses.
 func TestScrollIDPagination_AdvanceCompleteWhenTrue(t *testing.T) {
 	complete := schema.Predicate{Eq: &schema.PredicateEq{
-		Path:  mustPath("body.request_metadata.complete"),
-		Equal: vStr("true"),
+		Path:  mustPath("response.body.request_metadata.complete"),
+		Value: vStr("true"),
 	}}
 	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt:   mustPath("request_metadata.scroll"),
+		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
 		CompleteWhen: &complete,
 	}}
 	s := newTestScope(t, nil, map[string]any{"scroll_id": "scroll-tok-1"})
@@ -744,14 +741,14 @@ func TestScrollIDPagination_AdvanceCompleteWhenTrue(t *testing.T) {
 
 // TestScrollIDPagination_AdvanceCompleteWhenFalse: complete_when not yet
 // satisfied → capture the fresh scroll id, signal wantMore=true. The fresh
-// id rides into the next iteration via fromPagination.
+// id rides into the next iteration via cursor.scroll_id.
 func TestScrollIDPagination_AdvanceCompleteWhenFalse(t *testing.T) {
 	complete := schema.Predicate{Eq: &schema.PredicateEq{
-		Path:  mustPath("body.request_metadata.complete"),
-		Equal: vStr("true"),
+		Path:  mustPath("response.body.request_metadata.complete"),
+		Value: vStr("true"),
 	}}
 	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt:   mustPath("request_metadata.scroll"),
+		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
 		CompleteWhen: &complete,
 	}}
 	s := newTestScope(t, nil, map[string]any{"scroll_id": "scroll-tok-1"})
@@ -782,7 +779,7 @@ func TestScrollIDPagination_AdvanceBodyScopeIsolation(t *testing.T) {
 	falseVal := false
 	complete := schema.Predicate{LiteralBool: &falseVal}
 	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt:   mustPath("request_metadata.scroll"),
+		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
 		CompleteWhen: &complete,
 	}}
 	s := newTestScope(t, nil, nil)
@@ -802,29 +799,29 @@ func TestScrollIDPagination_AdvanceBodyScopeIsolation(t *testing.T) {
 }
 
 // TestGraphQLRelayPagination_SeedFirstIteration: cursor.<cursor_var> absent ⇒
-// {from_pagination: relay_cursor} resolves to nil so the GraphQL variable
-// rides as null on the bootstrap request. Mirrors the cursor_token
-// first-iteration shape, but with an author-named cursor key.
+// {ref: cursor.<cursor_var>} resolves to nil so the GraphQL variable
+// rides as null on the bootstrap request. seed is a no-op for graphql_relay
+// after slice 4.
 func TestGraphQLRelayPagination_SeedFirstIteration(t *testing.T) {
 	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-		HasNextPageAt: mustPath("data.issues.pageInfo.hasNextPage"),
-		EndCursorAt:   mustPath("data.issues.pageInfo.endCursor"),
+		HasNextPageAt: mustPath("response.body.data.issues.pageInfo.hasNextPage"),
+		EndCursorAt:   mustPath("response.body.data.issues.pageInfo.endCursor"),
 		CursorVar:     "after",
 	}}
 	s := newTestScope(t, nil, nil)
 	p.seed(s)
-	if _, ok := s.fromPagination["relay_cursor"]; ok {
-		t.Errorf("first-iteration seed left a fromPagination[relay_cursor]; expected absent")
+	if _, ok := s.cursor["after"]; ok {
+		t.Errorf("first-iteration seed wrote cursor.after; expected absent")
 	}
 }
 
 // TestGraphQLRelayPagination_AdvanceNext: has_next_page=true + a non-empty
-// endCursor → cursor.<cursor_var> captured, wantMore=true. Next seed surfaces
-// it via fromPagination[relay_cursor].
+// endCursor → cursor.<cursor_var> captured, wantMore=true. The next
+// iteration's {ref: cursor.<cursor_var>} reads the same map.
 func TestGraphQLRelayPagination_AdvanceNext(t *testing.T) {
 	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-		HasNextPageAt: mustPath("data.issues.pageInfo.hasNextPage"),
-		EndCursorAt:   mustPath("data.issues.pageInfo.endCursor"),
+		HasNextPageAt: mustPath("response.body.data.issues.pageInfo.hasNextPage"),
+		EndCursorAt:   mustPath("response.body.data.issues.pageInfo.endCursor"),
 		CursorVar:     "after",
 	}}
 	s := newTestScope(t, nil, nil)
@@ -852,8 +849,8 @@ func TestGraphQLRelayPagination_AdvanceNext(t *testing.T) {
 	}
 
 	p.seed(s)
-	if got := s.fromPagination["relay_cursor"]; got != "Y3Vyc29yOjI=" {
-		t.Errorf("fromPagination[relay_cursor] = %v, want Y3Vyc29yOjI=", got)
+	if got := s.cursor["after"]; got != "Y3Vyc29yOjI=" {
+		t.Errorf("cursor.after after re-seed = %v, want Y3Vyc29yOjI= (seed must not clobber advance writes)", got)
 	}
 }
 
@@ -862,8 +859,8 @@ func TestGraphQLRelayPagination_AdvanceNext(t *testing.T) {
 // value, the Relay contract says no more pages exist.
 func TestGraphQLRelayPagination_AdvanceTerminateOnHasNextFalse(t *testing.T) {
 	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-		HasNextPageAt: mustPath("data.issues.pageInfo.hasNextPage"),
-		EndCursorAt:   mustPath("data.issues.pageInfo.endCursor"),
+		HasNextPageAt: mustPath("response.body.data.issues.pageInfo.hasNextPage"),
+		EndCursorAt:   mustPath("response.body.data.issues.pageInfo.endCursor"),
 		CursorVar:     "after",
 	}}
 	s := newTestScope(t, nil, map[string]any{"after": "Y3Vyc29yOjE="})
@@ -896,8 +893,8 @@ func TestGraphQLRelayPagination_AdvanceTerminateOnHasNextFalse(t *testing.T) {
 // the spec's "missing field is a zero Value" rule.
 func TestGraphQLRelayPagination_AdvanceMissingHasNext(t *testing.T) {
 	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-		HasNextPageAt: mustPath("data.issues.pageInfo.hasNextPage"),
-		EndCursorAt:   mustPath("data.issues.pageInfo.endCursor"),
+		HasNextPageAt: mustPath("response.body.data.issues.pageInfo.hasNextPage"),
+		EndCursorAt:   mustPath("response.body.data.issues.pageInfo.endCursor"),
 		CursorVar:     "after",
 	}}
 	s := newTestScope(t, nil, map[string]any{"after": "Y3Vyc29yOjE="})
@@ -921,8 +918,8 @@ func TestGraphQLRelayPagination_AdvanceMissingHasNext(t *testing.T) {
 // runner refuses to re-fire the same request without a fresh cursor.
 func TestGraphQLRelayPagination_AdvanceMissingEndCursorWhenMore(t *testing.T) {
 	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-		HasNextPageAt: mustPath("data.issues.pageInfo.hasNextPage"),
-		EndCursorAt:   mustPath("data.issues.pageInfo.endCursor"),
+		HasNextPageAt: mustPath("response.body.data.issues.pageInfo.hasNextPage"),
+		EndCursorAt:   mustPath("response.body.data.issues.pageInfo.endCursor"),
 		CursorVar:     "after",
 	}}
 	s := newTestScope(t, nil, map[string]any{"after": "Y3Vyc29yOjE="})
@@ -955,8 +952,8 @@ func TestGraphQLRelayPagination_AdvanceMissingEndCursorWhenMore(t *testing.T) {
 // load-bearing.
 func TestGraphQLRelayPagination_AdvanceHonoursCustomCursorVar(t *testing.T) {
 	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-		HasNextPageAt: mustPath("data.users.pageInfo.hasNextPage"),
-		EndCursorAt:   mustPath("data.users.pageInfo.endCursor"),
+		HasNextPageAt: mustPath("response.body.data.users.pageInfo.hasNextPage"),
+		EndCursorAt:   mustPath("response.body.data.users.pageInfo.endCursor"),
 		CursorVar:     "userCursor",
 	}}
 	s := newTestScope(t, nil, nil)
@@ -982,8 +979,8 @@ func TestGraphQLRelayPagination_AdvanceHonoursCustomCursorVar(t *testing.T) {
 	}
 
 	p.seed(s)
-	if got := s.fromPagination["relay_cursor"]; got != "u-2" {
-		t.Errorf("fromPagination[relay_cursor] = %v, want u-2", got)
+	if got := s.cursor["userCursor"]; got != "u-2" {
+		t.Errorf("cursor.userCursor after re-seed = %v, want u-2 (seed must not clobber advance writes)", got)
 	}
 }
 
@@ -995,7 +992,7 @@ func TestGraphQLRelayPagination_AdvanceHonoursCustomCursorVar(t *testing.T) {
 // cursor to 1.
 func TestPageNumberPagination_AdvanceMissingHasMorePath(t *testing.T) {
 	p := &pageNumberPagination{cfg: &schema.PageNumberPagination{
-		HasMoreAt: mustPath("meta.has_next"),
+		HasMoreAt: mustPath("response.body.meta.has_next"),
 	}}
 	s := newTestScope(t, nil, map[string]any{"page": int64(2)})
 
@@ -1022,7 +1019,7 @@ func TestPageNumberPagination_AdvanceMissingHasMorePath(t *testing.T) {
 // wrapped error rather than silently coercing or terminating.
 func TestPageNumberPagination_AdvanceNonBoolHasMore(t *testing.T) {
 	p := &pageNumberPagination{cfg: &schema.PageNumberPagination{
-		HasMoreAt: mustPath("meta.has_next"),
+		HasMoreAt: mustPath("response.body.meta.has_next"),
 	}}
 	s := newTestScope(t, nil, nil)
 
@@ -1040,8 +1037,8 @@ func TestPageNumberPagination_AdvanceNonBoolHasMore(t *testing.T) {
 // page_number non-bool case, for graphql_relay's has_next_page_at.
 func TestGraphQLRelayPagination_AdvanceNonBoolHasNext(t *testing.T) {
 	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-		HasNextPageAt: mustPath("data.pageInfo.hasNextPage"),
-		EndCursorAt:   mustPath("data.pageInfo.endCursor"),
+		HasNextPageAt: mustPath("response.body.data.pageInfo.hasNextPage"),
+		EndCursorAt:   mustPath("response.body.data.pageInfo.endCursor"),
 		CursorVar:     "after",
 	}}
 	s := newTestScope(t, nil, nil)
@@ -1076,8 +1073,8 @@ func TestOffsetPagination_SeedLogsBatchSizeEvalFailure(t *testing.T) {
 	s.logger = log.New(&buf, "", 0)
 
 	p.seed(s)
-	if _, ok := s.fromPagination["offset_end"]; ok {
-		t.Errorf("seed left offset_end set after eval failure; expected dropped")
+	if _, ok := s.cursor["offset_end"]; ok {
+		t.Errorf("seed left cursor.offset_end set after eval failure; expected dropped")
 	}
 	if !strings.Contains(buf.String(), "pagination.offset.batch_size eval failed") {
 		t.Errorf("logger missing breadcrumb; got %q", buf.String())
@@ -1110,7 +1107,7 @@ func TestPaginationErrorLabels(t *testing.T) {
 			wantLabel: "pagination.page_number.has_more_at",
 			setup: func(t *testing.T) (paginationPlan, *scope, any, []any) {
 				p := &pageNumberPagination{cfg: &schema.PageNumberPagination{
-					HasMoreAt: mustPath("meta.has_next"),
+					HasMoreAt: mustPath("response.body.meta.has_next"),
 				}}
 				s := newTestScope(t, nil, nil)
 				body := map[string]any{"meta": map[string]any{"has_next": "yes"}}
@@ -1152,7 +1149,7 @@ func TestPaginationErrorLabels(t *testing.T) {
 			setup: func(t *testing.T) (paginationPlan, *scope, any, []any) {
 				badPred := schema.Predicate{}
 				p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-					ScrollIDAt:   mustPath("scroll_id"),
+					ScrollIDAt:   mustPath("response.body.scroll_id"),
 					CompleteWhen: &badPred,
 				}}
 				s := newTestScope(t, nil, nil)
@@ -1166,8 +1163,8 @@ func TestPaginationErrorLabels(t *testing.T) {
 			wantLabel: "pagination.graphql_relay.has_next_page_at",
 			setup: func(t *testing.T) (paginationPlan, *scope, any, []any) {
 				p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-					HasNextPageAt: mustPath("data.pageInfo.hasNextPage"),
-					EndCursorAt:   mustPath("data.pageInfo.endCursor"),
+					HasNextPageAt: mustPath("response.body.data.pageInfo.hasNextPage"),
+					EndCursorAt:   mustPath("response.body.data.pageInfo.endCursor"),
 					CursorVar:     "after",
 				}}
 				s := newTestScope(t, nil, nil)
@@ -1195,108 +1192,21 @@ func TestPaginationErrorLabels(t *testing.T) {
 	}
 }
 
-// ---- send_as implicit auto-injection ----
+// ---- explicit cursor wiring end-to-end ----
 //
-// The §4.4 implicit-form contract: when a paginating strategy declares
-// `send_as: query.<param>` (or `header.<name>`), the runner auto-injects
-// the cursor at that slot on the producer step's request — authors don't
-// have to write the explicit {from_pagination: <role>} Value themselves.
-// Explicit form (template declares the slot) wins; the runner detects
-// explicit declaration by IR presence (req.Query[name] / req.Headers[name]
-// case-insensitive) and skips the auto-injection for that slot.
-//
-// The unit tests below pin parseSendAs's two legal kinds, the per-strategy
-// autoInjectSlot() returns, and the queryDeclared / headerDeclared helpers.
-// The end-to-end tests pin the lowering against a live httptest server for
-// both kinds (query slot for cursor_token, header slot for scroll_id) plus
-// the explicit-form-skips-auto-injection guarantee.
+// Slice 5 deleted the implicit `send_as` auto-injector. Every paginating
+// template now wires the cursor explicitly into the producer step's request
+// — `query: {cursor: {ref: cursor.token, default: ""}}` for cursor_token,
+// `query: {scroll: {ref: cursor.scroll_id}}` for scroll_id, etc. The
+// end-to-end tests below pin the wire-shape regression guard for both
+// strategies against a live httptest server.
 
-func TestParseSendAs(t *testing.T) {
-	cases := []struct {
-		in       string
-		wantKind string
-		wantName string
-	}{
-		{"query.cursor", "query", "cursor"},
-		{"header.X-Scroll-ID", "header", "X-Scroll-ID"},
-		{"query.", "query", ""},
-		{"header.", "header", ""},
-		{"", "", ""},
-		{"body.token", "", ""},
-		{"cookie.session", "", ""},
-	}
-	for _, tc := range cases {
-		gotKind, gotName := parseSendAs(tc.in)
-		if gotKind != tc.wantKind || gotName != tc.wantName {
-			t.Errorf("parseSendAs(%q) = (%q, %q), want (%q, %q)", tc.in, gotKind, gotName, tc.wantKind, tc.wantName)
-		}
-	}
-}
-
-func TestCursorTokenPagination_AutoInjectSlot(t *testing.T) {
-	p := &cursorTokenPagination{cfg: &schema.CursorTokenPagination{
-		TokenAt: mustPath("next_cursor"),
-		SendAs:  "query.cursor",
-	}}
-	got := p.autoInjectSlot()
-	want := autoInjectSlot{kind: "query", name: "cursor", role: "token"}
-	if got != want {
-		t.Errorf("autoInjectSlot = %+v, want %+v", got, want)
-	}
-}
-
-func TestScrollIDPagination_AutoInjectSlot(t *testing.T) {
-	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt: mustPath("request_metadata.scroll"),
-		SendAs:     "header.X-Scroll-ID",
-	}}
-	got := p.autoInjectSlot()
-	want := autoInjectSlot{kind: "header", name: "X-Scroll-ID", role: "scroll_id"}
-	if got != want {
-		t.Errorf("autoInjectSlot = %+v, want %+v", got, want)
-	}
-}
-
-// TestHeaderDeclared_CaseInsensitive pins that the explicit-form detector
-// canonicalises header keys per RFC 7230 §3.2 — a template that writes
-// `X-API-Token` and a send_as of `header.x-api-token` refer to the same
-// slot, so auto-injection MUST skip.
-func TestHeaderDeclared_CaseInsensitive(t *testing.T) {
-	req := schema.Request{Headers: map[string]schema.Value{"X-API-Token": vStr("explicit")}}
-	if !headerDeclared(req, "x-api-token") {
-		t.Errorf("headerDeclared with mismatched case returned false; HTTP header names are case-insensitive")
-	}
-	if !headerDeclared(req, "X-API-TOKEN") {
-		t.Errorf("headerDeclared with upper case returned false")
-	}
-	if headerDeclared(req, "X-Other-Header") {
-		t.Errorf("headerDeclared with unrelated key returned true")
-	}
-}
-
-// TestQueryDeclared_ExactMatch pins that query-param detection is exact
-// (case-sensitive) — RFC 3986 reserves no case folding for query
-// components, so `cursor` and `Cursor` are distinct slots.
-func TestQueryDeclared_ExactMatch(t *testing.T) {
-	req := schema.Request{Query: map[string]schema.Value{"cursor": vStr("explicit")}}
-	if !queryDeclared(req, "cursor") {
-		t.Errorf("queryDeclared with exact match returned false")
-	}
-	if queryDeclared(req, "Cursor") {
-		t.Errorf("queryDeclared with different case returned true; query params are case-sensitive")
-	}
-	if queryDeclared(req, "other") {
-		t.Errorf("queryDeclared with unrelated key returned true")
-	}
-}
-
-// TestEndToEnd_CursorToken_ImplicitSendAs drives cursor_token across three
-// pages without an explicit {from_pagination: token} in req.Query — the
-// runner must lower `send_as: query.cursor` into an auto-injection at the
-// producer-step query slot. Wire shape (page 0 bootstrap → page 2
-// termination) must match the explicit-form TestEndToEnd_CursorToken case
-// exactly. Pins the §4.4 implicit-form contract.
-func TestEndToEnd_CursorToken_ImplicitSendAs(t *testing.T) {
+// TestEndToEnd_CursorToken_Explicit drives cursor_token across three pages
+// with the template wiring {ref: cursor.token, default: ""} at the query
+// slot. Page 0 sends `cursor=` (empty); pages 1-2 echo the token returned
+// by the previous response; the empty next_cursor on page 2 terminates and
+// clears cursor.token.
+func TestEndToEnd_CursorToken_Explicit(t *testing.T) {
 	pages := []map[string]any{
 		{
 			"findings":    []map[string]any{{"id": "f1", "created_at": "2026-05-12T08:00:00Z"}},
@@ -1314,6 +1224,12 @@ func TestEndToEnd_CursorToken_ImplicitSendAs(t *testing.T) {
 	var pageCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		idx := int(pageCount.Add(1)) - 1
+		// The bootstrap iteration sends cursor= (empty string from the
+		// {default: ""} branch); subsequent iterations send the captured
+		// token from the previous response.
+		if _, present := r.URL.Query()["cursor"]; !present {
+			t.Errorf("page %d cursor query param missing; expected the template-wired ref to fire", idx)
+		}
 		cur := r.URL.Query().Get("cursor")
 		switch idx {
 		case 0:
@@ -1322,11 +1238,11 @@ func TestEndToEnd_CursorToken_ImplicitSendAs(t *testing.T) {
 			}
 		case 1:
 			if cur != "tok-2" {
-				t.Errorf("page 1 cursor = %q, want tok-2 (auto-injected)", cur)
+				t.Errorf("page 1 cursor = %q, want tok-2", cur)
 			}
 		case 2:
 			if cur != "tok-3" {
-				t.Errorf("page 2 cursor = %q, want tok-3 (auto-injected)", cur)
+				t.Errorf("page 2 cursor = %q, want tok-3", cur)
 			}
 		default:
 			t.Errorf("unexpected extra page request %d", idx)
@@ -1337,7 +1253,7 @@ func TestEndToEnd_CursorToken_ImplicitSendAs(t *testing.T) {
 
 	store := &MemoryStore{}
 	r := &Runner{
-		Doc:    cursorTokenImplicitDoc(server.URL, "test-token"),
+		Doc:    cursorTokenExplicitDoc(server.URL, "test-token"),
 		Sink:   &captureSink{},
 		Store:  store,
 		Now:    fixedNow(),
@@ -1355,10 +1271,10 @@ func TestEndToEnd_CursorToken_ImplicitSendAs(t *testing.T) {
 	}
 }
 
-// cursorTokenImplicitDoc mirrors cursorTokenDoc but OMITS the explicit
-// {from_pagination: token} value at query.cursor. The runner's `send_as`
-// auto-injection has to produce the same wire shape.
-func cursorTokenImplicitDoc(baseURL, token string) *schema.Doc {
+// cursorTokenExplicitDoc wires query.cursor to {ref: cursor.token,
+// default: ""} so the bootstrap iteration sends `cursor=` and subsequent
+// iterations carry the token captured from the previous response.
+func cursorTokenExplicitDoc(baseURL, token string) *schema.Doc {
 	return &schema.Doc{
 		IRVersion: "1",
 		State: &schema.State{Fields: map[string]schema.FieldDecl{
@@ -1370,12 +1286,13 @@ func cursorTokenImplicitDoc(baseURL, token string) *schema.Doc {
 		Requests: []schema.Request{{
 			Method: "GET",
 			Path:   ptrValue(vStr("/api/v1/findings")),
-			// No req.Query — auto-injection populates query.cursor.
+			Query: map[string]schema.Value{
+				"cursor": vRefDefault("cursor.token", vStr("")),
+			},
 		}},
-		Response: schema.Response{Decode: "json", EventsAt: mustPath("findings")},
+		Response: schema.Response{Decode: "json", EventsAt: mustPath("response.body.findings")},
 		Pagination: schema.Pagination{CursorToken: &schema.CursorTokenPagination{
-			TokenAt: mustPath("next_cursor"),
-			SendAs:  "query.cursor",
+			TokenAt: mustPath("response.body.next_cursor"),
 		}},
 		Progress: schema.Progress{
 			LatestEventTimestamp: &schema.TimestampProgress{
@@ -1385,12 +1302,13 @@ func cursorTokenImplicitDoc(baseURL, token string) *schema.Doc {
 	}
 }
 
-// TestEndToEnd_ScrollID_ImplicitSendAs_Header drives scroll_id with
-// send_as=header.X-Scroll-ID (no explicit {from_pagination: scroll_id} in
-// the template). Asserts the header is absent on page 0 (bootstrap) and
-// echoed on pages 1-2 by the auto-injection. Exercises the header branch
-// of the implicit lowering AND the case-insensitive declared-slot check.
-func TestEndToEnd_ScrollID_ImplicitSendAs_Header(t *testing.T) {
+// TestEndToEnd_ScrollID_Explicit_Header drives scroll_id with the template
+// wiring {ref: cursor.scroll_id} into the X-Scroll-ID request header.
+// Asserts the header is absent on page 0 (bootstrap — cursor.scroll_id
+// resolves to nil so the slot is skipped) and echoed on pages 1-2 from the
+// captured scroll id. Pins the header-slot path through the cursor-ref
+// resolver.
+func TestEndToEnd_ScrollID_Explicit_Header(t *testing.T) {
 	type page struct {
 		events     []map[string]any
 		scrollID   string
@@ -1436,7 +1354,7 @@ func TestEndToEnd_ScrollID_ImplicitSendAs_Header(t *testing.T) {
 	defer server.Close()
 
 	r := &Runner{
-		Doc:    scrollIDImplicitHeaderDoc(server.URL, "test-token"),
+		Doc:    scrollIDExplicitHeaderDoc(server.URL, "test-token"),
 		Sink:   &captureSink{},
 		Store:  &MemoryStore{},
 		Now:    fixedNow(),
@@ -1450,13 +1368,14 @@ func TestEndToEnd_ScrollID_ImplicitSendAs_Header(t *testing.T) {
 	}
 }
 
-// scrollIDImplicitHeaderDoc uses send_as=header.X-Scroll-ID with no
-// explicit slot Value. The runner must auto-inject the scroll id as a
-// request header on every non-bootstrap request.
-func scrollIDImplicitHeaderDoc(baseURL, token string) *schema.Doc {
+// scrollIDExplicitHeaderDoc wires {ref: cursor.scroll_id} into the
+// X-Scroll-ID request header. The bootstrap iteration's nil cursor causes
+// the slot to be skipped (http.go drops nil header values); subsequent
+// iterations carry the captured id.
+func scrollIDExplicitHeaderDoc(baseURL, token string) *schema.Doc {
 	complete := schema.Predicate{Eq: &schema.PredicateEq{
-		Path:  mustPath("body.request_metadata.complete"),
-		Equal: vStr("true"),
+		Path:  mustPath("response.body.request_metadata.complete"),
+		Value: vStr("true"),
 	}}
 	return &schema.Doc{
 		IRVersion: "1",
@@ -1469,12 +1388,13 @@ func scrollIDImplicitHeaderDoc(baseURL, token string) *schema.Doc {
 		Requests: []schema.Request{{
 			Method: "GET",
 			Path:   ptrValue(vStr("/api/v1/scroll")),
-			// No req.Headers — auto-injection populates X-Scroll-ID.
+			Headers: map[string]schema.Value{
+				"X-Scroll-ID": vRef("cursor.scroll_id"),
+			},
 		}},
-		Response: schema.Response{Decode: "json", EventsAt: mustPath("events")},
+		Response: schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{ScrollID: &schema.ScrollIDPagination{
-			ScrollIDAt:   mustPath("request_metadata.scroll"),
-			SendAs:       "header.X-Scroll-ID",
+			ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
 			CompleteWhen: &complete,
 		}},
 		Progress: schema.Progress{
@@ -1483,78 +1403,5 @@ func scrollIDImplicitHeaderDoc(baseURL, token string) *schema.Doc {
 				Initial:   &schema.Initial{Lookback: vStr("24h")},
 			},
 		},
-	}
-}
-
-// TestEndToEnd_CursorToken_ExplicitFormWinsOverAutoInject pins that when a
-// template declares the slot itself (explicit form), the runtime does NOT
-// auto-inject and the explicit Value's output is what reaches the wire.
-// The producer's req.Query["cursor"] is a literal string here so the wire
-// value is observable and distinguishable from the cursor token the
-// auto-injection WOULD have written.
-func TestEndToEnd_CursorToken_ExplicitFormWinsOverAutoInject(t *testing.T) {
-	pages := []map[string]any{
-		{
-			"findings":    []map[string]any{{"id": "f1", "created_at": "2026-05-12T08:00:00Z"}},
-			"next_cursor": "tok-2",
-		},
-		{
-			"findings":    []map[string]any{{"id": "f2", "created_at": "2026-05-12T08:05:00Z"}},
-			"next_cursor": "",
-		},
-	}
-	var pageCount atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		idx := int(pageCount.Add(1)) - 1
-		// Every page should carry the explicit-form literal — auto-injection
-		// MUST skip the slot when the template declared it.
-		if got := r.URL.Query().Get("cursor"); got != "explicit-literal" {
-			t.Errorf("page %d cursor = %q, want explicit-literal", idx, got)
-		}
-		writeJSON(w, http.StatusOK, pages[idx])
-	}))
-	defer server.Close()
-
-	doc := &schema.Doc{
-		IRVersion: "1",
-		State: &schema.State{Fields: map[string]schema.FieldDecl{
-			"url":     {Type: "url", Default: server.URL},
-			"api_key": {Type: "secret", Default: "test-token"},
-		}},
-		Defaults: &schema.Defaults{BaseURL: vRef("state.url")},
-		Auth:     schema.Auth{Bearer: &schema.BearerAuth{Token: vRef("state.api_key")}},
-		Requests: []schema.Request{{
-			Method: "GET",
-			Path:   ptrValue(vStr("/api/v1/findings")),
-			Query: map[string]schema.Value{
-				// Explicit form: a literal that the auto-injection must
-				// NOT overwrite. Distinguishable from the cursor token
-				// the implicit form would have written ("tok-2").
-				"cursor": vStr("explicit-literal"),
-			},
-		}},
-		Response: schema.Response{Decode: "json", EventsAt: mustPath("findings")},
-		Pagination: schema.Pagination{CursorToken: &schema.CursorTokenPagination{
-			TokenAt: mustPath("next_cursor"),
-			SendAs:  "query.cursor",
-		}},
-		Progress: schema.Progress{
-			LatestEventTimestamp: &schema.TimestampProgress{
-				EventTime: schema.EventTime{Path: mustPath("created_at")},
-			},
-		},
-	}
-	r := &Runner{
-		Doc:    doc,
-		Sink:   &captureSink{},
-		Store:  &MemoryStore{},
-		Now:    fixedNow(),
-		Client: server.Client(),
-	}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if got := pageCount.Load(); got != 2 {
-		t.Fatalf("server saw %d requests, want 2", got)
 	}
 }

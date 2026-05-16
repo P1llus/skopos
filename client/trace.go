@@ -140,7 +140,7 @@ type JSONLTracer struct {
 //
 // HTML escaping is disabled on the encoder: the trace is not embedded in
 // HTML, and the redaction markers (<redacted>) and valueShape output
-// (<format:string>, <from_progress:latest_timestamp>, ...) read as
+// (<format:string>, <ref cursor.last_timestamp>, ...) read as
 // nonsense when '<'/'>'/'&' get rewritten to \u003c/\u003e/\u0026.
 func NewJSONLTracer(w io.Writer) *JSONLTracer {
 	enc := json.NewEncoder(w)

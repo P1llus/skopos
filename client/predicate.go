@@ -19,7 +19,7 @@ func (s *scope) evalPredicate(p schema.Predicate) (bool, error) {
 		return *p.LiteralBool, nil
 
 	case p.Present != nil:
-		got, ok, err := s.resolveOrBodyPath(*p.Present)
+		got, ok, err := s.resolveNamespaceRef(*p.Present)
 		if err != nil {
 			return false, fmt.Errorf("present: %w", err)
 		}
@@ -71,35 +71,25 @@ func (s *scope) evalPredicate(p schema.Predicate) (bool, error) {
 	return false, fmt.Errorf("schema.Predicate: no variant set")
 }
 
-// resolveOrBodyPath dispatches between the namespace ref resolver and the
-// body Path resolver based on the path's root. body.<...> uses s.body,
-// every other root goes through resolveNamespaceRef.
-func (s *scope) resolveOrBodyPath(p schema.Path) (any, bool, error) {
-	if p.IsEmpty() {
-		return nil, false, fmt.Errorf("empty path")
-	}
-	if p.Parts[0] == "body" {
-		if s.body == nil {
-			return nil, false, nil
-		}
-		return lookupBodyPath(s.body, p.Parts[1:])
-	}
-	return s.resolveNamespaceRef(p)
-}
-
 // compare implements the ordered-comparison verbs (gt, lt, gte, lte) and
 // equality (eq). The LHS is a namespace ref; the RHS is any Value.
+//
+// Every predicate path is namespace-rooted after slice 2 — the legacy
+// bare body.<path> short-circuit was deleted alongside the validator's
+// matching arm. complete_when predicates use response.body.<path>, which
+// resolveNamespaceRef routes back to scope.body via the same body-walk
+// helper.
 func (s *scope) compare(verb string, pe *schema.PredicateEq) (bool, error) {
-	lhs, ok, err := s.resolveOrBodyPath(pe.Path)
+	lhs, ok, err := s.resolveNamespaceRef(pe.Path)
 	if err != nil {
 		return false, fmt.Errorf("%s.path %s: %w", verb, pe.Path, err)
 	}
 	if !ok {
 		lhs = nil
 	}
-	rhs, err := s.evalValue(pe.Equal)
+	rhs, err := s.evalValue(pe.Value)
 	if err != nil {
-		return false, fmt.Errorf("%s.equal: %w", verb, err)
+		return false, fmt.Errorf("%s.value: %w", verb, err)
 	}
 
 	if verb == "eq" {
@@ -128,7 +118,7 @@ func (s *scope) compare(verb string, pe *schema.PredicateEq) (bool, error) {
 //
 // The rule is JSON-loose: reflect.DeepEqual matches first, and otherwise
 // both sides are coerced to their string representation and compared. This
-// lets authors write {eq: {path: body.flag, equal: "true"}} when the API
+// lets authors write {eq: {path: body.flag, value: "true"}} when the API
 // returns either bool true or string "true" — the scroll_id fixture relies
 // on this, and changing it later would break that template.
 //
@@ -138,7 +128,7 @@ func (s *scope) compare(verb string, pe *schema.PredicateEq) (bool, error) {
 //     to the empty string, the integer zero, or the boolean false. A
 //     missing field is always semantically distinct from a present zero —
 //     authors who want "missing OR zero" should use {or: [{not: present},
-//     {eq: ..., equal: 0}]}.
+//     {eq: ..., value: 0}]}.
 //   - reflect.DeepEqual handles same-type comparisons (string=="x",
 //     int64==int64, []any deep-walk). The string fallback only fires when
 //     types differ AND both sides round-trip through toString.

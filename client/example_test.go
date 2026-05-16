@@ -38,7 +38,7 @@ requests:
     path: /events
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 pagination:
   none: {}
 progress:

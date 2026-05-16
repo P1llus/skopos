@@ -107,11 +107,11 @@ It is a discriminated union — exactly one form is active.
 
 Forms:
 
-	{eq:  {path: cursor.phase,  equal: "submit"}}
-	{gt:  {path: cursor.page,   equal: {ref: state.total_pages}}}
-	{lt:  {path: cursor.page,   equal: {ref: state.total_pages}}}
-	{gte: {path: state.retries, equal: 3}}
-	{lte: {path: state.retries, equal: 3}}
+	{eq:  {path: cursor.phase,  value: "submit"}}
+	{gt:  {path: cursor.page,   value: {ref: state.total_pages}}}
+	{lt:  {path: cursor.page,   value: {ref: state.total_pages}}}
+	{gte: {path: state.retries, value: 3}}
+	{lte: {path: state.retries, value: 3}}
 	{present: state.etag}
 	{and: [{eq: ...}, {present: ...}]}
 	{or:  [{eq: ...}, {eq: ...}]}
@@ -126,11 +126,11 @@ must surface a lowering error rather than silently coercing.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `Eq` | _(custom codec)_ | `*PredicateEq` | yes | Eq is the {eq: {path, equal}} form: equality comparison. |
-| `Gt` | _(custom codec)_ | `*PredicateEq` | yes | Gt is the {gt: {path, equal}} form: greater-than comparison. |
-| `Lt` | _(custom codec)_ | `*PredicateEq` | yes | Lt is the {lt: {path, equal}} form: less-than comparison. |
-| `Gte` | _(custom codec)_ | `*PredicateEq` | yes | Gte is the {gte: {path, equal}} form: greater-than-or-equal. |
-| `Lte` | _(custom codec)_ | `*PredicateEq` | yes | Lte is the {lte: {path, equal}} form: less-than-or-equal. |
+| `Eq` | _(custom codec)_ | `*PredicateEq` | yes | Eq is the {eq: {path, value}} form: equality comparison. |
+| `Gt` | _(custom codec)_ | `*PredicateEq` | yes | Gt is the {gt: {path, value}} form: greater-than comparison. |
+| `Lt` | _(custom codec)_ | `*PredicateEq` | yes | Lt is the {lt: {path, value}} form: less-than comparison. |
+| `Gte` | _(custom codec)_ | `*PredicateEq` | yes | Gte is the {gte: {path, value}} form: greater-than-or-equal. |
+| `Lte` | _(custom codec)_ | `*PredicateEq` | yes | Lte is the {lte: {path, value}} form: less-than-or-equal. |
 | `Present` | _(custom codec)_ | `*Path` | yes | Present is the {present: <path>} form: true when the path resolves to a non-nil value. |
 | `And` | _(custom codec)_ | `[]Predicate` | no | And is the {and: [...]} form: conjunction over its sub-predicates. |
 | `Or` | _(custom codec)_ | `[]Predicate` | no | Or is the {or: [...]} form: disjunction over its sub-predicates. |
@@ -141,15 +141,16 @@ must surface a lowering error rather than silently coercing.
 
 _Defined in `schema/predicate.go`._
 
-PredicateEq is the {<verb>: {path: <Path>, equal: <Value>}} shape, shared
-by eq / gt / lt / gte / lte. The field name "Equal" is historical (eq was
-the first verb) and reads as "the right-hand-side Value" for the
-comparison verbs.
+PredicateEq is the {<verb>: {path: <Path>, value: <Value>}} shape, shared
+by eq / gt / lt / gte / lte. The Go type name keeps the "Eq" prefix for
+historical reasons (eq was the first verb to use this shape); the right-
+hand-side field is named Value (renamed from Equal in slice 6) so the
+shape reads naturally under the ordered verbs too.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `Path` | `path` | `Path` | no | Path is the left-hand-side namespace-rooted locator. |
-| `Equal` | `equal` | `Value` | no | Equal is the right-hand-side Value compared against Path. |
+| `Value` | `value` | `Value` | no | Value is the right-hand-side Value compared against Path. |
 
 ## `Doc`
 
@@ -402,10 +403,8 @@ ExtractVar names a value to pull from a response.
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `Name` | `name` | `string` | no | Name is the destination key in the extract / cursor namespace. |
-| `Path` | `path` | `Path` | yes | Path is the body-relative locator (used when Source is "body" or unset). |
+| `From` | `from` | `Path` | no | From is the namespace-rooted Path locating the value to capture. Accepted roots: - response.body.<path> the active step's response body - response.header.<name> the active step's response headers - steps.<id>.body.<path> a labelled prior step's response body - steps.<id>.header.<name> a labelled prior step's response headers The runtime dispatches body-walk vs header-lookup based on the matched root rather than a side-channel discriminator. |
 | `Coerce` | `coerce` | `string` | yes | Coerce, when set, applies a format verb (rfc3339, unix_seconds, ...) to the extracted value before storing it. |
-| `Source` | `source` | `string` | yes | Source is "body" (default) or "header". |
-| `Header` | `header` | `string` | yes | Header is the response-header name; required when Source == "header". |
 | `Target` | `target` | `string` | yes | Target controls which namespace the extracted value lands in: "extract" (default) → extract.<name>, visible to subsequent steps in the same iteration and lost between iterations; "cursor" → cursor.<name>, auto-registers a cursor field that persists across iterations (use for multi-field cursors: worklists, freeze flags, rolling-max timestamps). |
 
 ## `FanOut`
@@ -472,7 +471,6 @@ CursorTokenPagination advances via an opaque cursor token in the response body.
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `TokenAt` | `token_at` | `Path` | no | TokenAt is the body path of the next-page cursor. |
-| `SendAs` | `send_as` | `string` | no | SendAs names where to send the cursor on subsequent requests: "query.<param>" or "header.<name>". |
 
 ## `PageNumberPagination`
 
@@ -526,7 +524,6 @@ ScrollIDPagination maintains a server-side scroll session.
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `ScrollIDAt` | `scroll_id_at` | `Path` | no | ScrollIDAt is the body path of the server-supplied scroll id. |
-| `SendAs` | `send_as` | `string` | no | SendAs names where to send the scroll id on subsequent requests: "query.<param>" or "header.<name>". |
 | `CompleteWhen` | `complete_when` | `*Predicate` | yes | CompleteWhen is an optional predicate evaluated against the producer body that terminates the scroll early. |
 
 ## `GraphQLRelayPagination`
@@ -664,7 +661,7 @@ AsyncExtract extracts a single field from a step's decoded body into the cursor.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `Path` | `path` | `Path` | no | Path is the body-relative locator resolved against the named step's response body. |
+| `From` | `from` | `Path` | no | From is the namespace-rooted Path locating the value to capture. Accepted roots: response.body.<path> (the named role step's response) and steps.<id>.body.<path> (a labelled prior step's response). The runner walks the named body at the trailing path segments and writes the result to cursor.<name>. |
 
 ## `AsyncOnComplete`
 
@@ -734,8 +731,6 @@ YAML authoring rules:
 	{now: true, offset: "-1h", format: rfc3339} → Now
 	{concat: [<Value>, ...]}             → Concat
 	{select: {branches: [...], default: <Value>}} → Select
-	{from_pagination: token}             → FromPagination
-	{from_progress: latest_timestamp}    → FromProgress
 	{format: string, value: {ref: state.page_size}} → Format
 	{base64: {concat: [...]}}            → Base64
 	{list: [<Value>, ...]}               → List
@@ -758,8 +753,6 @@ strings; inner values still recurse as Values).
 | `Now` | _(custom codec)_ | `*NowValue` | yes | Now is the {now: true, offset?: <Value>} form. |
 | `Concat` | _(custom codec)_ | `[]Value` | no | Concat is the {concat: [<Value>, ...]} form: concatenate the resolved string representation of each element. |
 | `Select` | _(custom codec)_ | `*SelectValue` | yes | Select is the {select: {branches: [...], default: <Value>}} form. |
-| `FromPagination` | _(custom codec)_ | `string` | no | FromPagination is the {from_pagination: <role>} form (token, page, offset, offset_end, scroll_id, relay_cursor). |
-| `FromProgress` | _(custom codec)_ | `string` | no | FromProgress is the {from_progress: <role>} form (latest_timestamp, window_start, window_end). |
 | `Format` | _(custom codec)_ | `*FormatValue` | yes | Format is the {format: <verb>, value: <Value>} form: apply a format verb (rfc3339, unix_seconds, ...) to the inner value. |
 | `Base64` | _(custom codec)_ | `*Value` | yes | Base64 is the {base64: <Value>} form: base64-encode the resolved inner value. |
 | `List` | _(custom codec)_ | `[]Value` | no | List is the {list: [<Value>, ...]} form. |

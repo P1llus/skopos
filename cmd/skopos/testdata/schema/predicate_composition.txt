@@ -41,41 +41,40 @@ requests:
         - not:
             eq:
               path: state.safe_mode
-              equal: true
+              value: true
         - present: state.api_key
     query:
-      scroll: {from_pagination: scroll_id}
+      scroll: {ref: cursor.scroll_id}
 
 response:
   decode: json
-  events_at: events
+  events_at: response.body.events
 
 pagination:
   scroll_id:
-    scroll_id_at: meta.next_scroll
-    send_as: query.scroll
+    scroll_id_at: response.body.meta.next_scroll
     complete_when:
       or:
         - eq:
-            path: body.meta.complete
-            equal: true
+            path: response.body.meta.complete
+            value: true
         - and:
             - gt:
-                path: body.meta.page_count
-                equal: 50
+                path: response.body.meta.page_count
+                value: 50
             - lte:
-                path: body.meta.page_count
-                equal: 1000
+                path: response.body.meta.page_count
+                value: 1000
             - gte:
-                path: body.meta.page_count
-                equal: 50
+                path: response.body.meta.page_count
+                value: 50
             - lt:
-                path: body.meta.error_count
-                equal: 1
+                path: response.body.meta.error_count
+                value: 1
             - not:
                 eq:
                   path: state.safe_mode
-                  equal: true
+                  value: true
 
 progress:
   stateless: {}

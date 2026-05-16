@@ -25,10 +25,9 @@ import (
 // # Concurrency
 //
 // One Runner is one logical pull source. Drain mutates internal scope state
-// (cursor, extract, steps, fromPagination, fromProgress) and the deferred
-// store.Save reads what each iteration wrote. Calling Drain concurrently on
-// the same Runner WILL race on scope state and interleave events into Sink.
-// Don't do it.
+// (cursor, extract, steps) and the deferred store.Save reads what each
+// iteration wrote. Calling Drain concurrently on the same Runner WILL race
+// on scope state and interleave events into Sink. Don't do it.
 //
 // Fan-out across N pull sources is the caller's responsibility: build N
 // Runner values (each with its own *schema.Doc, Store, Sink) and call Drain on
@@ -42,13 +41,17 @@ import (
 // One Drain executes the following sequence:
 //
 //  1. store.Load → seed scope.state from the snapshot, merging IR defaults.
-//  2. progress.seed runs ONCE per drain. It pins {from_progress: <role>}
-//     signals (e.g. cursor.last_timestamp → since=<...>) so every page in
-//     this drain shares the same window-start. cursor.last_timestamp only
-//     advances at the END of the drain via progress.advance().
+//  2. progress.seed runs ONCE per drain. It pins the drain's window into
+//     scope.cursor (e.g. cursor.last_timestamp → since=<...> via
+//     {ref: cursor.last_timestamp}) so every page in this drain shares the
+//     same window-start. cursor.last_timestamp only advances at the END
+//     of the drain via progress.advance().
 //  3. For each iteration:
-//     a. pagination.seed populates {from_pagination: <role>} for THIS page
-//     (cursor.token / cursor.page change per page).
+//     a. pagination.seed updates per-iteration cursor fields
+//     (cursor.page, cursor.offset / cursor.offset_end) before this page's
+//     requests run; strategies whose cursor names are written by advance
+//     (cursor_token, scroll_id, link_header, next_url_in_body,
+//     graphql_relay) implement seed as a no-op.
 //     b. scope.extract and scope.steps reset — they are per-iteration bindings.
 //     c. Every request runs in declared order. extract[] writes hit extract
 //     (default) or cursor; step ids cache decoded bodies in scope.steps.
@@ -75,13 +78,13 @@ import (
 //     - "empty_events":    treat as a successful empty page; the cursor still
 //     advances normally.
 //     - "invalidate_cache": clears every OAuth2 token-cache slot reachable
-//     from doc.Auth (state.<store_in> + cursor.__oauth2_<store_in>_expires_at,
+//     from doc.Auth (state.<store_in> + state.<store_in>_expires_at,
 //     including each branch of an auth.multi_mode dispatch) AND every
 //     requests[].cache step-cache slot (state.<store_in> +
-//     cursor.__step_<store_in>_expires_at), then advances as if the page
-//     came back empty. The next request misses the cache and forces a fresh
-//     token fetch / login. When there is no cache block of either kind, the
-//     verb degrades to empty_events with a log line — nothing to invalidate.
+//     state.<store_in>_expires_at), then advances as if the page came back
+//     empty. The next request misses the cache and forces a fresh token
+//     fetch / login. When there is no cache block of either kind, the verb
+//     degrades to empty_events with a log line — nothing to invalidate.
 //
 //  2. document.error.mode — fallback for statuses not named in on_status.
 //
@@ -254,12 +257,13 @@ func (r *Runner) Drain(ctx context.Context) (retErr error) {
 		}
 	}()
 
-	// progress.seed runs ONCE per drain: it pins {from_progress: ...}
-	// signals (e.g. cursor.last_timestamp → since=<...>) so every page
-	// fetched during this drain uses the same window. cursor.last_timestamp
-	// only advances at the END of the drain via progress.advance(). The
-	// variant errors already carry a "progress.<variant>" prefix, so wrap
-	// here without re-prefixing "progress.seed:" to avoid double labels.
+	// progress.seed runs ONCE per drain: it pins the window into
+	// scope.cursor (e.g. cursor.last_timestamp → since=<...> via
+	// {ref: cursor.last_timestamp}) so every page fetched during this
+	// drain uses the same window. cursor.last_timestamp only advances at
+	// the END of the drain via progress.advance(). The variant errors
+	// already carry a "progress.<variant>" prefix, so wrap here without
+	// re-prefixing "progress.seed:" to avoid double labels.
 	if err := progress.seed(s); err != nil {
 		return err
 	}
@@ -438,20 +442,6 @@ func (r *Runner) runIteration(
 	// cannot pick up an unrelated last-declared request as the producer.
 	lastIdx := len(r.Doc.Requests) - 1
 
-	// Discover the active strategy's implicit `send_as` slot once per
-	// iteration. Strategies without send_as (cursor_token / scroll_id are
-	// the only carriers today) don't implement the optional interface and
-	// inject stays nil — no auto-injection. The slot is passed to
-	// executeRequest ONLY for the producer step; non-producer requests
-	// (e.g. async_job submit / poll) never paginate.
-	var inject *autoInjectSlot
-	if pi, ok := pagination.(paginationAutoInjector); ok {
-		slot := pi.autoInjectSlot()
-		if slot.kind != "" {
-			inject = &slot
-		}
-	}
-
 	for i, req := range r.Doc.Requests {
 		if progress.shouldSkipForPhase(req, phase) {
 			continue
@@ -484,14 +474,7 @@ func (r *Runner) runIteration(
 		if r.Tracer != nil {
 			trace = &httpTrace{}
 		}
-		// Pass the auto-injection slot only for the producer step. Setup /
-		// extract-only steps never paginate, so they never receive the
-		// implicit-form lowering.
-		var reqInject *autoInjectSlot
-		if inject != nil && (req.ID == producerID || (implicitLast && i == lastIdx)) {
-			reqInject = inject
-		}
-		res, runErr := s.executeRequest(ctx, client, req, trace, reqInject)
+		res, runErr := s.executeRequest(ctx, client, req, trace)
 		if r.Tracer != nil {
 			r.Tracer.OnExchange(buildExchange(r.Doc, req, trace, runErr, iter, phase))
 		}
@@ -521,10 +504,9 @@ func (r *Runner) runIteration(
 				continue
 			case "invalidate_cache":
 				// Drop every OAuth2 token-cache slot reachable from doc.Auth
-				// (state.<store_in> + cursor.__oauth2_<store_in>_expires_at)
-				// AND every requests[].cache step-cache slot
-				// (state.<store_in> + cursor.__step_<store_in>_expires_at),
-				// then treat the page as empty. The cursor still advances at
+				// (state.<store_in> + state.<store_in>_expires_at) AND every
+				// requests[].cache step-cache slot (state.<store_in> +
+				// state.<store_in>_expires_at), then treat the page as empty. The cursor still advances at
 				// drain end; the next request misses the cache and forces a
 				// fresh token fetch / login. When there is nothing to clear
 				// the verb degrades to empty_events with an explanatory log
@@ -590,9 +572,11 @@ func (r *Runner) runIteration(
 		if err := s.runExtracts(res, req.Extract); err != nil {
 			return iterationResult{}, fmt.Errorf("%s.extract: %w", reqLabel(req), err)
 		}
-		// Bind step body for downstream refs.
+		// Bind step body + headers for downstream refs:
+		// steps.<id>.body.<path> and steps.<id>.header.<name>.
 		if req.ID != "" {
 			s.steps[req.ID] = res.body
+			s.stepHeaders[req.ID] = res.headers
 		}
 
 		// requests[].cache: capture the step's token-shaped value into
@@ -637,7 +621,23 @@ func (r *Runner) runIteration(
 
 	ndjson := r.Doc.Response.Decode == "ndjson"
 	if out.producerBody != nil {
-		evs, err := locateEvents(out.producerBody, pathParts(r.Doc.Response.EventsAt), ndjson)
+		parts, stepID, err := stripBodyRoot(r.Doc.Response.EventsAt)
+		if err != nil {
+			return iterationResult{}, fmt.Errorf("response.events_at: %w", err)
+		}
+		// events_at's body root is always the producer step we just
+		// captured into out.producerBody. The validator currently
+		// rejects steps.<id>.body.<...> at events_at sites, but the
+		// defensive switch keeps the producer-body invariant explicit.
+		body := out.producerBody
+		if stepID != "" {
+			b, ok := s.steps[stepID]
+			if !ok {
+				return iterationResult{}, fmt.Errorf("response.events_at references step %q with no captured body", stepID)
+			}
+			body = b
+		}
+		evs, err := locateEvents(body, parts, ndjson)
 		if err != nil {
 			return iterationResult{}, fmt.Errorf("locate events: %w", err)
 		}

@@ -6,9 +6,8 @@
 # slot reads it back via {ref: cursor.next_url, default: <bootstrap-url>}
 # — first iteration hits the bootstrap URL, every subsequent iteration
 # follows whatever the previous page named, until the field is absent
-# (null or ""). Like link_header, this variant has no send_as
-# auto-injection: wiring cursor.next_url into the request is the
-# template's job.
+# (null or ""). Wiring cursor.next_url into the request is the template's
+# job.
 
 ir_version: "1"
 
@@ -46,18 +45,18 @@ requests:
           - {ref: state.url}
           - /next_url_in_body/alerts
     query:
-      since: {from_progress: latest_timestamp}
+      since: {ref: cursor.last_timestamp}
       limit: {format: string, value: {ref: state.page_size}}
 
 response:
   decode: json
-  events_at: alerts
+  events_at: response.body.alerts
 
 # The response body carries a fully-formed URL for the next page. When absent
 # (null or "") the drain completes.
 pagination:
   next_url_in_body:
-    next_url_at: meta.next_page
+    next_url_at: response.body.meta.next_page
 
 progress:
   latest_event_timestamp:

@@ -11,55 +11,69 @@ import (
 	"github.com/p1llus/skopos/schema"
 )
 
+// Note on pagination send-back: every paginating template wires its cursor
+// explicitly into the producer step's request — `query: {cursor: {ref:
+// cursor.token, default: ""}}` for cursor_token, `query: {scroll: {ref:
+// cursor.scroll_id}}` for scroll_id, and the equivalent {ref: cursor.<name>}
+// declaration for every other variant. Slice 5 deleted the implicit
+// `send_as` auto-injector; the runtime no longer fabricates a query / header
+// slot from the active pagination strategy. The paginationPlan interface
+// below carries seed / advance only.
+
 // paginationPlan describes the active pagination strategy for one drain.
 // It has two responsibilities:
 //
-//  1. seed scope.fromPagination at the start of each iteration so
-//     {from_pagination: <role>} Values evaluate to the right cursor field.
+//  1. seed scope.cursor at the start of each iteration so
+//     {ref: cursor.<name>} Values resolve to the right value. Strategies
+//     that don't have anything to seed (their cursor names are written
+//     only by advance) implement seed as a no-op.
 //  2. advance(...) after the producer step completes, mutating cursor and
 //     returning want_more.
 //
-// # Strategy catalogue and role contract
+// # Strategy catalogue and cursor name contract
 //
-// The role names referenced by {from_pagination: <role>} in a template are
-// resolved against scope.fromPagination, which each plan populates in seed.
-// The legal role names are strategy-specific:
+// The cursor names referenced by {ref: cursor.<name>} in a template are
+// resolved against scope.cursor, which each plan populates in seed +
+// advance. The cursor names are strategy-specific:
 //
-//	none              (no roles — {from_pagination: ...} resolves to nil)
-//	cursor_token      "token"      (cursor.token; absent on first iteration)
-//	page_number       "page"       (cursor.page; defaults to 1 on first iteration)
-//	offset            "offset"     (cursor.offset; defaults to 0 on first iteration)
-//	                  "offset_end" (offset + batch_size; only when batch_size is set)
-//	link_header       "next_link"  (cursor.next_link; absent on first iteration.
-//	                               Templates read it via
-//	                               {ref: cursor.next_link, default: <initial_url>}
+//	none              (no cursor names — pagination is a single GET.)
+//	cursor_token      "token"      (absent on first iteration; advance writes
+//	                               only after a non-zero token_at value.)
+//	page_number       "page"       (defaults to 1 on first iteration; advance
+//	                               increments.)
+//	offset            "offset"     (defaults to 0 on first iteration; advance
+//	                               bumps by batch_size or observed event count.)
+//	                  "offset_end" (offset + batch_size; only present when
+//	                               batch_size is declared and evaluates cleanly
+//	                               — seed writes it alongside cursor.offset.)
+//	link_header       "next_link"  (absent on first iteration. Templates read it
+//	                               via {ref: cursor.next_link, default: <initial_url>}
 //	                               in the request's url slot.)
 //	next_url_in_body  "next_url"   (same template shape as link_header but
 //	                               sourced from a body path rather than the
 //	                               Link header.)
-//	scroll_id         "scroll_id"  (cursor.scroll_id; templates read it via
-//	                               {from_pagination: scroll_id} in the request
-//	                               slot named by send_as. Empty on first
-//	                               iteration so the server opens a new scroll
-//	                               session, then echoes the id on every
-//	                               subsequent page. Termination: complete_when
-//	                               wins when set; otherwise scroll_id_at
-//	                               resolving to a zero Value ends the drain.)
-//	graphql_relay     "relay_cursor" (cursor.<cursor_var>; absent on first
-//	                                 iteration. cursor_var is author-declared
-//	                                 — typically "after". Templates read via
-//	                                 {from_pagination: relay_cursor} inside
-//	                                 GraphQL variables. Termination:
-//	                                 has_next_page_at drives the drain — false
-//	                                 terminates, true captures end_cursor_at
-//	                                 into cursor.<cursor_var>.)
+//	scroll_id         "scroll_id"  (absent on first iteration so the bootstrap
+//	                               request opens a new scroll session;
+//	                               subsequent pages reuse the server-supplied id.
+//	                               Termination: complete_when wins when set;
+//	                               otherwise scroll_id_at resolving to a zero
+//	                               Value ends the drain.)
+//	graphql_relay     <cursor_var> (cursor name is author-declared via
+//	                               cfg.CursorVar — typically "after"; absent on
+//	                               first iteration so the GraphQL variable rides
+//	                               as null. Termination: has_next_page_at drives
+//	                               the drain — false terminates, true captures
+//	                               end_cursor_at into cursor.<cursor_var>.)
 //
-// Authors of a new pagination variant should document the role names their
-// seed() writes here AND in the variant's own comment so template authors
-// have a single place to look.
+// Authors of a new pagination variant should document the cursor names
+// their seed() / advance() write here AND in the variant's own comment so
+// template authors have a single place to look.
 type paginationPlan interface {
-	// seed populates scope.fromPagination with the current iteration's
-	// signal. Must be called before request bodies / queries are evaluated.
+	// seed performs any per-iteration cursor writes the strategy needs
+	// before the producer step's request bodies / queries are evaluated.
+	// Strategies whose cursor names are written only by advance
+	// (cursor_token, scroll_id, link_header, next_url_in_body,
+	// graphql_relay) implement this as a no-op.
 	seed(s *scope)
 	// advance updates scope.cursor from the producer-step result and
 	// returns whether the loop should fetch another page. Called once per
@@ -69,43 +83,6 @@ type paginationPlan interface {
 	// reads the Link header from it; body-cursor variants ignore it. nil is
 	// allowed (an error-mode=warn iteration that decoded no body, for example).
 	advance(s *scope, producerBody any, producerHeaders http.Header, events []any) (bool, error)
-}
-
-// autoInjectSlot describes a producer-step request slot the runtime should
-// auto-populate from scope.fromPagination[role] when the template omits an
-// explicit {from_pagination: <role>} Value at that slot. The `send_as` field
-// on the pagination block is the canonical slot declaration; this struct is
-// the runtime lowering of that declaration into the request. cursor_token
-// and scroll_id are the only variants today that carry `send_as`.
-type autoInjectSlot struct {
-	kind string // "query" | "header"
-	name string // param / header name (case-insensitive for headers)
-	role string // {from_pagination: <role>} key — "token" | "scroll_id"
-}
-
-// paginationAutoInjector is the optional half of the paginationPlan
-// interface implemented by strategies whose IR carries a `send_as` field
-// (cursor_token, scroll_id). The runner type-asserts to discover the slot
-// each iteration; plans that don't implement it produce no auto-injection
-// (link_header / next_url_in_body / page_number / offset / graphql_relay /
-// none all return signals via other roles and need no slot lowering).
-type paginationAutoInjector interface {
-	autoInjectSlot() autoInjectSlot
-}
-
-// parseSendAs splits the spec-defined "query.<param>" / "header.<name>"
-// form into kind + name. Empty kind means the input was neither — callers
-// treat that as "no auto-injection". The spec validator (checkSendAs)
-// rejects bad shapes at load time so a non-empty cfg.SendAs always parses
-// here; the empty-kind fallback exists to keep this helper total.
-func parseSendAs(s string) (kind, name string) {
-	if rest, ok := strings.CutPrefix(s, "query."); ok {
-		return "query", rest
-	}
-	if rest, ok := strings.CutPrefix(s, "header."); ok {
-		return "header", rest
-	}
-	return "", ""
 }
 
 // makePaginationPlan returns the driver for the document's active strategy.
@@ -144,47 +121,25 @@ func (p *nonePagination) advance(*scope, any, http.Header, []any) (bool, error) 
 
 // ---- cursor_token ----
 //
-// send_as is the canonical slot declaration for the token. The runner
-// supports BOTH forms:
-//
-//   - Explicit: the template writes {from_pagination: token} at the
-//     desired request slot (query.<param> or header.<name>). seed() exposes
-//     the cursor under role "token" and the template's existing slot
-//     evaluates it. This form is what every day-one template uses.
-//   - Implicit: the template omits the {from_pagination: ...} Value. The
-//     runtime lowers send_as into an auto-injection at that slot on the
-//     producer step's request (see autoInjectSlot below + executeRequest
-//     in http.go). Templates that take this path get the same wire shape
-//     without the boilerplate.
-//
-// When the template declares the slot itself (explicit form), the runtime
-// skips auto-injection — the explicit Value wins. Detection is by IR
-// presence (req.Query / req.Headers carries the key), not by runtime value,
-// so a first-iteration nil token doesn't get double-handled.
+// The template wires {ref: cursor.token} at the request slot of its choice
+// (typically a query parameter). cursor.token is written by advance() after
+// the first response; the first iteration sees an absent cursor.token, so
+// {ref: cursor.token} resolves to nil and the slot is skipped — unless the
+// template adds {default: ""} for servers that require an explicit empty
+// cursor on the bootstrap request.
 type cursorTokenPagination struct {
 	cfg *schema.CursorTokenPagination
 }
 
-func (p *cursorTokenPagination) autoInjectSlot() autoInjectSlot {
-	kind, name := parseSendAs(p.cfg.SendAs)
-	return autoInjectSlot{kind: kind, name: name, role: "token"}
-}
-
-func (p *cursorTokenPagination) seed(s *scope) {
-	// Expose cursor.token via {from_pagination: token}. First iteration:
-	// cursor.token is unset, so the role evaluates to nil. Authors should
-	// either guard with {select} or accept an absent param on the first
-	// request — both work because url.Values.Set with empty string still
-	// includes the key but we skip nil values in query encoding (http.go).
-	if v, ok := s.cursor["token"]; ok {
-		s.fromPagination["token"] = v
-	} else {
-		delete(s.fromPagination, "token")
-	}
+func (p *cursorTokenPagination) seed(*scope) {
+	// cursor.token is written by advance() after the first response — there
+	// is nothing to seed. First iteration: cursor.token is absent, so
+	// {ref: cursor.token} resolves to nil and the slot is skipped (or
+	// resolves to the template's {default: ...} branch).
 }
 
 func (p *cursorTokenPagination) advance(s *scope, body any, _ http.Header, _ []any) (bool, error) {
-	got, ok, err := lookupBodyPath(body, pathParts(p.cfg.TokenAt))
+	got, ok, err := s.resolveBodyPath(body, p.cfg.TokenAt)
 	if err != nil {
 		return false, fmt.Errorf("pagination.cursor_token.token_at: %w", err)
 	}
@@ -205,12 +160,10 @@ type pageNumberPagination struct {
 }
 
 func (p *pageNumberPagination) seed(s *scope) {
-	// First iteration: cursor.page absent → expose 1 by convention.
+	// First iteration: cursor.page absent → seed 1 by convention so
+	// {ref: cursor.page} resolves to the bootstrap page number.
 	// Subsequent iterations use whatever advance() last wrote.
-	if v, ok := s.cursor["page"]; ok {
-		s.fromPagination["page"] = v
-	} else {
-		s.fromPagination["page"] = int64(1)
+	if _, ok := s.cursor["page"]; !ok {
 		s.cursor["page"] = int64(1)
 	}
 }
@@ -223,7 +176,7 @@ func (p *pageNumberPagination) advance(s *scope, body any, _ http.Header, events
 
 	// has_more_at takes precedence when set: false → stop, true → advance.
 	if !p.cfg.HasMoreAt.IsEmpty() {
-		got, ok, err := lookupBodyPath(body, pathParts(p.cfg.HasMoreAt))
+		got, ok, err := s.resolveBodyPath(body, p.cfg.HasMoreAt)
 		if err != nil {
 			return false, fmt.Errorf("pagination.page_number.has_more_at: %w", err)
 		}
@@ -277,42 +230,42 @@ type offsetPagination struct {
 }
 
 func (p *offsetPagination) seed(s *scope) {
-	// First iteration: cursor.offset absent → seed 0 by convention and
-	// write it back to cursor so {ref: cursor.offset} can resolve too.
-	// Subsequent iterations use whatever advance() last wrote.
+	// First iteration: cursor.offset absent → seed 0 by convention so
+	// {ref: cursor.offset} resolves to the bootstrap offset. Subsequent
+	// iterations use whatever advance() last wrote.
 	cur, ok := s.cursor["offset"]
 	if !ok {
 		cur = int64(0)
 		s.cursor["offset"] = cur
 	}
-	s.fromPagination["offset"] = cur
 
-	// offset_end = offset + batch_size; the role exists for APIs that take
+	// cursor.offset_end = offset + batch_size; written for APIs that take
 	// an exclusive end index. Only resolvable when batch_size is declared
-	// AND evaluates cleanly. Templates that don't declare batch_size simply
-	// never reference offset_end.
+	// AND evaluates cleanly. Templates that don't declare batch_size never
+	// reference cursor.offset_end (cursorSchema rejects the ref at validate
+	// time when batch_size is unset).
 	//
-	// On an eval failure here we drop offset_end and continue. The same
-	// error re-surfaces from advance() and becomes the iteration's
-	// canonical failure point — UNLESS the page comes back empty, in
-	// which case advance()'s empty-page short-circuit terminates before
+	// On an eval failure here we drop cursor.offset_end and continue. The
+	// same error re-surfaces from advance() and becomes the iteration's
+	// canonical failure point — UNLESS the page comes back empty, in which
+	// case advance()'s empty-page short-circuit terminates before
 	// re-evaluating batch_size. The log breadcrumb here is the operator's
 	// only signal that the misshapen offset_end on the bootstrap request
 	// was deliberate-but-broken rather than just absent.
 	if p.cfg.BatchSize == nil {
-		delete(s.fromPagination, "offset_end")
+		delete(s.cursor, "offset_end")
 		return
 	}
 	bs, err := evalOffsetBatchSize(s, *p.cfg.BatchSize)
 	if err != nil {
-		delete(s.fromPagination, "offset_end")
+		delete(s.cursor, "offset_end")
 		if s.logger != nil {
-			s.logger.Printf("client: pagination.offset.batch_size eval failed in seed (offset_end dropped from this iteration): %v", err)
+			s.logger.Printf("client: pagination.offset.batch_size eval failed in seed (cursor.offset_end dropped from this iteration): %v", err)
 		}
 		return
 	}
 	curInt, _ := asInt64(cur)
-	s.fromPagination["offset_end"] = curInt + bs
+	s.cursor["offset_end"] = curInt + bs
 }
 
 func (p *offsetPagination) advance(s *scope, _ any, _ http.Header, events []any) (bool, error) {
@@ -395,16 +348,11 @@ func newLinkHeaderPagination(cfg *schema.LinkHeaderPagination) (*linkHeaderPagin
 	return p, nil
 }
 
-func (p *linkHeaderPagination) seed(s *scope) {
-	// First iteration: cursor.next_link absent → role evaluates to nil and
-	// the template's {ref: cursor.next_link, default: <bootstrap_url>}
-	// branch wins. Subsequent iterations expose whatever advance() last
-	// wrote.
-	if v, ok := s.cursor["next_link"]; ok {
-		s.fromPagination["next_link"] = v
-	} else {
-		delete(s.fromPagination, "next_link")
-	}
+func (p *linkHeaderPagination) seed(*scope) {
+	// cursor.next_link is written by advance() after the first response —
+	// nothing to seed. First iteration: cursor.next_link is absent, so the
+	// template's {ref: cursor.next_link, default: <bootstrap_url>} branch
+	// wins.
 }
 
 func (p *linkHeaderPagination) advance(s *scope, _ any, headers http.Header, _ []any) (bool, error) {
@@ -507,20 +455,15 @@ type nextURLInBodyPagination struct {
 	cfg *schema.NextURLInBodyPagination
 }
 
-func (p *nextURLInBodyPagination) seed(s *scope) {
-	// First iteration: cursor.next_url absent → role evaluates to nil and
-	// the template's {ref: cursor.next_url, default: <bootstrap_url>}
-	// branch wins. Subsequent iterations expose whatever advance() last
-	// wrote. Same shape as link_header's seed().
-	if v, ok := s.cursor["next_url"]; ok {
-		s.fromPagination["next_url"] = v
-	} else {
-		delete(s.fromPagination, "next_url")
-	}
+func (p *nextURLInBodyPagination) seed(*scope) {
+	// cursor.next_url is written by advance() after the first response —
+	// nothing to seed. First iteration: cursor.next_url is absent, so the
+	// template's {ref: cursor.next_url, default: <bootstrap_url>} branch
+	// wins. Same shape as link_header's seed().
 }
 
 func (p *nextURLInBodyPagination) advance(s *scope, body any, _ http.Header, _ []any) (bool, error) {
-	got, ok, err := lookupBodyPath(body, pathParts(p.cfg.NextURLAt))
+	got, ok, err := s.resolveBodyPath(body, p.cfg.NextURLAt)
 	if err != nil {
 		return false, fmt.Errorf("pagination.next_url_in_body.next_url_at: %w", err)
 	}
@@ -545,19 +488,19 @@ func (p *nextURLInBodyPagination) advance(s *scope, body any, _ http.Header, _ [
 // scroll_id maintains a server-side scroll session: the first request opens
 // the session (the scroll_id slot is empty), and every response echoes a
 // scroll id at scroll_id_at that subsequent requests must replay verbatim.
-// Templates expose the id via {from_pagination: scroll_id} in the slot named
-// by send_as (typically a query or header param). The first iteration's
-// {from_pagination: scroll_id} resolves to nil; the runner skips nil values
-// in query / header encoding (http.go), so the bootstrap request goes out
+// Templates expose the id via {ref: cursor.scroll_id} at the request slot
+// of their choice (query or header). The first iteration's
+// {ref: cursor.scroll_id} resolves to nil; the runner skips nil values in
+// query / header encoding (http.go), so the bootstrap request goes out
 // without the param and the server opens a new session.
 //
 // Termination:
 //
 //   - When complete_when is declared, it is evaluated against the producer
-//     body (body.<path> refs resolve against the just-decoded response).
-//     A true result ends the drain and clears cursor.scroll_id. This shape
-//     mirrors async_job.poll.complete_when — same predicate plumbing, same
-//     {body: ...} scope mechanic.
+//     body (response.body.<path> refs resolve against the just-decoded
+//     response). A true result ends the drain and clears cursor.scroll_id.
+//     This shape mirrors async_job.poll.complete_when — same predicate
+//     plumbing, same response-scope mechanic.
 //   - When complete_when is absent, the loop terminates as soon as
 //     scroll_id_at resolves to a zero Value (missing path, nil, or empty
 //     string). This matches the scroll-session contract: the server signals
@@ -566,46 +509,32 @@ func (p *nextURLInBodyPagination) advance(s *scope, body any, _ http.Header, _ [
 // On termination cursor.scroll_id is cleared so the next drain opens a
 // fresh session (mirrors the reset behaviour of cursor_token / offset /
 // page_number / link_header / next_url_in_body).
-//
-// send_as is the canonical slot declaration for the scroll id. As with
-// cursor_token, the runner supports BOTH forms (explicit
-// {from_pagination: scroll_id} at the desired slot, OR implicit lowering
-// of send_as into a producer-step auto-injection). Detection is by IR
-// presence — explicit form is recognised when the template's req.Query /
-// req.Headers names the slot, and auto-injection is skipped for that
-// request. See autoInjectSlot below and the executeRequest implementation
-// in http.go.
 type scrollIDPagination struct {
 	cfg *schema.ScrollIDPagination
 }
 
-func (p *scrollIDPagination) autoInjectSlot() autoInjectSlot {
-	kind, name := parseSendAs(p.cfg.SendAs)
-	return autoInjectSlot{kind: kind, name: name, role: "scroll_id"}
+func (p *scrollIDPagination) seed(*scope) {
+	// cursor.scroll_id is written by advance() after the first response —
+	// nothing to seed. First iteration: cursor.scroll_id is absent, so
+	// {ref: cursor.scroll_id} resolves to nil and the request's slot
+	// encodes no value (http.go skips nil query / header values).
 }
 
-func (p *scrollIDPagination) seed(s *scope) {
-	// First iteration: cursor.scroll_id absent → role evaluates to nil and
-	// the request's send_as slot encodes no value (http.go skips nil
-	// query / header values). Subsequent iterations expose whatever
-	// advance() last wrote. Same shape as cursor_token's seed().
-	if v, ok := s.cursor["scroll_id"]; ok {
-		s.fromPagination["scroll_id"] = v
-	} else {
-		delete(s.fromPagination, "scroll_id")
-	}
-}
-
-func (p *scrollIDPagination) advance(s *scope, body any, _ http.Header, _ []any) (bool, error) {
+func (p *scrollIDPagination) advance(s *scope, body any, headers http.Header, _ []any) (bool, error) {
 	// complete_when (if declared) wins over the zero-id default rule. We
 	// evaluate it against the producer body via the same {body: ...} scope
-	// mechanic async_job.poll uses for its complete_when — body.<path>
-	// resolves against the just-decoded response.
+	// mechanic async_job.poll uses for its complete_when. After slice 2 the
+	// predicate's response.body.<path> / response.header.<name> refs
+	// resolve against the just-decoded producer response; bare body.<path>
+	// is no longer accepted.
 	if p.cfg.CompleteWhen != nil {
-		prev := s.body
+		prevBody := s.body
+		prevHeaders := s.responseHeaders
 		s.body = body
+		s.responseHeaders = headers
 		done, err := s.evalPredicate(*p.cfg.CompleteWhen)
-		s.body = prev
+		s.body = prevBody
+		s.responseHeaders = prevHeaders
 		if err != nil {
 			return false, fmt.Errorf("pagination.scroll_id.complete_when: %w", err)
 		}
@@ -618,7 +547,7 @@ func (p *scrollIDPagination) advance(s *scope, body any, _ http.Header, _ []any)
 	// Read the next scroll id from the body. When complete_when is set and
 	// returned false, we still need the freshest id for the next request.
 	// When complete_when is absent, a zero id IS the termination signal.
-	got, ok, err := lookupBodyPath(body, pathParts(p.cfg.ScrollIDAt))
+	got, ok, err := s.resolveBodyPath(body, p.cfg.ScrollIDAt)
 	if err != nil {
 		return false, fmt.Errorf("pagination.scroll_id.scroll_id_at: %w", err)
 	}
@@ -638,9 +567,9 @@ func (p *scrollIDPagination) advance(s *scope, body any, _ http.Header, _ []any)
 // named by cursor_var (typically `after`). The runner stashes endCursor at
 // cursor.<cursor_var> — the cursor key name is author-declared.
 //
-// Templates expose the cursor via {from_pagination: relay_cursor} inside
-// the GraphQL variables map. On the first iteration cursor.<cursor_var> is
-// absent → the role evaluates to nil → the GraphQL variable rides as JSON
+// Templates expose the cursor via {ref: cursor.<cursor_var>} inside the
+// GraphQL variables map. On the first iteration cursor.<cursor_var> is
+// absent → the ref evaluates to nil → the GraphQL variable rides as JSON
 // null, which Relay servers treat as "from the start of the connection".
 //
 // Termination: has_next_page_at is the authoritative signal. False → end
@@ -654,20 +583,16 @@ type graphQLRelayPagination struct {
 	cfg *schema.GraphQLRelayPagination
 }
 
-func (p *graphQLRelayPagination) seed(s *scope) {
-	// First iteration: cursor.<cursor_var> absent → role evaluates to nil
-	// and the GraphQL variable rides as null. Subsequent iterations expose
-	// whatever advance() last wrote at cursor.<cursor_var>. Same shape as
-	// cursor_token's seed(), but the cursor key is author-named.
-	if v, ok := s.cursor[p.cfg.CursorVar]; ok {
-		s.fromPagination["relay_cursor"] = v
-	} else {
-		delete(s.fromPagination, "relay_cursor")
-	}
+func (p *graphQLRelayPagination) seed(*scope) {
+	// cursor.<cursor_var> is written by advance() after the first response —
+	// nothing to seed. First iteration: cursor.<cursor_var> is absent, so
+	// {ref: cursor.<cursor_var>} resolves to nil and the GraphQL variable
+	// rides as null. Same shape as cursor_token's seed(), but the cursor
+	// key is author-named.
 }
 
 func (p *graphQLRelayPagination) advance(s *scope, body any, _ http.Header, _ []any) (bool, error) {
-	hasNext, ok, err := lookupBodyPath(body, pathParts(p.cfg.HasNextPageAt))
+	hasNext, ok, err := s.resolveBodyPath(body, p.cfg.HasNextPageAt)
 	if err != nil {
 		return false, fmt.Errorf("pagination.graphql_relay.has_next_page_at: %w", err)
 	}
@@ -691,7 +616,7 @@ func (p *graphQLRelayPagination) advance(s *scope, body any, _ http.Header, _ []
 	// has_next_page=true is a server contract violation, but the
 	// conservative read is "we can't request the next page without a
 	// cursor" — terminate and clear so the next drain can recover.
-	got, ok, err := lookupBodyPath(body, pathParts(p.cfg.EndCursorAt))
+	got, ok, err := s.resolveBodyPath(body, p.cfg.EndCursorAt)
 	if err != nil {
 		return false, fmt.Errorf("pagination.graphql_relay.end_cursor_at: %w", err)
 	}
@@ -702,12 +627,3 @@ func (p *graphQLRelayPagination) advance(s *scope, body any, _ http.Header, _ []
 	s.cursor[p.cfg.CursorVar] = got
 	return true, nil
 }
-
-// Note on send_as: authors can EITHER write {from_pagination: ...} at the
-// desired request slot (explicit form), OR rely on the runtime to
-// auto-inject the token into the slot named by send_as (implicit form). The
-// lowering lives in executeRequest (http.go): for the producer step the
-// runner reads the slot from autoInjectSlot, checks the template's
-// req.Query / req.Headers for an existing declaration of that key, and only
-// writes the value from scope.fromPagination[role] when the template did
-// not declare the slot itself.

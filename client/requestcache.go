@@ -23,16 +23,20 @@ import (
 // runtime string by the IR validator, so it survives across drains via the
 // deferred store.Save.
 //
-// The paired expiry timestamp lives at cursor.__step_<store_in>_expires_at
-// as an RFC 3339 string. The prefix is deliberately distinct from OAuth2's
-// __oauth2_<store_in>_expires_at so the two caches never collide on a doc
-// that uses both.
+// The paired expiry timestamp lives at state.<store_in>_expires_at as an
+// RFC 3339 string (auto-registered as a runtime string by the IR
+// validator). Slice 7 moved this slot out of cursor.__step_*_expires_at;
+// the auto-registration also covers OAuth2's <store_in>_expires_at, and
+// the validator's store_in collision check rejects any cache pair whose
+// store_in names overlap so the derived expiry slots can never collide
+// either.
 
-// stepCacheExpiryKey returns the cursor key paired with state.<storeIn> for
-// holding a step cache's expiry timestamp. Parallel to oauth2ExpiryKey with
-// a distinct prefix so step caches and OAuth2 caches never share a slot.
+// stepCacheExpiryKey returns the state key paired with state.<storeIn> for
+// holding a step cache's expiry timestamp. Parallel to oauth2ExpiryKey;
+// because the validator rejects any two caches sharing a store_in, the two
+// derived expiry slots never collide.
 func stepCacheExpiryKey(storeIn string) string {
-	return "__step_" + storeIn + "_expires_at"
+	return storeIn + "_expires_at"
 }
 
 // cachedStepValue reports whether state.<store_in> carries a value whose
@@ -51,7 +55,7 @@ func (s *scope) cachedStepValue(cache *schema.RequestCache) bool {
 	if !ok || val == "" {
 		return false
 	}
-	expRaw, ok := s.cursor[stepCacheExpiryKey(cache.StoreIn)]
+	expRaw, ok := s.state[stepCacheExpiryKey(cache.StoreIn)]
 	if !ok {
 		return false
 	}
@@ -73,9 +77,9 @@ func (s *scope) cachedStepValue(cache *schema.RequestCache) bool {
 
 // storeStepValue captures the step's token-shaped response field into
 // state.<store_in> and writes the paired expiry timestamp into
-// cursor.__step_<store_in>_expires_at. Called after a successful execution
-// of a cache-bearing step; the next iteration (or drain) then finds the
-// cache populated and skips the step until the expiry buffer is crossed.
+// state.<store_in>_expires_at. Called after a successful execution of a
+// cache-bearing step; the next iteration (or drain) then finds the cache
+// populated and skips the step until the expiry buffer is crossed.
 func (s *scope) storeStepValue(cache *schema.RequestCache, body any) error {
 	m, ok := body.(map[string]any)
 	if !ok {
@@ -94,7 +98,7 @@ func (s *scope) storeStepValue(cache *schema.RequestCache, body any) error {
 		return err
 	}
 	s.state[cache.StoreIn] = val
-	s.cursor[stepCacheExpiryKey(cache.StoreIn)] = expAt.UTC().Format(time.RFC3339Nano)
+	s.state[stepCacheExpiryKey(cache.StoreIn)] = expAt.UTC().Format(time.RFC3339Nano)
 	return nil
 }
 
@@ -108,7 +112,14 @@ func (s *scope) storeStepValue(cache *schema.RequestCache, body any) error {
 //   - "unix_seconds" / "unix_millis": an absolute Unix timestamp.
 //   - "rfc3339" / "rfc3339nano": an absolute RFC 3339 timestamp string.
 func stepCacheExpiry(now time.Time, body map[string]any, cache *schema.RequestCache) (time.Time, error) {
-	raw, found, err := lookupBodyPath(body, cache.ExpiryField.Parts)
+	parts, stepID, err := stripBodyRoot(cache.ExpiryField)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("expiry_field: %w", err)
+	}
+	if stepID != "" {
+		return time.Time{}, fmt.Errorf("requests[].cache.expiry_field must be rooted at response.body.<path> (the cached step's own response); steps.<id>.body.<path> is not valid here")
+	}
+	raw, found, err := lookupBodyPath(body, parts)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("expiry_field: %w", err)
 	}
@@ -146,8 +157,8 @@ func stepCacheExpiry(now time.Time, body map[string]any, cache *schema.RequestCa
 }
 
 // invalidateStepCaches clears every step-level cache slot declared by
-// requests[].cache (state.<store_in> + cursor.__step_<store_in>_expires_at)
-// and returns the store_in names that were cleared. Parallel to
+// requests[].cache (state.<store_in> + state.<store_in>_expires_at) and
+// returns the store_in names that were cleared. Parallel to
 // invalidateAuthCaches: the runtime `on_status: invalidate_cache` verb walks
 // both so a 401 drops cached auth tokens AND cached login tokens in one
 // move, and the next drain re-runs the login step.
@@ -158,7 +169,7 @@ func (s *scope) invalidateStepCaches(doc *schema.Doc) []string {
 			continue
 		}
 		delete(s.state, req.Cache.StoreIn)
-		delete(s.cursor, stepCacheExpiryKey(req.Cache.StoreIn))
+		delete(s.state, stepCacheExpiryKey(req.Cache.StoreIn))
 		cleared = append(cleared, req.Cache.StoreIn)
 	}
 	return cleared
