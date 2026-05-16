@@ -35,9 +35,9 @@ What lives where:
   operator-supplied) are NOT persisted: they come from
   `state.fields[<name>].default` and re-seed every Drain.
 - **`Cursor`** carries every cursor field inferred from the active
-  pagination + progress + async_job strategies. After slice 7 it is
-  author-facing only — the framework-internal expiry slots that used to
-  live at `cursor.__*_expires_at` moved into `State` (see above). The
+  pagination + progress + async_job strategies. It is author-facing only:
+  framework-internal slots (like the paired expiry timestamps for cached
+  tokens) live in `State` instead — see the cache stanza above. The
   catalogue in `client/state.go` lists the cursor key per strategy.
 
 Both maps hold values that round-trip through JSON cleanly: strings,

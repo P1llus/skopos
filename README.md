@@ -130,7 +130,7 @@ skopos run -i spec.yml --once --out events.jsonl --trace trace.jsonl
 one record per HTTP exchange with secrets redacted:
 
 ```json
-{"iteration":1,"method":"GET","url":"http://localhost:9999/bearer_simple/events","query":{"limit":"<format:string>","since":"<from_progress:latest_timestamp>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"status":200,"response_body":"body 403 bytes, object-like","started_at":"2026-05-15T06:28:47.777479114Z","elapsed":16011226}
+{"iteration":1,"method":"GET","url":"http://localhost:9999/bearer_simple/events","query":{"limit":"<format:string>","since":"<ref cursor.last_timestamp>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"status":200,"response_body":"body 403 bytes, object-like","started_at":"2026-05-15T06:28:47.777479114Z","elapsed":16011226}
 ```
 
 Swap `bearer_simple` for any other template name to try a different API

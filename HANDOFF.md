@@ -146,160 +146,140 @@ moments:
 
 ### Slice number and title
 
-**Slice 8 — Docs and `schema-reference.md`.**
+**Redesign loop paused — slice 9 (`state` / `cursor` merge) is
+deferred. Pick up only after a fresh planning round.**
 
 ### What this slice does
 
-Slices 1–7 reshaped the IR (single rooted-path grammar, deleted
-constructs, predicate rename, expiry-slot move) but the
-hand-written docs under `docs/` and `README.md` still describe
-the pre-redesign grammar in places. Slice 8 sweeps every doc so
-its prose, namespace tables, YAML examples, and authoring
-rules match the new shape, and regenerates the auto-generated
-`docs/schema-reference.md` via `tools/gen-schema-doc`. No
-runtime / schema behaviour changes — this is the doc commit
-that lets a reader pick up the project after the redesign.
+Slice 8 landed: every doc, every `README.md` reference, every
+template comment now describes the post-redesign grammar
+(namespace-rooted Paths, predicate `value:`, single `from:` for
+extract, `{ref: cursor.<name>}` for pagination/progress signals,
+expiry slots under `state.<store_in>_expires_at`). The full
+redesign loop slices 1–8 from `SCHEMA_DESIGN.md` §2 is complete.
 
-See `SCHEMA_DESIGN.md` §1 (target design) and §2 Slice 8 for
-the per-file work list.
+Slice 9 — collapsing `state` and `cursor` into a single
+author-facing namespace — is **explicitly deferred** per
+`SCHEMA_DESIGN.md` §2 / §3. It is XL effort, touches the
+persistence layer (`Store.Save` / `Store.Load`, `Snapshot.Cursor`
+deletion, every `cursor.<name>` ref rewritten as `state.<name>`),
+and the plan calls for a fresh planning cycle before it kicks
+off. Do **not** start slice 9 work without the operator
+confirming the redesign loop should resume.
 
 ### Surfaces this slice touches
 
-- `docs/schema.md` — single biggest rewrite. New §1.1 namespace
-  table, the body-relative-path policy section deleted (every
-  path is now namespace-rooted), `ExtractVar.from` documented,
-  the `from_pagination` / `from_progress` sections deleted, the
-  `send_as` references deleted, every Predicate example flipped
-  to `value:`, the cursor-namespace table tightened to the
-  active strategies' slots only (no more parallel role names),
-  the legacy "namespace-shadow warning" section removed. Audit
-  for any leftover `body.<path>` mention — those are now
-  `response.body.<path>`.
-- `docs/runtime.md` — §8 supported-variant tables. The
-  scope-lifetime table no longer carries `fromPagination` /
-  `fromProgress` rows; both maps were deleted in slice 4 and
-  their contents merged into `cursor`. The `Cursor` row now
-  notes "author-facing only" per slice 7. §8.4 (`Value` variants),
-  §8.5 (Predicate verbs), §8.6 (Path roots) need a pass.
-- `docs/api-methods.md` — Every YAML snippet in §1–§6 carries
-  refs in the old shape in places. §2.4 (`cursor_token`) and
-  §2.7 (`scroll_id`) still document `send_as`; rewrite to the
-  explicit `{ref: cursor.token, default: ""}` form (slice 5).
-  §3.9 / §1.10 (session-cookie via POST login) still describe
-  the old `source: header, header: Set-Cookie` extract shape;
-  flip to `from: response.header.Set-Cookie` (slice 3). §5
-  (progress) examples that reference `from_progress` flip to
-  `{ref: cursor.<role>}` (slice 4). Predicate verbs flip to
-  `value:` (slice 6). Expiry-slot prose already updated in
-  slice 7 — re-check it reads clean alongside the rest.
-- `docs/usage.md` — snippets reference the new field names. A
-  full read-through for any `body.<path>` / `from_pagination` /
-  `equal:` / `send_as:` / `cursor.__*` slips.
-- `docs/stores.md` — already touched in slice 7. Skim for
-  consistency with the rest of the doc sweep.
-- `README.md` — Quickstart YAML + Templates table. Quickstart's
-  template snippet must use the new grammar (`response.body.*`
-  for `events_at` / `token_at`, `value:` under any predicate
-  verb, explicit `{ref: cursor.token}` if pagination is shown).
-- `docs/schema-reference.md` — auto-generated. Run
-  `go run ./tools/gen-schema-doc` (no `-check`) to overwrite,
-  then `go run ./tools/gen-schema-doc -check` to confirm. The
-  CI gate already verifies this file matches the generator
-  output.
-- `templates/*.yml` doc-style header comments — most templates
-  already updated as their slice landed, but a few still
-  reference `from_pagination` / `send_as` / `equal:` in the
-  prose preamble at the top of the file. Sweep for stale
-  references in the comments.
+Nothing — there is no current slice in flight.
+
+If the operator asks for slice 9, the worklist would touch:
+
+- `client/state.go` — collapse `scope.cursor` into `scope.state`
+  (or rename `cursor` → `state` end-to-end).
+- `client/snapshot.go` — drop `Snapshot.Cursor`; persist via
+  `Snapshot.State` only.
+- `schema/validate.go` — fold the cursor-namespace inference
+  into the state-namespace catalogue; reject `cursor.<...>` refs
+  at parse time with a hint pointing at `state.<...>`.
+- `client/{pagination,progress,oauth2,requestcache,runner}.go`
+  — every `s.cursor[...]` read / write flips to `s.state[...]`.
+- `templates/*.yml` — every `{ref: cursor.<name>}` rewrites to
+  `{ref: state.<name>}`.
+- `docs/*.md`, `README.md`, `schema-reference.md` — namespace
+  tables and examples redo themselves (smaller sweep than
+  slice 8 because everything just collapses to `state.<name>`).
+- `schema/testdata/*.yml`, `cmd/skopos/testdata/**` — regen
+  goldens.
 
 ### Acceptance criteria
 
-1. Every doc file loads cleanly (no dead links, no orphaned
-   section headers).
-2. `go run ./tools/gen-schema-doc -check` is green
-   (`docs/schema-reference.md` matches the generator output).
-3. `grep -rn 'body\.<path>\|body\.\$\|from_pagination\|from_progress\|send_as\|equal:\|cursor\.__' docs/ README.md`
-   returns nothing — every legacy term is gone from the
-   author-facing docs. (Templates / fixtures / tests are
-   already clean from prior slices.)
-4. At least one full YAML doc example per major namespace
-   (pagination, progress, auth, extract, predicate) is
-   copy-pasteable into a template and round-trips through
-   `skopos validate -i <file>`. Pick one example per section
-   and confirm.
-5. `go test ./...` green; `go vet ./...` clean;
+For a future slice 9, mirror the slice-3..7 shape:
+
+1. Parse-time hints reject `cursor.<...>` refs with the new
+   `state.<...>` form named in the hint.
+2. Every template, fixture, and golden round-trips under the
+   new grammar.
+3. `go test ./...`, `go vet ./...`,
+   `go run ./tools/gen-schema-doc -check`, and
    `go test -tags integration ./cmd/skopos/...` green.
-6. `ir_version` stays `"1"`.
+4. End-to-end smoke against the testserver confirms every
+   strategy still drains correctly (the pagination + progress
+   advance logic is the load-bearing part).
 
 ### Out of scope for this slice
 
-- Do not touch runtime / schema code. Slice 8 is docs-only —
-  if a doc example surfaces a real bug, log it and address it
-  in a follow-on commit, not under the slice-8 label.
-- Do not start the slice-9 state/cursor merge — it is
-  explicitly deferred per `SCHEMA_DESIGN.md` §2 / §3.
-- Do not rewrite test helpers or fixtures to "improve"
-  examples — restrict edits to the docs themselves and the
-  regenerated `schema-reference.md`.
-
-If any of those become unavoidable, **stop and ask**.
+- **Slice 9 itself**, unless the operator explicitly asks for
+  it. If the request comes in, **stop and confirm** before
+  touching the persistence layer — slice 9 is the biggest
+  remaining change in the redesign and the plan deliberately
+  paused after slice 8.
+- Cosmetic rename of `PredicateEq` Go type (recorded in
+  `SCHEMA_DESIGN.md` §3 as "can land any time"). Trivial; can
+  pick up alongside slice 9 or as its own micro-PR.
+- Collapsing `event_time: {path: <p>}` to `event_time: <Path>`
+  (also in §3). Trivial ergonomics.
+- Wildcard / list-iteration paths
+  (`response.body.events[*].id`) — larger Value-grammar
+  change, not part of the redesign loop.
 
 ### Notes / open questions for this agent
 
-- **Slice 7 grounding (what landed in the previous commit).**
-  - `client/oauth2.go::oauth2ExpiryKey` and
-    `client/requestcache.go::stepCacheExpiryKey` both return
-    `<store_in> + "_expires_at"` (no `__oauth2_` / `__step_`
-    prefix). Read / write through `s.state`, not `s.cursor`.
-  - `schema/validate.go::preregisterStateAndCursor` now
-    auto-registers both `<store_in>` and
-    `<store_in>_expires_at` as runtime / string state fields
-    for every `auth.oauth2.<grant>.cache` and every
-    `requests[].cache` block.
-  - `checkTokenCache` + the request-cache loop also reject an
-    author-declared `state.fields.<store_in>_expires_at` when
-    a cache block claims the slot — the diagnostic mentions
-    "paired expiry slot" so slice-8 docs that describe the
-    cache block can reference that exact phrase.
-  - `Snapshot.Cursor` is author-facing only. The catalogue in
-    `client/state.go` lost the OAuth2 expiry row; ensure any
-    docs/runtime.md table referencing the cursor catalogue
-    drops that row.
-  - Test pattern: `TestSliceSevenExpirySlotsMoved` (mirrors
-    the slice 3-6 shape) covers positive auto-registration,
-    collision rejection (both flavours), and a negative ref
-    to `cursor.__oauth2_token_expires_at`. Re-use the YAML
-    fixtures from this test for any slice-8 doc example that
-    illustrates the new cache block.
-- **`tools/gen-schema-doc` invocation.** The CI gate runs it
-  with `-check`. To regenerate locally, run without `-check`:
-  ```sh
-  go run ./tools/gen-schema-doc
-  go run ./tools/gen-schema-doc -check  # should pass cleanly now
-  ```
-  Commit the regenerated `docs/schema-reference.md` alongside
-  the doc rewrites.
-- **Codec migration hints.** Every slice from 3 onwards added
-  a parse-time hint pointing migrators at the new shape. The
-  hint constants live next to the unmarshaler that emits them
-  (e.g. `schema/predicate.go::predicateEqEqualRenamedHint`).
-  If a doc lists migration breadcrumbs, those hints are the
-  authoritative wording.
+- **Loop is at a clean checkpoint.** Slices 1–8 landed in a
+  single feature branch (`schema_rewrite`) with every gate
+  green at every step. `go test ./...`, `go vet ./...`,
+  `go run ./tools/gen-schema-doc -check`, and
+  `go test -tags integration ./cmd/skopos/...` are all green
+  on the slice-8 tip. The author-facing surface (templates,
+  docs, fixtures, goldens) is internally consistent.
+- **Slice 8 grounding (what just landed).**
+  - `docs/schema.md` namespace table now lists
+    `response.body.<path>`, `response.header.<name>`,
+    `steps.<id>.body.<path>`, `steps.<id>.header.<name>`
+    explicitly. The legacy "namespace-shadow warning" section
+    is deleted (every path is namespace-rooted now).
+  - `ExtractVar` table in `docs/schema.md` shows the single
+    `from:` field (no `path:` / `source:` / `header:`).
+  - The cursor-namespace table in `docs/schema.md` lists only
+    the names a given strategy actually populates (e.g.
+    `cursor.offset_end` only when `batch_size` is set;
+    `cursor.last_timestamp` for `async_job` only with the
+    matching `cursor_update.kind`).
+  - `docs/api-methods.md` §2.13 was rewritten from "send_as
+    implicit auto-injection" into a table that names each
+    strategy's `cursor.<name>` field and how to wire it
+    explicitly. Future doc edits that describe pagination
+    should reference this table.
+  - `docs/runtime.md` §3 lifetime table now shows
+    `state` / `cursor` / `extract` / `steps` / `item` /
+    `response` (the `response` namespace is active only inside
+    `complete_when` predicates).
+  - `README.md` quickstart trace example uses
+    `<ref cursor.last_timestamp>` (post-slice-4 redact
+    output), not the old `<from_progress:...>` placeholder.
+- **`docs/schema-reference.md` is generator-driven.** The
+  slice-7 commit already covered the generator output for the
+  current Go type shapes, so slice 8 didn't need to regenerate
+  it — `go run ./tools/gen-schema-doc -check` was green on
+  entry and stays green on exit. If a future slice touches
+  exported types in `schema/`, regenerate via
+  `go run ./tools/gen-schema-doc` (no `-check`).
 - **Pre-existing `TestScripts/post_json_body` flake** still
-  reproduces (~2/5 runs). Confirmed unchanged by slices 6 and
-  7. Continue to leave it for a future slice.
+  reproduces (~2/5 runs). Confirmed unchanged by slices 6–8.
+  Leave it for a future slice.
+- **If the operator does ask for slice 9**, the friend's
+  advice (`SCHEMA_DESIGN.md` §3) called this "option 1": kill
+  the cursor namespace as an author-facing concept; every
+  pagination / progress / async_job field auto-registers a
+  `mutability: runtime` state field; `Snapshot.Cursor` is
+  deleted; `Store.Save` / `Store.Load` round-trip
+  `Snapshot.State` only. XL effort; the plan deliberately
+  defers it to a separate cycle. **Stop and confirm scope**
+  before starting.
 
 ### When you finish
 
-1. Update `SCHEMA_DESIGN.md` §5 with a "Slice 8 complete" row.
-2. Rewrite this "Current task" section for slice 9 using the
-   template at the bottom of this file — but note that slice 9
-   is marked **deferred** in `SCHEMA_DESIGN.md` §2 / §3, so the
-   "Current task" entry should reflect that the redesign loop
-   is paused after slice 8 and a fresh planning round is
-   needed before slice 9 starts. If the human wants slice 9
-   picked up immediately, that's an "ask first" moment.
-3. Commit. Don't push.
+There is no work in flight. If the operator picks up slice 9,
+follow the standard rewrite-this-section convention when that
+slice lands.
 
 ---
 

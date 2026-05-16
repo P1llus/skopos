@@ -224,14 +224,14 @@ auth:
       - when:
           eq:
             path: state.auth_mode
-            equal: bearer
+            value: bearer
         auth:
           bearer:
             token: {ref: state.api_token}
       - when:
           eq:
             path: state.auth_mode
-            equal: basic
+            value: basic
         auth:
           basic:
             username: {ref: state.username}
@@ -254,7 +254,7 @@ main step reads the resulting `Set-Cookie` and rides it as a request header.
 
 The simple two-step shape is supported — express as a multi-step
 `requests:` chain. The login step extracts the cookie via
-`{source: header, header: Set-Cookie}`; the main step rides it as a
+`from: response.header.Set-Cookie`; the main step rides it as a
 `request.headers:` entry via `{ref: extract.<name>}`.
 
 ```yaml
@@ -268,8 +268,7 @@ requests:
         password: {ref: state.password}
     extract:
       - name: session_cookie
-        source: header
-        header: Set-Cookie
+        from: response.header.Set-Cookie
 
   - id: data
     method: GET
@@ -335,7 +334,7 @@ pagination:
     batch_size: {ref: state.page_size}   # optional; short page also terminates
 ```
 
-The page number is read by the request via `{from_pagination: page}` —
+The page number is read by the request via `{ref: cursor.page}` —
 placement (query vs body) follows where the author writes that Value.
 
 **Variants observed in the wild:** `body.has_more` boolean,
@@ -361,9 +360,9 @@ pagination:
     batch_size: {ref: state.page_size}
 ```
 
-Place the offset in the request via `{from_pagination: offset}` (query,
+Place the offset in the request via `{ref: cursor.offset}` (query,
 header, or body slot). Numeric coercion to string for a query slot uses
-`{format: string, value: {from_pagination: offset}}`.
+`{format: string, value: {ref: cursor.offset}}`.
 
 **Variants:** OData `$skip`/`$top`, body-slot offsets (`start`,
 `search_from`), ID-based "start-after" offsets (express by binding the
@@ -372,26 +371,36 @@ next offset to a state extract via `target: cursor`).
 ### 2.4 Cursor token (`pagination.cursor_token`)
 
 **What it does:** Server returns an opaque token in the response body; the
-runner sends it back on the next request. The cursor field is
-`cursor.token`. Default completion fires when `{ref: <token_at>}`
-resolves to zero.
+runner captures it into `cursor.token`, and the request reads it back on
+the next iteration via an explicit `{ref: cursor.token, default: ""}`.
+Default completion fires when `{ref: response.body.<token_at>}` resolves
+to zero.
 
 **IR shape:**
 
 ```yaml
+requests:
+  - method: GET
+    path: /v1/events
+    query:
+      cursor: {ref: cursor.token, default: ""}   # explicit; default keeps
+                                                 # the bootstrap iteration's
+                                                 # wire shape (sends "cursor=").
+
 pagination:
   cursor_token:
-    token_at: next_cursor                   # body Path to the next-page token
-    send_as: query.cursor                   # query.<param> or header.<name>
+    token_at: response.body.next_cursor          # namespace-rooted Path to the next-page token
 ```
 
-`send_as` auto-injects the token at the producer step unless the author
-declares the slot explicitly with `{from_pagination: token}`. The explicit
-form wins when both are present; the slot must match the `send_as` kind.
+The token is no longer auto-injected — the request slot is declared
+explicitly. Use `default: ""` to keep the bootstrap iteration sending an
+empty value (rather than omitting the parameter entirely); omit `default`
+to skip the slot until the cursor populates.
 
 **Header-based tokens:** when the next-page token rides on a response header
-rather than the body, capture it via `extract: [{source: header, header: <name>, target: cursor}]`
-on the step and feed it forward via `{ref: cursor.<name>}` on the next
+rather than the body, capture it via
+`extract: [{from: response.header.<name>, name: <var>, target: cursor}]`
+on the step and feed it forward via `{ref: cursor.<var>}` on the next
 iteration.
 
 **Search-after subtype:** APIs that advance pages by passing the last seen
@@ -407,11 +416,11 @@ names or formats override via `pattern:` (a regex whose first capture group
 is the next URL).
 
 The runner parses the header into `cursor.next_link` but does **not**
-substitute it into the request — `link_header` has no `send_as` slot, so
-wiring the URL back is the template's job. Read it in the request's `url`
-slot via `{ref: cursor.next_link, default: <bootstrap-url>}`: the first
-iteration falls through to the bootstrap URL, every later iteration follows
-the server's link. The drain ends when a response carries no `rel="next"`
+substitute it into the request — wiring the URL back is the template's
+job. Read it in the request's `url` slot via
+`{ref: cursor.next_link, default: <bootstrap-url>}`: the first iteration
+falls through to the bootstrap URL, every later iteration follows the
+server's link. The drain ends when a response carries no `rel="next"`
 entry.
 
 **IR shape:**
@@ -464,24 +473,31 @@ target round-trip it. The runner does not silently repair the encoding.
 
 ### 2.7 Scroll / session ID (`pagination.scroll_id`)
 
-**What it does:** First iteration leaves the role unset (server opens a
-fresh session); later iterations replay the id captured at `scroll_id_at`.
-When the id resolves to a zero `Value`, the drain terminates and the
-cursor slot is cleared so the next drain opens a fresh session. Optional
-`complete_when` predicate forces termination on a server signal — its
-predicate may reference `body.<path>` against the producer body.
+**What it does:** First iteration leaves the slot unset (server opens a
+fresh session); later iterations replay the id captured at `scroll_id_at`
+into `cursor.scroll_id`, read back through an explicit
+`{ref: cursor.scroll_id}` on the request. When the id resolves to a zero
+`Value`, the drain terminates and the cursor slot is cleared so the next
+drain opens a fresh session. Optional `complete_when` predicate forces
+termination on a server signal — its predicate may reference
+`response.body.<path>` against the producer body.
 
 **IR shape:**
 
 ```yaml
+requests:
+  - method: GET
+    path: /v1/scroll
+    query:
+      scroll: {ref: cursor.scroll_id}      # no default — bootstrap omits the slot
+
 pagination:
   scroll_id:
-    scroll_id_at: request_metadata.scroll
-    send_as: query.scroll
-    complete_when:                    # optional
+    scroll_id_at: response.body.request_metadata.scroll
+    complete_when:                         # optional
       eq:
-        path: body.request_metadata.complete
-        equal: "true"
+        path: response.body.request_metadata.complete
+        value: "true"
 ```
 
 ### 2.8 GraphQL relay cursor (`pagination.graphql_relay`)
@@ -490,15 +506,15 @@ pagination:
 `pageInfo.hasNextPage`. The cursor variable name carries the cursor into
 GraphQL `variables:` on the next iteration; the runner reads from
 `cursor.<cursor_var>` and writes the new end cursor back. Read it inside
-the request via `{from_pagination: relay_cursor}`.
+the request via `{ref: cursor.<cursor_var>}` (e.g. `{ref: cursor.after}`).
 
 **IR shape:**
 
 ```yaml
 pagination:
   graphql_relay:
-    has_next_page_at: data.issues.pageInfo.hasNextPage
-    end_cursor_at: data.issues.pageInfo.endCursor
+    has_next_page_at: response.body.data.issues.pageInfo.hasNextPage
+    end_cursor_at: response.body.data.issues.pageInfo.endCursor
     cursor_var: after
 ```
 
@@ -547,19 +563,29 @@ per-step `fan_out: {over, as, merge: flatten}` — `fan_out` is
 per evaluation, LIFO/FIFO queues, retry budgets) is **out of scope**. No
 escape hatch.
 
-### 2.13 `send_as` implicit auto-injection
+### 2.13 Wiring pagination signals into the request
 
-**What it does:** For `cursor_token` and `scroll_id`, the slot named by
-`send_as` (`query.<param>` or `header.<name>`) is auto-injected into the
-producer step's outgoing request whenever the slot is not already declared
-explicitly. Explicit `{from_pagination: ...}` wins when both are present;
-the explicit slot's location must match the `send_as` kind.
+**What it does:** Every pagination strategy surfaces its active value
+through a plain `cursor.<name>` field; the author wires it into the
+request explicitly. There is no auto-injection — the slot the value
+rides in (query, header, body) is always wherever the author writes
+the ref.
 
-`page_number` and `offset` rely on the author placing
-`{from_pagination: page}` / `{from_pagination: offset}` explicitly —
-their `page_param` / `offset_param` names the param key, not its
-placement. `link_header` and `next_url_in_body` have no `send_as` slot
-(see §2.5, §2.6).
+| Strategy             | Cursor field            | How to wire it back                                                |
+|----------------------|-------------------------|--------------------------------------------------------------------|
+| `cursor_token`       | `cursor.token`          | `{ref: cursor.token, default: ""}` in `query` / `headers` / body.  |
+| `page_number`        | `cursor.page`           | `{ref: cursor.page}` (typically as a `{format: string, ...}`).     |
+| `offset`             | `cursor.offset` (+ `cursor.offset_end` when `batch_size` is set) | `{ref: cursor.offset}` / `{ref: cursor.offset_end}`. |
+| `scroll_id`          | `cursor.scroll_id`      | `{ref: cursor.scroll_id}` (no default — bootstrap omits the slot). |
+| `graphql_relay`      | `cursor.<cursor_var>`   | `{ref: cursor.<cursor_var>}` inside the GraphQL `variables` object. |
+| `link_header`        | `cursor.next_link`      | `{ref: cursor.next_link, default: <bootstrap-url>}` in the `url` slot. |
+| `next_url_in_body`   | `cursor.next_url`       | `{ref: cursor.next_url, default: <bootstrap-url>}` in the `url` slot. |
+
+`default: ""` on `cursor.token` keeps the bootstrap iteration sending
+the slot with an empty value (preserves the historical
+`?cursor=` wire shape); omit `default` to skip the slot until the
+cursor populates. `scroll_id` typically omits `default` so the server
+opens a fresh session on the bootstrap iteration.
 
 ---
 
@@ -579,8 +605,8 @@ requests:
     method: GET
     path: /v1/events
     query:
-      since: {from_progress: window_start}
-      page: {format: string, value: {from_pagination: page}}
+      since: {ref: cursor.window_start}
+      page: {format: string, value: {ref: cursor.page}}
       type: {ref: state.event_type}
 ```
 
@@ -609,8 +635,8 @@ requests:
       json:
         time_range:
           object:
-            start: {from_progress: window_start}
-            end:   {from_progress: window_end}
+            start: {ref: cursor.window_start}
+            end:   {ref: cursor.window_end}
         limit: 100
 ```
 
@@ -638,7 +664,7 @@ requests:
           }
         variables:
           object:
-            after: {from_pagination: relay_cursor}
+            after: {ref: cursor.after}
             first: {ref: state.page_size}
 ```
 
@@ -658,7 +684,7 @@ requests:
     path: /api/events
     body:
       form:
-        since: {from_progress: latest_timestamp}
+        since: {ref: cursor.last_timestamp}
         limit: {format: string, value: {ref: state.page_size}}
         format: json
 ```
@@ -699,7 +725,7 @@ requests:
     if:
       eq:
         path: state.etag_check
-        equal: true
+        value: true
 ```
 
 When a step is skipped, `{ref: steps.<id>.body.<...>}` resolves to a zero
@@ -749,8 +775,7 @@ requests:
         pass: {ref: state.password}
     extract:
       - name: session_cookie
-        source: header
-        header: Set-Cookie
+        from: response.header.Set-Cookie
 
   - id: main
     method: GET
@@ -833,7 +858,7 @@ requests:
     path: /incidents
     extract:
       - name: ids
-        path: items   # list of objects with .id
+        from: response.body.items   # list of objects with .id
 
   - id: detail
     method: GET
@@ -889,13 +914,14 @@ Path (`data`, `value`, `result`, `items`, `resources`, `hits.hits`,
 ```yaml
 response:
   decode: json
-  events_at: data.items
+  events_at: response.body.data.items
 ```
 
-`events_at` is a body-relative `Path` — segments are NOT resolved against
-the namespace table. A first segment that happens to match a namespace
-root (`state`, `cursor`, etc.) emits a `warning`-severity diagnostic; the
-Path still resolves against the body.
+`events_at` is a [Path](schema.md#paths) rooted at
+`response.body.<path>` (or `steps.<id>.body.<path>` for a labelled
+prior step). The empty Path (`events_at: ""`) means "body root" — the
+whole decoded body IS the events list. The validator rejects bare
+dotted strings (`data.items`) and unknown roots.
 
 ### 4.4 NDJSON
 
@@ -929,7 +955,7 @@ drain order, conservative under early exit.
 ```yaml
 response:
   decode: json
-  events_at: results
+  events_at: response.body.results
   placeholder_event:
     object:
       message: "retry"
@@ -984,15 +1010,15 @@ progress:
     format: rfc3339
 ```
 
-Window bounds land on request slots via `{from_progress: window_start}`
-and `{from_progress: window_end}`. Combines orthogonally with
+Window bounds land on request slots via `{ref: cursor.window_start}`
+and `{ref: cursor.window_end}`. Combines orthogonally with
 `pagination.offset` (offset paginates *within* the window).
 
 ### 5.3 Latest-event timestamp (`progress.latest_event_timestamp`)
 
 **What it does:** After each drain, advance `cursor.last_timestamp` to the
 maximum event-time across the drain's emitted events. The next drain
-reads `since` from `{from_progress: latest_timestamp}` with first-run
+reads `since` from `{ref: cursor.last_timestamp}` with first-run
 fallback to `initial.lookback`. Optional per-iteration `lookback` lets
 the window overlap on every advance, not just the first.
 
@@ -1029,9 +1055,10 @@ progress:
 dispatches on `cursor.phase` (default `submit`): one HTTP step per
 evaluation. The `async_job:` block assigns step ids to roles (via
 `step:`), declares per-role `extract:` maps (each entry is
-`<name>: {path: <body-Path>}`) that flow into the cursor, and declares
-`poll.complete_when` (a `Predicate`, with `body.<path>` valid inside it)
-for the loop-exit signal. Inner re-poll (stay-in-poll while the
+`<name>: {from: response.body.<path>}` — or `steps.<id>.body.<path>` for
+a labelled prior step) that flow into the cursor, and declares
+`poll.complete_when` (a `Predicate`, with `response.body.<path>` valid
+inside it) for the loop-exit signal. Inner re-poll (stay-in-poll while the
 completion predicate is false) is handled by the runner on slow jobs.
 `on_complete.cursor_update.kind` chooses how the cursor advances after
 the fetch: `stateless`, `use_now`, or `latest_event_timestamp`
@@ -1068,15 +1095,15 @@ progress:
     submit:
       step: submit
       extract:
-        export_id: {path: export_id}
+        export_id: {from: response.body.export_id}
     poll:
       step: poll
       complete_when:
         eq:
-          path: body.status
-          equal: complete
+          path: response.body.status
+          value: complete
       extract:
-        result_url: {path: result_url}
+        result_url: {from: response.body.result_url}
     fetch:
       step: fetch
     on_complete:
@@ -1119,7 +1146,7 @@ requests:
     path: /events
     extract:
       - name: high_water_id
-        path: meta.last_id
+        from: response.body.meta.last_id
         target: cursor       # writes to cursor.high_water_id
 ```
 
@@ -1132,8 +1159,8 @@ without emitting events".
 
 **Supported.** Express via:
 
-- `extract:` with `source: header, target: cursor` to capture the ETag
-  into the cursor namespace,
+- `extract:` with `from: response.header.<name>, target: cursor` to
+  capture the ETag into the cursor namespace,
 - `headers:` reading it back as `If-None-Match` via
   `{ref: cursor.<name>, default: <empty-string>}`,
 - `on_status: {304: skip}` so the 304 response yields the skip-block
@@ -1148,8 +1175,7 @@ requests:
       If-None-Match: {ref: cursor.etag, default: ""}
     extract:
       - name: etag
-        source: header
-        header: ETag
+        from: response.header.ETag
         target: cursor
     on_status:
       304: skip
