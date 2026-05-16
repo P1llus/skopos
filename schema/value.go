@@ -151,8 +151,13 @@ func sortedAllowedKeys(m map[string]struct{}) string {
 // predicateContainsSecret where relevant) so any state-ref reachable from
 // the new field still propagates the secret marker.
 type RefValue struct {
-	// Path is the namespace-rooted locator (state.<name>,
-	// cursor.<name>, extract.<name>, steps.<id>.body.<path>, etc.).
+	// Path is the namespace-rooted locator. Legal roots:
+	// state.<name>, cursor.<name>, extract.<name>,
+	// steps.<id>.body.<path>, steps.<id>.header.<name>,
+	// response.body.<path>, response.header.<name>, item.<path>.
+	// The response.<...> roots are contextual: valid only at the
+	// call sites listed in docs/schema.md ("response.* call-site
+	// table") — most commonly inside complete_when predicates.
 	Path Path `yaml:"ref" json:"ref"`
 	// Default, when set, is the fallback Value used when the reference
 	// resolves to nil at evaluation time.

@@ -180,10 +180,10 @@ type TokenCache struct {
 	// (auto-registered as a runtime string field; not declared in
 	// state.fields).
 	StoreIn string `yaml:"store_in" json:"store_in"`
-	// ExpiryField is a body-relative Path locating the response field
-	// that carries the token's lifetime. Typed as Path for consistency
-	// with every other body-relative locator in the IR; dotted-string
-	// YAML decodes cleanly.
+	// ExpiryField is a namespace-rooted Path locating the response field
+	// that carries the token's lifetime. Must be rooted at
+	// response.body.<path> (the token endpoint's own response) or
+	// steps.<id>.body.<path> (a labelled prior step).
 	ExpiryField Path `yaml:"expiry_field" json:"expiry_field"`
 	// ExpiryBuffer is a Go-style duration; the runtime refreshes the
 	// cached token once the remaining lifetime drops below this buffer.
@@ -219,8 +219,8 @@ type AuthDefault struct {
 // Request describes a single HTTP request in the chain.
 type Request struct {
 	// ID is the optional step label. When set it joins the
-	// steps.<id>.body namespace and can be named as an async_job role
-	// step.
+	// steps.<id>.body.<path> and steps.<id>.header.<name> namespaces and
+	// can be named as an async_job role step.
 	ID string `yaml:"id,omitempty" json:"id,omitempty"`
 	// Method is the HTTP verb (GET/POST/PUT/PATCH/DELETE/HEAD).
 	Method string `yaml:"method" json:"method"`
@@ -267,10 +267,12 @@ type RequestCache struct {
 	// StoreIn names the state slot (auto-registered as a runtime string
 	// field). Authors must NOT also declare this under state.fields.
 	StoreIn string `yaml:"store_in" json:"store_in"`
-	// ExpiryField is the body-relative path to the response field
-	// carrying the value's lifetime (a Go duration string when
+	// ExpiryField is a namespace-rooted Path locating the response field
+	// that carries the value's lifetime (a Go duration string when
 	// ExpiryFormat is "duration", a numeric Unix-second timestamp when
-	// "unix_seconds", etc.).
+	// "unix_seconds", etc.). Must be rooted at response.body.<path> (the
+	// cached step's own response) or steps.<id>.body.<path> (a labelled
+	// prior step).
 	ExpiryField Path `yaml:"expiry_field" json:"expiry_field"`
 	// ExpiryBuffer is a Go-style duration; the runtime re-runs the step
 	// once the remaining lifetime drops below this buffer.
@@ -338,7 +340,9 @@ type Body struct {
 type Response struct {
 	// Decode is the body decoder verb: "json" or "ndjson".
 	Decode string `yaml:"decode" json:"decode"`
-	// EventsAt is a body Path locating the events list. The zero Path
+	// EventsAt is a namespace-rooted Path locating the events list,
+	// rooted at response.body.<path> (the active producer step) or
+	// steps.<id>.body.<path> (a labelled prior step). The zero Path
 	// (empty / unset) means "body root": the entire decoded body IS the
 	// events list, with no nesting to traverse.
 	EventsAt Path `yaml:"events_at" json:"events_at"`
@@ -373,7 +377,9 @@ type Pagination struct {
 
 // CursorTokenPagination advances via an opaque cursor token in the response body.
 type CursorTokenPagination struct {
-	// TokenAt is the body path of the next-page cursor.
+	// TokenAt is a namespace-rooted Path locating the next-page cursor.
+	// Must be rooted at response.body.<path> (the producer step) or
+	// steps.<id>.body.<path> (a labelled prior step).
 	TokenAt Path `yaml:"token_at" json:"token_at"`
 }
 
@@ -381,8 +387,10 @@ type CursorTokenPagination struct {
 type PageNumberPagination struct {
 	// PageParam is the URL query parameter that carries the page number.
 	PageParam string `yaml:"page_param" json:"page_param"`
-	// HasMoreAt is the optional body path to a boolean has-more flag.
-	// When unset, pagination terminates when an empty page arrives.
+	// HasMoreAt is the optional namespace-rooted Path to a boolean
+	// has-more flag, rooted at response.body.<path> or
+	// steps.<id>.body.<path>. When unset, pagination terminates when an
+	// empty page arrives.
 	HasMoreAt Path `yaml:"has_more_at,omitempty" json:"has_more_at,omitempty"`
 	// BatchSize is the optional per-page size value.
 	BatchSize *Value `yaml:"batch_size,omitempty" json:"batch_size,omitempty"`
@@ -406,13 +414,17 @@ type LinkHeaderPagination struct {
 
 // NextURLInBodyPagination reads a fully-formed next-page URL from the body.
 type NextURLInBodyPagination struct {
-	// NextURLAt is the body path to the next-page URL.
+	// NextURLAt is a namespace-rooted Path to the next-page URL.
+	// Must be rooted at response.body.<path> (the producer step) or
+	// steps.<id>.body.<path> (a labelled prior step).
 	NextURLAt Path `yaml:"next_url_at" json:"next_url_at"`
 }
 
 // ScrollIDPagination maintains a server-side scroll session.
 type ScrollIDPagination struct {
-	// ScrollIDAt is the body path of the server-supplied scroll id.
+	// ScrollIDAt is a namespace-rooted Path locating the server-supplied
+	// scroll id. Must be rooted at response.body.<path> (the producer
+	// step) or steps.<id>.body.<path> (a labelled prior step).
 	ScrollIDAt Path `yaml:"scroll_id_at" json:"scroll_id_at"`
 	// CompleteWhen is an optional predicate evaluated against the
 	// producer body that terminates the scroll early.
@@ -421,9 +433,12 @@ type ScrollIDPagination struct {
 
 // GraphQLRelayPagination follows GraphQL Relay-style cursor pagination.
 type GraphQLRelayPagination struct {
-	// HasNextPageAt is the body path to the boolean has-next-page flag.
+	// HasNextPageAt is a namespace-rooted Path to the boolean
+	// has-next-page flag, rooted at response.body.<path> or
+	// steps.<id>.body.<path>.
 	HasNextPageAt Path `yaml:"has_next_page_at" json:"has_next_page_at"`
-	// EndCursorAt is the body path to the endCursor string.
+	// EndCursorAt is a namespace-rooted Path to the endCursor string,
+	// rooted at response.body.<path> or steps.<id>.body.<path>.
 	EndCursorAt Path `yaml:"end_cursor_at" json:"end_cursor_at"`
 	// CursorVar is the author-chosen GraphQL variable name that carries
 	// endCursor on the next request (typically "after").
