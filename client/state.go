@@ -5,6 +5,7 @@ package client
 import (
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"time"
 
@@ -141,14 +142,14 @@ func (m *MemoryStore) Save(s Snapshot) error { m.snap = s; return nil }
 // producer step's request bodies / queries are evaluated; progress.seed
 // runs once per drain so the window-start stays stable across pages.
 type scope struct {
-	doc             *schema.Doc
-	state           map[string]any
-	cursor          map[string]any
-	extract         map[string]any
-	steps           map[string]any         // step id → decoded body
-	item            any                    // per-item binding when inside fan_out
-	body            any                    // active response context body (unused outside the predicate);
-	                                       // resolves response.body.<path> via lookupBodyPath
+	doc     *schema.Doc
+	state   map[string]any
+	cursor  map[string]any
+	extract map[string]any
+	steps   map[string]any // step id → decoded body
+	item    any            // per-item binding when inside fan_out
+	body    any            // active response context body (unused outside the predicate);
+	// resolves response.body.<path> via lookupBodyPath
 	responseHeaders http.Header            // active response context headers (mirrors body)
 	stepHeaders     map[string]http.Header // step id → response headers
 
@@ -189,15 +190,11 @@ func newScope(doc *schema.Doc, snap Snapshot, now func() time.Time) (*scope, err
 			}
 		}
 	}
-	for k, v := range snap.State {
-		s.state[k] = v
-	}
+	maps.Copy(s.state, snap.State)
 
 	// Seed cursor from snapshot. Cursor schema is inferred from strategies;
 	// unset fields read as the zero value at evaluation time.
-	for k, v := range snap.Cursor {
-		s.cursor[k] = v
-	}
+	maps.Copy(s.cursor, snap.Cursor)
 
 	return s, nil
 }
@@ -220,9 +217,7 @@ func (s *scope) snapshot() Snapshot {
 			}
 		}
 	}
-	for k, v := range s.cursor {
-		out.Cursor[k] = v
-	}
+	maps.Copy(out.Cursor, s.cursor)
 	return out
 }
 
