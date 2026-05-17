@@ -161,7 +161,7 @@ If you either want to quickly swap between different configurations or do not wa
 skopos init -o config.yml
 ```
 
-```json
+```yaml
 # skopos run configuration
 # All fields are optional. CLI flags take precedence over values set here.
 # Omit a field to use the built-in default.
