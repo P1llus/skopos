@@ -670,6 +670,9 @@ func (v *validator) checkRequest(path string, req Request, namespace *ns) {
 	if req.FanOut != nil {
 		v.checkFanOut(path+".fan_out", *req.FanOut, namespace)
 	}
+	if req.Cache != nil && req.FanOut != nil {
+		v.errorf(path, "requests[].cache and fan_out are mutually exclusive: cache stores one token-shaped value, fan_out runs the step once per item — combining them would race N writes into a single state slot")
+	}
 	if req.If != nil {
 		v.checkPredicate(path+".if", *req.If, namespace, false)
 	}

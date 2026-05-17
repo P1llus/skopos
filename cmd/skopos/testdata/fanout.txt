@@ -1,0 +1,36 @@
+# fanout — per-item fan-out across a list of incidents
+# Boots the fanout scenario, runs one drain. The list step returns three
+# incidents; the detail step fans out over them with merge: flatten so the
+# producer body is the concatenation of three per-incident JSON lists.
+# Events come out in declared incident order (alpha, beta, gamma), and
+# the trace records every per-item exchange (list + 3 details = 4 lines).
+# The spec is loaded live from the embedded template.
+
+exec skopos template show -o spec.yml fanout
+replace spec.yml http://localhost:9999 $URL
+exec skopos run -i spec.yml --once --trace trace.jsonl --out events.jsonl
+normalize trace.jsonl
+cmp trace.jsonl want_trace.jsonl
+cmp events.jsonl want_events.jsonl
+
+-- want_trace.jsonl --
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 143 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"list","url":"$URL_HOST/fanout/incidents"}
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 452 bytes, array-like","started_at":"<scrubbed>","status":200,"step_id":"detail","url":"$URL_HOST/fanout/incidents/inc-alpha/events"}
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 447 bytes, array-like","started_at":"<scrubbed>","status":200,"step_id":"detail","url":"$URL_HOST/fanout/incidents/inc-beta/events"}
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 452 bytes, array-like","started_at":"<scrubbed>","status":200,"step_id":"detail","url":"$URL_HOST/fanout/incidents/inc-gamma/events"}
+-- want_events.jsonl --
+{"id":"evt-000001","incident":"inc-alpha","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
+{"id":"evt-000002","incident":"inc-alpha","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}
+{"id":"evt-000003","incident":"inc-alpha","seq_num":3,"timestamp":"2026-01-01T00:00:02Z"}
+{"id":"evt-000004","incident":"inc-alpha","seq_num":4,"timestamp":"2026-01-01T00:00:03Z"}
+{"id":"evt-000005","incident":"inc-alpha","seq_num":5,"timestamp":"2026-01-01T00:00:04Z"}
+{"id":"evt-000001","incident":"inc-beta","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
+{"id":"evt-000002","incident":"inc-beta","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}
+{"id":"evt-000003","incident":"inc-beta","seq_num":3,"timestamp":"2026-01-01T00:00:02Z"}
+{"id":"evt-000004","incident":"inc-beta","seq_num":4,"timestamp":"2026-01-01T00:00:03Z"}
+{"id":"evt-000005","incident":"inc-beta","seq_num":5,"timestamp":"2026-01-01T00:00:04Z"}
+{"id":"evt-000001","incident":"inc-gamma","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
+{"id":"evt-000002","incident":"inc-gamma","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}
+{"id":"evt-000003","incident":"inc-gamma","seq_num":3,"timestamp":"2026-01-01T00:00:02Z"}
+{"id":"evt-000004","incident":"inc-gamma","seq_num":4,"timestamp":"2026-01-01T00:00:03Z"}
+{"id":"evt-000005","incident":"inc-gamma","seq_num":5,"timestamp":"2026-01-01T00:00:04Z"}

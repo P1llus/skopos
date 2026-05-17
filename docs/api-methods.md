@@ -557,11 +557,10 @@ blob in turn. When the export is asynchronous (submit → poll → fetch), the
 final fetch role is the blob download.
 
 The list → per-blob shape is expressible via `requests:` + per-step
-`fan_out: {over, as, merge: flatten}` — `fan_out` is **deferred** (the
-validator accepts it, the runner does not yet execute it). The
-async-export shape is supported via `progress.async_job`. MIME-decoding
-the downloaded blobs (gzip / CSV / NDJSON chains) is **out of scope** and
-is expected to live in the ingest pipeline.
+`fan_out: {over, as, merge: flatten}` (§3.11). The async-export shape is
+supported via `progress.async_job`. MIME-decoding the downloaded blobs
+(gzip / CSV / NDJSON chains) is **out of scope** and is expected to live
+in the ingest pipeline.
 
 ### 2.12 Worklist / multi-phase
 
@@ -569,10 +568,9 @@ is expected to live in the ingest pipeline.
 cross-iteration worklist draining.
 
 Same-iteration `list → detail` is expressible via `requests:` with a
-per-step `fan_out: {over, as, merge: flatten}` — `fan_out` is
-**deferred**. Cross-iteration worklist draining (seed worklist, drain one
-per evaluation, LIFO/FIFO queues, retry budgets) is **out of scope**. No
-escape hatch.
+per-step `fan_out: {over, as, merge: flatten}` (§3.11). Cross-iteration
+worklist draining (seed worklist, drain one per evaluation, LIFO/FIFO
+queues, retry budgets) is **out of scope**. No escape hatch.
 
 ### 2.13 Wiring pagination signals into the request
 
@@ -851,35 +849,50 @@ The next drain misses the cache and re-runs the login step.
 
 ### 3.11 Per-item fan-out
 
-**What it does:** A step iterates over a list `Value` (typically extracted
-from the previous step's response); the runner runs the step once per item
-with `item.<path>` bound. `merge: flatten` concatenates per-item response
-lists; `wrap` keeps them as a list-of-lists.
+**What it does:** A step iterates over a list `Value` (typically a prior
+step's body list); the runner runs the step once per item with the
+author-chosen `fan_out.as` name bound to the current value. `merge:
+flatten` concatenates per-item response bodies, which must each be JSON
+lists; `merge: wrap` returns the per-item bodies as elements of a list
+(use when each item's response is an object rather than a list). The
+merged body is what binds into `steps.<id>.body` and, when the fan-out
+step is the producer, what `events_at` walks at the end of the
+iteration.
 
-**Deferred.** `scope.item` is reserved in the state machine and `fan_out`
-is accepted by the validator; per-item dispatch is not yet executed by
-the runner.
+**`fan_out.as` chooses the binding name.** Refs inside the step use that
+name as the namespace root — `{ref: incident.id}` when `as: incident`,
+`{ref: blob.url}` when `as: blob`, and so on. The name must not collide
+with a reserved root (`state`, `cursor`, `extract`, `steps`, `item`,
+`body`, `response`) or with any declared state field, inferred cursor
+field, or earlier-step id.
 
-**IR shape (validator passes, runner does not yet execute):**
+**Error handling per item.** A non-success item runs through the same
+`on_status` / `error.mode` dispatch as a single-request step: `skip` /
+`empty_events` drop the item, `fail` aborts the drain, `invalidate_cache`
+clears the active auth + step caches and stops the fan-out early.
+
+**`requests[].cache` and `fan_out` are mutually exclusive.** Cache stores
+one token-shaped value, fan-out runs the step N times — combining them
+would race writes into one state slot. The validator rejects the
+combination.
+
+**IR shape:**
 
 ```yaml
 requests:
   - id: list
     method: GET
     path: /incidents
-    extract:
-      - name: ids
-        from: response.body.items   # list of objects with .id
 
   - id: detail
     method: GET
     path:
       concat:
         - /incidents/
-        - {ref: item.id}
+        - {ref: incident.id}
     fan_out:
-      over: {ref: extract.ids}
-      as: item
+      over: {ref: steps.list.body.incidents}
+      as: incident
       merge: flatten
 ```
 
@@ -1205,7 +1218,7 @@ queue draining.
 
 **Out of scope.** The two-phase shapes are covered: submit → poll →
 fetch via `progress.async_job` (§5.5); list → detail via `requests:` +
-`fan_out:` (§3.11, deferred). Beyond that, no escape hatch.
+`fan_out:` (§3.11). Beyond that, no escape hatch.
 
 ---
 
