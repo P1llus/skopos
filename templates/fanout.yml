@@ -1,0 +1,72 @@
+# fanout — per-item fan-out over a list.
+#
+# Demonstrates: requests[].fan_out with merge: flatten. The list step
+# returns incidents; the detail step runs once per incident with the
+# author-chosen `incident` binding (`{ref: incident.id}` resolves to the
+# current item). Per-item responses are JSON lists; merge: flatten
+# concatenates them so the producer iteration emits one event per
+# detail-row across every incident.
+#
+# Mapping to the runner:
+#   - {ref: incident.id} resolves against scope.item while the fan_out
+#     step iterates. The binding name comes from fan_out.as, so authors
+#     pick what reads well (incident, blob, asset, …) — not a fixed
+#     `item.` prefix.
+#   - The fan-out step is the implicit producer (last request). The
+#     merged body is the events stream; response.events_at is the body
+#     root.
+#   - fan_out and requests[].cache are mutually exclusive (the validator
+#     enforces this); per-item errors run through the same on_status /
+#     error.mode dispatcher as a single-request step.
+
+ir_version: "1"
+
+state:
+  fields:
+    url:
+      type: url
+      default: "http://localhost:9999"
+    api_key:
+      type: secret
+      default: "test-bearer-token-12345"
+
+defaults:
+  base_url: {ref: state.url}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  - id: list
+    method: GET
+    path: /fanout/incidents
+
+  - id: detail
+    method: GET
+    path:
+      concat:
+        - /fanout/incidents/
+        - {ref: incident.id}
+        - /events
+    fan_out:
+      over: {ref: steps.list.body.incidents}
+      as: incident
+      merge: flatten
+
+response:
+  decode: json
+  # merge: flatten produces a JSON list as the producer body; events_at
+  # is the empty path (body root) so each list element is one event.
+  events_at: ""
+
+pagination:
+  none: {}
+
+progress:
+  latest_event_timestamp:
+    event_time:
+      path: timestamp
+
+error:
+  mode: standard

@@ -467,6 +467,38 @@ func (r *Runner) runIteration(
 			continue
 		}
 
+		// fan_out lifts the step into a per-item loop. Each per-item
+		// exchange runs the same on_status / error.mode dispatch as a
+		// single-request step; the merged body becomes scope.steps[req.ID]
+		// and (when this step is the producer) feeds locateEvents at the
+		// end of the iteration. See runFanOut for the per-item rules.
+		if req.FanOut != nil {
+			fr, err := r.runFanOut(ctx, client, logger, s, req, errMode, iter, phase)
+			if err != nil {
+				return iterationResult{}, err
+			}
+			if fr.fatal {
+				out.fatal = true
+				return out, fmt.Errorf("client: drain aborted on error.mode=fail")
+			}
+			if !fr.advance {
+				out.advance = false
+				return out, nil
+			}
+			if req.ID != "" {
+				s.steps[req.ID] = fr.mergedBody
+				if fr.lastHeaders != nil {
+					s.stepHeaders[req.ID] = fr.lastHeaders
+				}
+			}
+			if req.ID == producerID || (implicitLast && i == lastIdx) {
+				out.producerBody = fr.mergedBody
+				out.producerHeaders = fr.lastHeaders
+				out.producerIteration = true
+			}
+			continue
+		}
+
 		// Attach a trace scratchpad only when the caller wired a Tracer.
 		// executeRequest checks for nil internally; passing nil keeps the
 		// untraced path allocation-identical to before.

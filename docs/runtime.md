@@ -76,7 +76,7 @@ The drain sequence:
 | `cursor`   | per-drain (persisted) | Author-facing only. Mutated by pagination/progress drivers + `extract.target=cursor`.                       |
 | `extract`  | per-iteration         | Reset at the top of every iteration.                                                                        |
 | `steps`    | per-iteration         | Step bodies do not survive into the next iteration.                                                         |
-| `item`     | per-fan-out-iteration | Reserved; unused until `fan_out` lands.                                                                     |
+| `<fan_out.as>` | per-fan-out-iteration | The author-chosen `fan_out.as` name is bound to the current item while a `fan_out` step is iterating; refs rooted at that name (e.g. `{ref: incident.id}` when `as: incident`) resolve against it. |
 | `response` | per-`complete_when`   | Active only during `complete_when` predicate evaluation (`pagination.scroll_id`, `async_job.poll`).         |
 
 A value that must survive into the next iteration belongs in `state`

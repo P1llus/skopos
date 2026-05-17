@@ -130,6 +130,7 @@ func TestHandler_AllScenarios(t *testing.T) {
 		{http.MethodPost, "/post_json_body/search", bearer, 0},
 		{http.MethodGet, "/scroll_id/scroll", bearer, 0},
 		{http.MethodPost, "/session_cookie/login", noAuth, 0},
+		{http.MethodGet, "/fanout/incidents", bearer, 0},
 	}
 
 	for _, c := range cases {

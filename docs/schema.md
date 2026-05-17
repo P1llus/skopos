@@ -333,7 +333,7 @@ Per-entry fields:
 | `headers`         | no                             | Map of name → [Value](#values).                                                                                                        |
 | `body`            | no                             | Discriminated union: `json:` (map of [Value](#values)), `form:` (same), or `raw:` ([Value](#values)). Exactly one.                     |
 | `extract`         | no                             | List of [ExtractVar](#extractvar) — capture fields out of the response.                                                                |
-| `fan_out`         | no                             | Per-item iteration (deferred — accepted by the validator, not yet runnable).                                                           |
+| `fan_out`         | no                             | Per-item iteration over a list `Value`: the runner runs the step once per item with the `fan_out.as` name bound to the current value, then merges the per-item responses per `fan_out.merge`. Mutually exclusive with `cache`. |
 | `expect_status`   | no                             | List of HTTP status codes treated as success. Defaults to `[200]`.                                                                     |
 | `if`              | no                             | [Predicate](#predicates) — skip the step when false.                                                                                   |
 | `on_status`       | no                             | Map of status code → verb (`skip`, `fail`, `empty_events`, `invalidate_cache`). Per-step override of `error.mode` for that status.     |
@@ -402,11 +402,26 @@ event timestamps).
 ```yaml
 fan_out:
   over: <Value>               # a list Value
-  as: <string>                # per-item variable name → item.<path> namespace
+  as: <string>                # per-item binding name; refs use {ref: <as>.<path>}
   merge: flatten | wrap       # how per-item responses combine
 ```
 
-Deferred — accepted by the validator, not yet runnable.
+The runner evaluates `over` to a list, then runs the step once per item
+with the author-chosen `as` name bound to the current value. Inside the
+step (and inside `extract.from` paths it owns), `{ref: <as>.<path>}`
+resolves against the current item — `<as>` is whatever the operator
+wrote, NOT a fixed `item.` prefix.
+
+`merge: flatten` (default) concatenates per-item response bodies, which
+must each decode as JSON lists; a non-list body is a template error.
+`merge: wrap` returns the per-item bodies as elements of a list,
+preserving each item's response shape.
+
+Per-item errors run through the same `on_status` / `error.mode`
+dispatcher as a single-request step: `skip` / `empty_events` drop the
+item, `fail` aborts the drain, `invalidate_cache` clears the active auth
++ step caches and stops the fan-out early. `requests[].cache` cannot be
+combined with `fan_out` — see the rules below.
 
 ### RequestCache
 
@@ -862,7 +877,7 @@ validate time, with a hint pointing at the new form.
 | `steps.<id>.header.<name>` | anywhere (after step `<id>` has run)                                                              | Prior step's response headers.                                        |
 | `response.body.<path>`     | body-rooted IR slots (`events_at`, `token_at`, `scroll_id_at`, etc.) AND inside `complete_when`   | The active step's decoded response body.                              |
 | `response.header.<name>`   | `extract[].from` AND inside `complete_when`                                                       | The active step's response headers.                                   |
-| `item.<path>`              | inside a step with `fan_out:`                                                                     | `fan_out.as` binding (deferred).                                      |
+| `<fan_out.as>.<path>`      | inside a step with `fan_out:`                                                                     | The author-chosen `fan_out.as` name (e.g. `incident.id` when `as: incident`); bound to the current item for the duration of one per-item iteration. |
 
 Body-rooted IR slots — `response.events_at`, `pagination.*.token_at` /
 `scroll_id_at` / `next_url_at` / `has_next_page_at` / `end_cursor_at` /

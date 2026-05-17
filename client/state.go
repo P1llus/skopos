@@ -115,8 +115,12 @@ func (m *MemoryStore) Save(s Snapshot) error { m.snap = s; return nil }
 //     authors who need cross-iteration access must extract a field into
 //     state or cursor.
 //
-//   - item:           PER-FAN-OUT-ITERATION. Reserved for fan_out's
-//     per-item binding.
+//   - item / itemBinding: PER-FAN-OUT-ITERATION. While a step with
+//     fan_out is executing, item holds the current per-item value and
+//     itemBinding holds the author-chosen name from fan_out.as. Refs
+//     rooted at that name (e.g. {ref: incident.id} when as=incident)
+//     resolve against item; outside a fan_out step both are zeroed and
+//     the root falls through to the unknown-namespace branch.
 //
 //   - body:           SCOPED to complete_when predicate evaluation
 //     (pagination.scroll_id.complete_when, progress.async_job.poll.complete_when).
@@ -146,8 +150,9 @@ type scope struct {
 	state   map[string]any
 	cursor  map[string]any
 	extract map[string]any
-	steps   map[string]any // step id → decoded body
-	item    any            // per-item binding when inside fan_out
+	steps       map[string]any // step id → decoded body
+	item        any            // current per-item value while a fan_out step runs
+	itemBinding string         // active fan_out.as name; "" outside fan_out
 	body    any            // active response context body (unused outside the predicate);
 	// resolves response.body.<path> via lookupBodyPath
 	responseHeaders http.Header            // active response context headers (mirrors body)
@@ -222,8 +227,10 @@ func (s *scope) snapshot() Snapshot {
 }
 
 // resolveNamespaceRef returns the value at path within s. The path's root
-// segment must be one of: state, cursor, extract, steps, item, body. The
-// remaining segments index into the value at that root.
+// segment must be one of: state, cursor, extract, steps, response, or the
+// author-chosen fan_out.as name active in s.itemBinding (e.g. "incident"
+// when the running step has `fan_out: {as: incident}`). The remaining
+// segments index into the value at that root.
 //
 // Returns (nil, false) for unresolved leaves; callers decide whether the
 // absence is fatal (e.g. {ref: ...} with no default) or fine (e.g. predicate
@@ -233,6 +240,19 @@ func (s *scope) resolveNamespaceRef(p schema.Path) (any, bool, error) {
 		return nil, false, fmt.Errorf("empty path")
 	}
 	root, rest := p.Parts[0], p.Parts[1:]
+
+	// Author-chosen fan_out.as binding is matched before the static switch
+	// so that its name (whatever the operator wrote) takes precedence over
+	// the namespace-root vocabulary. The validator guarantees the binding
+	// name does not collide with a reserved root or any declared state /
+	// cursor / extract / step id.
+	if s.itemBinding != "" && root == s.itemBinding {
+		if s.item == nil {
+			return nil, false, nil
+		}
+		return walk(s.item, rest)
+	}
+
 	var top any
 	switch root {
 	case "state":
@@ -289,11 +309,6 @@ func (s *scope) resolveNamespaceRef(p schema.Path) (any, bool, error) {
 		default:
 			return nil, false, fmt.Errorf("steps ref must be steps.<id>.body[.<path>] or steps.<id>.header.<name>")
 		}
-	case "item":
-		if s.item == nil {
-			return nil, false, nil
-		}
-		return walk(s.item, rest)
 	case "response":
 		// response.body.<path>    → s.body (the active response context;
 		//                          uses lookupBodyPath so list indexing
