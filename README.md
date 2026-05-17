@@ -1,49 +1,69 @@
 # Skopos
 
-**Declarative HTTP-pull integrations for Go.**
+[![Go Reference](https://pkg.go.dev/badge/github.com/p1llus/skopos.svg)](https://pkg.go.dev/github.com/p1llus/skopos)
+[![Release](https://img.shields.io/github/v/release/p1llus/skopos)](https://github.com/p1llus/skopos/releases)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-Skopos turns a YAML document into a working ingest agent. You describe
-an API — authentication, requests, pagination, how its cursor advances
-— and the in-process runner drains events out of it and persists
-progress across runs. No code generation, no scheduler to wire up, no
-sidecar: the spec document *is* the program, the runner interprets it.
+**Declarative HTTP polling, as code.**
 
-```
-                ┌─────────────────┐
-   spec.yml ──►│                 │──► events
-                │  skopos runner  │
-   state.json ◄►│                 │──► trace (optional)
-                └─────────────────┘
-                         │
-                         ▼
-                    HTTP API
-```
+> [!WARNING]
+> Skopos is experimental and pre-1.0. The spec, CLI flags, and Go API are
+> expected to change in breaking ways between releases. Pin a version if you
+> depend on it.
 
-## Highlights
+Skopos turns a YAML document describing an HTTP API — its authentication,
+requests, and pagination — into a working pull-based ingest agent. The
+spec *is* the program; the runner interprets it.
 
-- **One spec, many APIs.** Bearer, basic, API-key, OAuth2
-  client-credentials, session-cookie, and dispatched multi-mode auth;
-  cursor-token, page-number, offset, Link-header, next-URL-in-body,
-  scroll-ID, and async submit/poll pagination.
-- **Stateful by default.** Cursor and bookkeeping live in pluggable
-  stores (in-memory, file, or your own) and survive process restarts.
-- **CLI or library.** Use the `skopos` binary for operations, or import
-  the runner as a Go package — same behaviour, same spec.
-- **Operable.** Optional per-exchange tracing with built-in redaction
-  for secrets, structured diagnostics from `skopos validate`, and a
-  guardrail on per-drain pagination.
-- **Pure Go, no plugins.** A single binary (or a single import path)
-  with no required external services.
+It's aimed at two kinds of users:
+
+- **Operators and platform teams** who want HTTP polling defined
+  declaratively alongside the rest of their infrastructure-as-code, in a
+  format that's easy to read, review, and diff.
+- **Application authors** who want to expose a simple, schema-validated
+  interface that lets their end users configure polling against arbitrary
+  third-party APIs — without writing per-vendor code.
+
+Skopos ships as both a single static binary and a Go library, so you can
+reach for whichever fits the use case — a CLI for operations, or an
+embedded runner inside your own service.
+
+## Overview
+
+- **One spec, many API shapes.** Authentication modes include bearer,
+  basic, API key, OAuth2 (client credentials and password grant), session
+  cookies, and dispatched multi-mode auth. Pagination modes include
+  cursor token, page number, offset, `Link` header, next-URL-in-body,
+  scroll ID, and async submit/poll/fetch.
+- **Stateful between runs.** Cursors and bookkeeping live in a pluggable
+  store (in-memory, file, or your own implementation) and survive
+  restarts.
+- **CLI or library, same behaviour.** Use the `skopos` binary for
+  operations, or import the runner as a Go package — both interpret the
+  same spec.
+- **Built to be operated.** Optional per-request tracing with automatic
+  secret redaction, structured diagnostics from `skopos validate`, and a
+  configurable cap on pages per drain.
+- **Pure Go, no plugins.** A single binary or a single import path. No
+  sidecars, no external services required.
 
 ## Install
 
-**As a CLI** — `go install` fetches a prebuilt-from-source binary into `$GOBIN`:
+<details>
+<summary><b>CLI binary via <code>go install</code></b></summary>
+
+Builds the latest released `skopos` into `$GOBIN`:
 
 ```sh
 go install github.com/p1llus/skopos/cmd/skopos@latest
 ```
 
-**As a Go library** — add it to your module and import `client` / `schema`:
+</details>
+
+<details>
+<summary><b>Go library</b></summary>
+
+Add Skopos to your module and import the `client` and `schema` packages:
 
 ```sh
 go get github.com/p1llus/skopos@latest
@@ -56,27 +76,30 @@ import (
 )
 ```
 
-**From source** — clone and build:
+See [Creating your own client](#creating-your-own-client) below for a
+minimal embedding example.
 
-```sh
-git clone https://github.com/p1llus/skopos
-cd skopos
-go build ./cmd/skopos
-```
+</details>
 
-**Verifying a release** — the release workflow signs `checksums.txt` with keyless [cosign](https://github.com/sigstore/cosign) (Sigstore bundle: `checksums.txt.sigstore.json`). GoReleaser publishes the archives, `checksums.txt`, and that bundle together on GitHub Releases.
+<details>
+<summary><b>Prebuilt archive + signature verification</b></summary>
 
-Use the Git tag exactly as tagged (including the leading `v`). Archive names follow `skopos_<semver>_<os>_<arch>.<ext>` plus `checksums.txt` and `checksums.txt.sigstore.json` (semver has no leading `v` in the filenames).
+Each release publishes per-OS archives, a `checksums.txt`, and a keyless
+[cosign](https://github.com/sigstore/cosign) Sigstore bundle
+(`checksums.txt.sigstore.json`) on
+[GitHub Releases](https://github.com/p1llus/skopos/releases).
+
+Archive names follow `skopos_<semver>_<os>_<arch>.<ext>` (semver has no
+leading `v` in filenames; the Git tag does).
 
 ```sh
 TAG=v0.1.0
 VERS=${TAG#v}
-OS_ARCH=linux_amd64   # or darwin_amd64, darwin_arm64, linux_arm64 (see Assets on the release)
+OS_ARCH=linux_amd64   # or darwin_amd64, darwin_arm64, linux_arm64, windows_amd64
 
 curl -fsSLO "https://github.com/p1llus/skopos/releases/download/${TAG}/checksums.txt"
 curl -fsSLO "https://github.com/p1llus/skopos/releases/download/${TAG}/checksums.txt.sigstore.json"
 curl -fsSLO "https://github.com/p1llus/skopos/releases/download/${TAG}/skopos_${VERS}_${OS_ARCH}.tar.gz"
-# Windows: skopos_${VERS}_${OS_ARCH}.zip (no arm64 zip)
 
 cosign verify-blob \
   --bundle checksums.txt.sigstore.json \
@@ -87,30 +110,31 @@ cosign verify-blob \
 sha256sum --check --ignore-missing checksums.txt
 ```
 
+</details>
+
 ## Quickstart
 
-No repo clone needed. The `skopos` binary embeds every template, and the
-testserver runs straight from the module path. Every template's URL
-defaults already point at `http://localhost:9999`, so no flags or edits
-are required to drive any of them against the testserver.
+The `skopos` binary comes with prebuilt templates to help get started
 
 ```sh
-# 1. (Optional) generate a fully commented config file. Skip this if you
-#    don't need to override any defaults — every flag has a sensible one.
-skopos init -o config.yml
-
-# 2. Start the testserver in another terminal. It hosts a stub endpoint
-#    for every bundled template on :9999 and exits on Ctrl-C, so there's
-#    nothing to install permanently.
+# 1. (Optional) Start the testserver in another terminal. It hosts a stub endpoint
+#    for every bundled template and exits on Ctrl-C.
 go run github.com/p1llus/skopos/cmd/testserver@latest
 
-# 3. Grab a starter spec (bearer token, single GET) and validate it.
+# 2. Browse the templates embedded in the binary, then print one out
+#    as a starting spec. Default values point to the correct testserver endpoint
+skopos template list
 skopos template show bearer_simple > spec.yml
+
+# 3. Validate the spec.
 skopos validate -i spec.yml
 
 # 4. Run once. Events are emitted as JSONL on stdout.
 skopos run -i spec.yml --once
 ```
+
+<details>
+<summary>Example event output</summary>
 
 ```json
 {"id":"evt-000001","seq_num":1,"timestamp":"2026-05-15T06:28:29.552249238Z"}
@@ -120,77 +144,97 @@ skopos run -i spec.yml --once
 {"id":"evt-000005","seq_num":5,"timestamp":"2026-05-15T06:28:33.552249238Z"}
 ```
 
+</details>
+
+You can define a output file if you don't want events to appear in stdout, below example also enables tracing:
+
 ```sh
-# 5. Run again, this time tee-ing events to a file and recording each
-#    HTTP exchange to a redacted trace.
 skopos run -i spec.yml --once --out events.jsonl --trace trace.jsonl
 ```
 
-`events.jsonl` is the same JSONL stream as above. `trace.jsonl` carries
-one record per HTTP exchange with secrets redacted:
+<details>
+<summary>Override settings with configuration file</summary>
+
+If you either want to quickly swap between different configurations or do not want to provide them in the CLI each time you run, you can run `skopos init -o config.yml`
+
+```sh
+skopos init -o config.yml
+```
+
+```json
+# skopos run configuration
+# All fields are optional. CLI flags take precedence over values set here.
+# Omit a field to use the built-in default.
+
+# input: path to the spec file to run. Equivalent to -i / --input.
+# input: spec.yml
+
+# state: path to the JSON state file for persisting the cursor between runs.
+# Equivalent to --state. Omit to use an in-memory store (state lost on exit).
+# state: state.json
+
+# out: path to write JSONL events to. Equivalent to --out.
+# Defaults to stdout when omitted.
+# out: events.jsonl
+
+# trace: path to write per-exchange JSONL trace records to.
+# Equivalent to --trace. Trace is disabled when omitted.
+# trace: trace.jsonl
+
+# once: run a single drain and exit. Equivalent to --once.
+# once: false
+
+# interval: sleep this duration between drains in continuous mode.
+# Equivalent to --interval. Omit (or set to 0) for one-shot mode.
+# interval: 30s
+
+# http_timeout: per-request HTTP timeout. Defaults to 30s when omitted.
+# http_timeout: 30s
+
+# max_pages: cap on the number of pagination iterations per drain.
+# Defaults to 10000 when omitted.
+# max_pages: 10000
+
+```
+
+</details>
+
+<details>
+<summary>Example trace output</summary>
+
+`trace.jsonl` carries one record per HTTP exchange, with secrets
+redacted:
 
 ```json
 {"iteration":1,"method":"GET","url":"http://localhost:9999/bearer_simple/events","query":{"limit":"<format:string>","since":"<ref cursor.last_timestamp>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"status":200,"response_body":"body 403 bytes, object-like","started_at":"2026-05-15T06:28:47.777479114Z","elapsed":16011226}
 ```
 
-Swap `bearer_simple` for any other template name to try a different API
-shape against the same testserver. Common flags:
+</details>
 
-| Flag                    | Effect                                              |
-| ----------------------- | --------------------------------------------------- |
-| `-c config.yml`        | Load defaults from a YAML config file               |
-| `--state s.json`        | Persist the cursor between runs                     |
-| `--interval 30s`        | Poll continuously until SIGINT                      |
-| `--out events.jsonl`    | Write events to a file instead of stdout            |
-| `--trace trace.jsonl`   | Record every HTTP exchange (with secret redaction)  |
-| `--http-timeout 45s`    | Per-request HTTP timeout (default 30s)              |
-| `--max-pages 500`       | Pagination cap per drain (default 10 000)           |
+Swap `bearer_simple` for any other template name to try a different API
+shape against the same testserver. Run `skopos --help` (or
+`skopos <command> --help`) for the full list of commands and flags.
 
 ## Templates
 
-The [`templates/`](templates) directory contains one spec per pattern
-the runner supports today. Every template is also embedded in the binary — use
-`skopos template list` to browse and `skopos template show <name>` to print one.
+Bundled templates cover every authentication and pagination pattern the
+runner supports today. List them with `skopos template list`, then print
+one to a file as a starting point:
 
-Every template points at `http://localhost:9999` with paths that match
-[`cmd/testserver`](cmd/testserver). Run the testserver and any template
-runs end-to-end with no further configuration.
+```sh
+skopos template show bearer_simple > spec.yml
+```
 
-| API shape                                               | Template                                                                          |
-| ------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Bearer token, no pagination                             | [`bearer_simple.yml`](templates/bearer_simple.yml)                              |
-| HTTP Basic auth                                         | [`basic_auth.yml`](templates/basic_auth.yml)                                    |
-| API key in header, time-window cursor                   | [`api_key_auth.yml`](templates/api_key_auth.yml)                                |
-| Operator-defined auth headers                           | [`custom_auth.yml`](templates/custom_auth.yml)                                  |
-| Multi-mode auth dispatched on a state flag              | [`multi_mode_auth.yml`](templates/multi_mode_auth.yml)                          |
-| OAuth2 client-credentials with cached access token      | [`oauth2_client_credentials.yml`](templates/oauth2_client_credentials.yml)      |
-| OAuth2 password grant with cached access token          | [`oauth2_password_grant.yml`](templates/oauth2_password_grant.yml)              |
-| OAuth2 + GraphQL Relay-style cursor pagination          | [`oauth2_relay.yml`](templates/oauth2_relay.yml)                                |
-| Session cookie via POST login                           | [`session_cookie.yml`](templates/session_cookie.yml)                            |
-| Cached JSON login with a per-step token cache           | [`session_login_cached.yml`](templates/session_login_cached.yml)                |
-| Minimal GET, no auth, no pagination                     | [`simple_get_object.yml`](templates/simple_get_object.yml)                      |
-| `cursor_token` pagination                               | [`cursor_token.yml`](templates/cursor_token.yml)                                |
-| `page_number` pagination + `has_more_at`                | [`page_number.yml`](templates/page_number.yml)                                  |
-| `offset` pagination                                     | [`offset_pagination.yml`](templates/offset_pagination.yml)                      |
-| Link-header pagination (RFC 5988)                       | [`link_header.yml`](templates/link_header.yml)                                  |
-| Next-URL-in-body pagination                             | [`next_url_in_body.yml`](templates/next_url_in_body.yml)                        |
-| `scroll_id` session                                     | [`scroll_id.yml`](templates/scroll_id.yml)                                      |
-| Async submit / poll / fetch (clock-driven cursor)       | [`async_poll.yml`](templates/async_poll.yml)                                    |
-| Async submit / poll / fetch (timestamp-driven cursor)   | [`async_poll_latest_ts.yml`](templates/async_poll_latest_ts.yml)                |
-| Async submit / poll / fetch (no cursor advance)         | [`async_poll_stateless.yml`](templates/async_poll_stateless.yml)                |
-| ETag-driven conditional GET (304 skip)                  | [`etag_conditional.yml`](templates/etag_conditional.yml)                        |
-| ETag-driven conditional middle step in a 3-step chain   | [`etag_conditional_middle.yml`](templates/etag_conditional_middle.yml)          |
-| NDJSON response decode                                  | [`ndjson_response.yml`](templates/ndjson_response.yml)                          |
-| POST with JSON body                                     | [`post_json_body.yml`](templates/post_json_body.yml)                            |
-| POST with form-urlencoded body                          | [`post_form_body.yml`](templates/post_form_body.yml)                            |
-| POST with a raw (non-JSON) body                         | [`post_raw_body.yml`](templates/post_raw_body.yml)                              |
+The full template source lives in [`templates/`](templates) — that's the
+easiest place to browse the patterns side-by-side.
 
-For the canonical catalogue of API shapes and the schema knobs that
-express each one, see [`docs/api-methods.md`](docs/api-methods.md).
-Internal matrix-coverage fixtures live under
-[`schema/testdata/`](schema/testdata).
+## Creating your own client
 
-## Embedding in Go
+To embed Skopos in your own Go program — for example to route events
+into a database or message queue, or to persist cursors somewhere other
+than a local file — the runner is exposed as a library. Bring your own
+implementations of `Sink` (where events go) and `Store` (where cursors
+live):
 
 ```go
 package main
@@ -221,8 +265,8 @@ func main() {
 
     runner := &client.Runner{
         Doc:   doc,
-        Store: client.NewFileStore("state.json"),
-        Sink:  client.NewJSONLSink(os.Stdout),
+        Store: client.NewFileStore("state.json"), // or your own Store
+        Sink:  client.NewJSONLSink(os.Stdout),    // or your own Sink
     }
     if err := runner.Drain(context.Background()); err != nil {
         log.Fatal(err)
@@ -230,25 +274,21 @@ func main() {
 }
 ```
 
-See [`docs/usage.md`](docs/usage.md) for the full embedding guide —
-scheduling, custom HTTP clients, sharing state across goroutines,
-sinks, and tracing.
+For scheduling, custom HTTP clients, sharing state across goroutines,
+and writing your own sinks or stores, see
+[`docs/usage.md`](docs/usage.md).
 
 ## Documentation
 
-| Doc                                                       | When to read it                                  |
-| ----------------------------------------------------------| -------------------------------------------------|
-| [`docs/schema.md`](docs/schema.md)                        | Per-field reference for the YAML spec            |
-| [`docs/runtime.md`](docs/runtime.md)                      | Runtime contract and supported-variant table     |
-| [`docs/api-methods.md`](docs/api-methods.md)              | Vendor-neutral catalogue of API patterns         |
-| [`docs/usage.md`](docs/usage.md)                          | Embed the runner in your own Go program          |
-| [`docs/stores.md`](docs/stores.md)                        | Plug in a custom state store (SQLite, BoltDB, …) |
-| [`Go API reference`](https://pkg.go.dev/github.com/p1llus/skopos) | Go API reference                         |
-
-
-## More examples
-
-More examples can be found by the generated golden files for each template in the [`cmd/skopos/testdata`](cmd/skopos/testdata) directory.
+| Doc                                                              | What's in it                                                  |
+| ---------------------------------------------------------------- | ------------------------------------------------------------- |
+| [Spec reference](docs/schema.md)                                 | Every field in the YAML spec, with examples                   |
+| [Runtime contract](docs/runtime.md)                              | How the runner interprets a spec, end to end                  |
+| [API patterns](docs/api-methods.md)                              | Catalogue of API shapes Skopos can speak to                   |
+| [Embedding guide](docs/usage.md)                                 | Using Skopos as a Go library inside your own service          |
+| [State stores](docs/stores.md)                                   | Plugging in a custom cursor store (SQLite, BoltDB, …)         |
+| [More examples](cmd/skopos/testdata)                             | Golden-file fixtures, one per bundled template                |
+| [Go API reference](https://pkg.go.dev/github.com/p1llus/skopos)  | Generated package docs on pkg.go.dev                          |
 
 ## License
 
