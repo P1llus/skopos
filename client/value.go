@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,17 +15,37 @@ import (
 )
 
 // evalValue evaluates v against the current scope and returns the runtime
-// representation: string | int64 | bool | []any | map[string]any | time.Time | nil.
+// representation:
+//
+//	string | int64 | bool | time.Time | time.Duration | []any | map[string]any | nil
 //
 // The discriminator set mirrors schema.Value:
 //
 //	literal_string, literal_int, literal_bool, ref, now, concat, select,
-//	format, base64, list, object
+//	format, base64, list, object, add, subtract, max, min, first, last,
+//	count, regex
 //
-// Pagination / progress signals reach Values via {ref: cursor.<name>}; the
-// driver's seed() call writes the same names into scope.cursor before the
-// iteration's requests are evaluated. The cursor name catalogue lives in
-// scope's godoc (state.go).
+// Arithmetic and reducers obey the type pairs documented in
+// docs/schema.md §Values:
+//
+//   - {add: [time, duration]} → time.Time
+//   - {add: [duration, duration]} → time.Duration
+//   - {add: [int, int]} → int64
+//   - {subtract: [time, duration]} → time.Time
+//   - {subtract: [time, time]} → time.Duration
+//   - {subtract: [duration, duration]} → time.Duration
+//   - {subtract: [int, int]} → int64
+//
+// Reducer inputs are list-shaped Values — either a {list: [...]} literal
+// or a list-shaped projection such as {ref: events.*.timestamp}. max, min,
+// first, and last skip nil entries; count counts every position (matching
+// events.count). Empty / all-nil inputs surface as nil for the comparator
+// reducers and 0 for count.
+//
+// Refs resolve through (*scope).resolveNamespaceRef; the closed root set
+// (state | cache | events | extract | steps | response) plus any
+// author-chosen fan_out.as alias active on the scope are the only legal
+// path roots.
 func (s *scope) evalValue(v schema.Value) (any, error) {
 	switch {
 	case v.IsZero:
@@ -50,19 +71,7 @@ func (s *scope) evalValue(v schema.Value) (any, error) {
 		return got, nil
 
 	case v.Now != nil:
-		t := s.now()
-		if v.Now.Offset != nil {
-			off, err := s.evalValue(*v.Now.Offset)
-			if err != nil {
-				return nil, fmt.Errorf("now.offset: %w", err)
-			}
-			d, err := toDuration(off)
-			if err != nil {
-				return nil, fmt.Errorf("now.offset: %w", err)
-			}
-			t = t.Add(d)
-		}
-		return t, nil
+		return s.now(), nil
 
 	case v.Concat != nil:
 		var b strings.Builder
@@ -125,6 +134,53 @@ func (s *scope) evalValue(v schema.Value) (any, error) {
 			out[k] = got
 		}
 		return out, nil
+
+	case v.Add != nil:
+		return s.evalArith("add", v.Add.Operands)
+	case v.Subtract != nil:
+		return s.evalArith("subtract", v.Subtract.Operands)
+
+	case v.Max != nil:
+		list, err := s.evalReducerInput("max", *v.Max)
+		if err != nil {
+			return nil, err
+		}
+		return reduceExtreme(list, true), nil
+	case v.Min != nil:
+		list, err := s.evalReducerInput("min", *v.Min)
+		if err != nil {
+			return nil, err
+		}
+		return reduceExtreme(list, false), nil
+	case v.First != nil:
+		list, err := s.evalReducerInput("first", *v.First)
+		if err != nil {
+			return nil, err
+		}
+		return firstNonNil(list), nil
+	case v.Last != nil:
+		list, err := s.evalReducerInput("last", *v.Last)
+		if err != nil {
+			return nil, err
+		}
+		return lastNonNil(list), nil
+	case v.Count != nil:
+		list, err := s.evalReducerInput("count", *v.Count)
+		if err != nil {
+			return nil, err
+		}
+		return int64(len(list)), nil
+
+	case v.Regex != nil:
+		from, err := s.evalValue(v.Regex.From)
+		if err != nil {
+			return nil, fmt.Errorf("regex.from: %w", err)
+		}
+		var def *schema.Value
+		if v.Regex.Default != nil {
+			def = v.Regex.Default
+		}
+		return s.applyRegex(v.Regex.Pattern, toString(from), v.Regex.Capture, def)
 	}
 
 	return nil, fmt.Errorf("schema.Value: no variant set (zero value); use IsZero for explicit absence or {literal_string: \"\"} for empty string")
@@ -136,6 +192,205 @@ func (s *scope) now() time.Time {
 		return time.Now()
 	}
 	return s.nowFn()
+}
+
+// evalArith resolves both operands of {add: ...} or {subtract: ...} and
+// dispatches by their runtime type pair. Operand order is significant.
+// Either operand resolving to nil short-circuits to nil so absent inputs
+// stay absent rather than triggering a coercion error.
+func (s *scope) evalArith(verb string, operands []schema.Value) (any, error) {
+	if len(operands) != 2 {
+		return nil, fmt.Errorf("%s: must have exactly 2 operands, got %d", verb, len(operands))
+	}
+	a, err := s.evalValue(operands[0])
+	if err != nil {
+		return nil, fmt.Errorf("%s.operands[0]: %w", verb, err)
+	}
+	b, err := s.evalValue(operands[1])
+	if err != nil {
+		return nil, fmt.Errorf("%s.operands[1]: %w", verb, err)
+	}
+	if a == nil || b == nil {
+		return nil, nil
+	}
+	switch verb {
+	case "add":
+		return arithAdd(a, b)
+	case "subtract":
+		return arithSubtract(a, b)
+	}
+	return nil, fmt.Errorf("unknown arithmetic verb %q", verb)
+}
+
+// arithAdd implements add per the documented type pairs:
+//
+//	time + duration → time   (commutative)
+//	duration + duration → duration
+//	int + int → int64
+//
+// Strings are coerced via time.ParseDuration when an arithmetic context
+// demands it (e.g. the canonical {add: [{now: true}, "1h"]} form).
+func arithAdd(a, b any) (any, error) {
+	if ta, ok := asTime(a); ok {
+		d, err := toDuration(b)
+		if err != nil {
+			return nil, fmt.Errorf("add: time + non-duration %T: %w", b, err)
+		}
+		return ta.Add(d), nil
+	}
+	if tb, ok := asTime(b); ok {
+		d, err := toDuration(a)
+		if err != nil {
+			return nil, fmt.Errorf("add: non-duration %T + time: %w", a, err)
+		}
+		return tb.Add(d), nil
+	}
+	if ia, ok := asInt64(a); ok {
+		if ib, ok := asInt64(b); ok {
+			return ia + ib, nil
+		}
+	}
+	da, errA := toDuration(a)
+	db, errB := toDuration(b)
+	if errA == nil && errB == nil {
+		return da + db, nil
+	}
+	return nil, fmt.Errorf("add: cannot interpret %T + %T as time/duration/int", a, b)
+}
+
+// arithSubtract implements subtract per the documented type pairs:
+//
+//	time - duration → time
+//	time - time → duration
+//	duration - duration → duration
+//	int - int → int64
+//
+// time - time falls under subtraction only — there is no add pair that
+// produces a duration from two times.
+func arithSubtract(a, b any) (any, error) {
+	ta, isTimeA := asTime(a)
+	tb, isTimeB := asTime(b)
+	if isTimeA && isTimeB {
+		return ta.Sub(tb), nil
+	}
+	if isTimeA {
+		d, err := toDuration(b)
+		if err != nil {
+			return nil, fmt.Errorf("subtract: time - non-duration %T: %w", b, err)
+		}
+		return ta.Add(-d), nil
+	}
+	if isTimeB {
+		return nil, fmt.Errorf("subtract: cannot subtract time from %T", a)
+	}
+	if ia, ok := asInt64(a); ok {
+		if ib, ok := asInt64(b); ok {
+			return ia - ib, nil
+		}
+	}
+	da, errA := toDuration(a)
+	db, errB := toDuration(b)
+	if errA == nil && errB == nil {
+		return da - db, nil
+	}
+	return nil, fmt.Errorf("subtract: cannot interpret %T - %T as time/duration/int", a, b)
+}
+
+// evalReducerInput evaluates a reducer's operand to a list. The codec
+// normalises {max: [...]} to {max: {list: [...]}}; {max: {ref: events.*.x}}
+// resolves through the events-projection arm in resolveNamespaceRef. An
+// absent operand (nil) is treated as an empty list so empty pages don't
+// crash the reducer.
+func (s *scope) evalReducerInput(verb string, operand schema.Value) ([]any, error) {
+	got, err := s.evalValue(operand)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", verb, err)
+	}
+	if got == nil {
+		return nil, nil
+	}
+	list, ok := got.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s: operand resolved to %T, want list", verb, got)
+	}
+	return list, nil
+}
+
+// reduceExtreme returns the largest (greatest=true) or smallest element
+// in list, skipping nil entries. Returns nil when the list is empty or
+// contains only nils. Uses orderedCompare so timestamps, durations, and
+// numbers all participate in the same ordering.
+func reduceExtreme(list []any, greatest bool) any {
+	var pick any
+	for _, el := range list {
+		if el == nil {
+			continue
+		}
+		if pick == nil {
+			pick = el
+			continue
+		}
+		c, err := orderedCompare(el, pick)
+		if err != nil {
+			// Heterogeneous elements skip past — the reducer is
+			// best-effort over the comparable subset.
+			continue
+		}
+		if greatest && c > 0 {
+			pick = el
+		}
+		if !greatest && c < 0 {
+			pick = el
+		}
+	}
+	return pick
+}
+
+// firstNonNil returns the first non-nil element of list, or nil when
+// every entry is nil / the list is empty.
+func firstNonNil(list []any) any {
+	for _, el := range list {
+		if el != nil {
+			return el
+		}
+	}
+	return nil
+}
+
+// lastNonNil returns the last non-nil element of list, or nil when every
+// entry is nil / the list is empty.
+func lastNonNil(list []any) any {
+	for i := len(list) - 1; i >= 0; i-- {
+		if list[i] != nil {
+			return list[i]
+		}
+	}
+	return nil
+}
+
+// applyRegex compiles pattern and applies it to in. capture selects the
+// returned group: 0 (or unset) returns the full match; n returns the
+// n-th submatch, 1-based. When no match, def (if set) is evaluated;
+// absent both match and def, the result is nil.
+func (s *scope) applyRegex(pattern, in string, capture int, def *schema.Value) (any, error) {
+	if capture < 0 {
+		return nil, fmt.Errorf("regex: capture must be >= 0, got %d", capture)
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("regex: compile %q: %w", pattern, err)
+	}
+	m := re.FindStringSubmatch(in)
+	if m == nil {
+		if def != nil {
+			return s.evalValue(*def)
+		}
+		return nil, nil
+	}
+	if capture >= len(m) {
+		return nil, fmt.Errorf("regex: capture group %d out of range (pattern has %d group(s))", capture, len(m)-1)
+	}
+	return m[capture], nil
 }
 
 // isZeroRuntime reports whether v is the runtime equivalent of a "zero

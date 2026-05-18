@@ -10,8 +10,7 @@ import (
 )
 
 // pathParts returns the Path's segments, or nil when the path is empty.
-// Used by per-event sub-path walks (progress.{latest_event_timestamp,
-// max_event_field}.event_time.path) where the path is body-relative to
+// Used by per-event sub-path walks where the path is body-relative to
 // each event object — no namespace root to strip.
 func pathParts(p schema.Path) []string {
 	if p.IsEmpty() {
@@ -58,8 +57,9 @@ func stripBodyRoot(p schema.Path) ([]string, string, error) {
 // resolveBodyPath walks body (the local response body) or the named
 // step's response body at the segments under p's body root, returning
 // the value found there. Pairs stripBodyRoot with lookupBodyPath for
-// every §1.2 read site that previously called
-// `lookupBodyPath(body, pathParts(p))` against a bare dotted string.
+// every read site whose Path is body-rooted (response.body.<path> or
+// steps.<id>.body.<path>) — pagination cursor sources, request cache
+// expiry fields, and progress per-event sub-paths all share this helper.
 //
 // When p references a labelled prior step (steps.<id>.body.<path>),
 // the named step's body is read from s.steps; missing step bodies

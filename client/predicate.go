@@ -74,11 +74,12 @@ func (s *scope) evalPredicate(p schema.Predicate) (bool, error) {
 // compare implements the ordered-comparison verbs (gt, lt, gte, lte) and
 // equality (eq). The LHS is a namespace ref; the RHS is any Value.
 //
-// Every predicate path is namespace-rooted after slice 2 — the legacy
-// bare body.<path> short-circuit was deleted alongside the validator's
-// matching arm. complete_when predicates use response.body.<path>, which
-// resolveNamespaceRef routes back to scope.body via the same body-walk
-// helper.
+// Every predicate path is namespace-rooted. response.body.<path> reads
+// through scope.body via the same body-walk helper as response.body
+// refs; state.<name>, events.*, extract.*, steps.<id>.*, cache.<name>,
+// and the fan_out.as alias all resolve through resolveNamespaceRef.
+// Absent paths surface as nil; comparisons against nil are false rather
+// than erroring, matching the absent-tolerant predicate policy.
 func (s *scope) compare(verb string, pe *schema.PredicateEq) (bool, error) {
 	lhs, ok, err := s.resolveNamespaceRef(pe.Path)
 	if err != nil {
@@ -117,10 +118,10 @@ func (s *scope) compare(verb string, pe *schema.PredicateEq) (bool, error) {
 // equality rule.
 //
 // The rule is JSON-loose: reflect.DeepEqual matches first, and otherwise
-// both sides are coerced to their string representation and compared. This
-// lets authors write {eq: {path: body.flag, value: "true"}} when the API
-// returns either bool true or string "true" — the scroll_id fixture relies
-// on this, and changing it later would break that template.
+// both sides are coerced to their string representation and compared.
+// This lets authors write {eq: {path: response.body.flag, value: "true"}}
+// when the API returns either bool true or the string "true" without
+// the template caring which shape the server picked.
 //
 // Strict edge cases (NOT covered by the loose rule):
 //
