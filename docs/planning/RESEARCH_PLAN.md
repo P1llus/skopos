@@ -120,7 +120,7 @@ slice.
 | 4   | [x]    | schema     | `schema/schema.go` + `read.go` + `doc.go` — struct definitions                 | [`IMPL-04-schema-structs.md`](IMPL-04-schema-structs.md) |
 | 5   | [x]    | schema     | `schema/value.go` — Value language (reducers, interpolation, add/subtract)     | [`IMPL-05-schema-value.md`](IMPL-05-schema-value.md) |
 | 6   | [x]    | schema     | `schema/path.go` + `predicate.go` — namespace roots, path & predicate rules    | [`IMPL-06-schema-path-predicate.md`](IMPL-06-schema-path-predicate.md) |
-| 7   | [ ]    | schema     | `schema/validate.go` — full validator rewrite                                  | `IMPL-07-schema-validator.md`           |
+| 7   | [x]    | schema     | `schema/validate.go` — full validator rewrite                                  | [`IMPL-07-schema-validator.md`](IMPL-07-schema-validator.md) |
 | 8   | [ ]    | client     | `client/state.go` — Snapshot shape, scope, per-drain wipe, new namespace roots | `IMPL-08-client-state.md`               |
 | 9   | [ ]    | client     | `client/value.go` + `predicate.go` + `extract.go` + `bodypath.go` — value runtime | `IMPL-09-client-value.md`             |
 | 10  | [ ]    | client     | `client/pagination.go` — collapse 7 variants → 4 + `custom`                    | `IMPL-10-client-pagination.md`          |
