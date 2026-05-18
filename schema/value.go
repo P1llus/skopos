@@ -17,29 +17,42 @@ import (
 // YAML authoring rules:
 //
 //	/api/v1/events        → LiteralString ("/api/v1/events")
+//	${state.url}/path     → desugared to Concat with interleaved Refs
 //	100                   → LiteralInt(100)
 //	true                  → LiteralBool(true)
 //	null                  → IsZero
-//	{literal_string: "x"} → LiteralString("x")  (explicit form)
-//	{ref: cursor.last_timestamp}         → Ref
+//	{literal_string: "x"} → LiteralString("x")  (no interpolation scan)
+//	{ref: state.url}                     → Ref
 //	{ref: state.url, default: "http://…"} → Ref with Default
-//	{now: true, offset: "-1h", format: rfc3339} → Now
+//	{now: true}                          → Now (current moment)
 //	{concat: [<Value>, ...]}             → Concat
 //	{select: {branches: [...], default: <Value>}} → Select
-//	{format: string, value: {ref: state.page_size}} → Format
-//	{base64: {concat: [...]}}            → Base64
+//	{format: <verb-or-layout>, value: <Value>}    → Format
+//	{base64: <Value>}                    → Base64
 //	{list: [<Value>, ...]}               → List
 //	{object: {<key>: <Value>, ...}}      → Object (explicit; required for any
 //	                                       map-shaped Value)
+//	{add: [<Value>, <Value>]}            → Add (positional 2-operand)
+//	{subtract: [<Value>, <Value>]}       → Subtract (positional 2-operand)
+//	{max: <list-or-projection>}          → Max (reducer)
+//	{min: <list-or-projection>}          → Min (reducer)
+//	{first: <list-or-projection>}        → First (reducer)
+//	{last: <list-or-projection>}         → Last (reducer)
+//	{count: <list-or-projection>}        → Count (reducer)
+//	{regex: {pattern, from, capture?, default?}} → Regex
 //
 // A map-shaped Value MUST carry exactly one discriminator key. There is no
-// silent fallback for an arbitrary mapping; authors who want a literal map
+// silent fallback for arbitrary mappings; authors who want a literal map
 // must wrap it in {object: {...}}. This isolates Object as the only form whose
 // inner keys are NOT re-interpreted as discriminators (inner keys are literal
 // strings; inner values still recurse as Values).
+//
+// Any YAML/JSON string scalar in a Value position is scanned for ${<path>}
+// interpolation segments and desugared into a Concat. A scalar with no '$'
+// is preserved as a plain LiteralString on the fast path.
 type Value struct {
 	// LiteralString is the scalar string form, set when the YAML/JSON
-	// node is a quoted or untagged scalar.
+	// node is a quoted or untagged scalar with no interpolation segments.
 	LiteralString *string
 	// LiteralInt is the scalar integer form, set when the YAML/JSON
 	// node is an integer literal.
@@ -53,15 +66,20 @@ type Value struct {
 
 	// Ref is the {ref: <path>, default?: <Value>} form.
 	Ref *RefValue
-	// Now is the {now: true, offset?: <Value>} form.
+	// Now is the {now: true} form.
 	Now *NowValue
 	// Concat is the {concat: [<Value>, ...]} form: concatenate the
-	// resolved string representation of each element.
+	// resolved string representation of each element. Also produced by
+	// the string-interpolation desugaring of any scalar containing
+	// ${...} segments.
 	Concat []Value
 	// Select is the {select: {branches: [...], default: <Value>}} form.
 	Select *SelectValue
-	// Format is the {format: <verb>, value: <Value>} form: apply a
-	// format verb (rfc3339, unix_seconds, ...) to the inner value.
+	// Format is the {format: <verb-or-layout>, value: <Value>} form:
+	// apply a format verb to the inner value. The verb set is closed
+	// (string, int, bool, rfc3339, rfc3339nano, unix_seconds, unix_millis,
+	// duration, url_encode, parse_duration); any other verb-position
+	// string is treated as a Go date layout by downstream consumers.
 	Format *FormatValue
 	// Base64 is the {base64: <Value>} form: base64-encode the resolved
 	// inner value.
@@ -73,6 +91,36 @@ type Value struct {
 	// strings (not re-interpreted as discriminators); inner values
 	// recurse as Values. Encoded as {object: {<key>: <Value>, ...}}.
 	Object map[string]Value
+
+	// Add is the {add: [<Value>, <Value>]} form: positional 2-operand
+	// arithmetic. Type pairs: time + duration → time;
+	// duration + duration → duration; int + int → int.
+	Add *ArithExpr
+	// Subtract is the {subtract: [<Value>, <Value>]} form: positional
+	// 2-operand arithmetic. Type pairs: time - duration → time;
+	// time - time → duration; duration - duration → duration;
+	// int - int → int.
+	Subtract *ArithExpr
+	// Max is the {max: <list-or-projection>} reducer: largest element.
+	// The operand resolves to a list (either a literal {list: [...]} or
+	// a list-shaped projection such as {ref: events.*.timestamp}).
+	Max *Value
+	// Min is the {min: <list-or-projection>} reducer: smallest element.
+	Min *Value
+	// First is the {first: <list-or-projection>} reducer: first element
+	// in declared order.
+	First *Value
+	// Last is the {last: <list-or-projection>} reducer: last element
+	// in declared order.
+	Last *Value
+	// Count is the {count: <list-or-projection>} reducer: cardinality.
+	Count *Value
+
+	// Regex is the {regex: {pattern, from, capture?, default?}} form:
+	// apply a Go regular expression to the resolved string of From,
+	// returning the matched substring (or the chosen capture group when
+	// Capture is set).
+	Regex *RegexExpr
 }
 
 // valueDiscriminatorKeys is the closed set of map keys that select a Value
@@ -87,16 +135,14 @@ var valueDiscriminatorKeys = []string{
 	"base64",
 	"list",
 	"object",
-}
-
-// removedValueDiscriminatorKeys carries deleted discriminator keys whose
-// presence in a YAML/JSON Value mapping should surface a precise migration
-// hint instead of the generic "no recognised discriminator key" error.
-// pickValueDiscriminator consults this map after a no-match outcome so
-// authors who copy an old template see exactly which form replaced theirs.
-var removedValueDiscriminatorKeys = map[string]string{
-	"from_pagination": "{from_pagination: <role>} was removed in slice 4; use {ref: cursor.<name>} instead (e.g. {ref: cursor.token}, {ref: cursor.page}, {ref: cursor.offset}, {ref: cursor.scroll_id}, {ref: cursor.<cursor_var>} for graphql_relay)",
-	"from_progress":   "{from_progress: <role>} was removed in slice 4; use {ref: cursor.<name>} instead (latest_timestamp → cursor.last_timestamp; window_start → cursor.window_start; window_end → cursor.window_end)",
+	"add",
+	"subtract",
+	"max",
+	"min",
+	"first",
+	"last",
+	"count",
+	"regex",
 }
 
 // valueVariantAllowedKeys names every map key that may appear alongside a
@@ -106,13 +152,21 @@ var removedValueDiscriminatorKeys = map[string]string{
 var valueVariantAllowedKeys = map[string]map[string]struct{}{
 	"literal_string": {"literal_string": {}},
 	"ref":            {"ref": {}, "default": {}},
-	"now":            {"now": {}, "offset": {}},
+	"now":            {"now": {}},
 	"concat":         {"concat": {}},
 	"select":         {"select": {}},
 	"format":         {"format": {}, "value": {}},
 	"base64":         {"base64": {}},
 	"list":           {"list": {}},
 	"object":         {"object": {}},
+	"add":            {"add": {}},
+	"subtract":       {"subtract": {}},
+	"max":            {"max": {}},
+	"min":            {"min": {}},
+	"first":          {"first": {}},
+	"last":           {"last": {}},
+	"count":          {"count": {}},
+	"regex":          {"regex": {}},
 }
 
 // checkValueSiblingKeys verifies that every key in keys is permitted alongside
@@ -151,29 +205,19 @@ func sortedAllowedKeys(m map[string]struct{}) string {
 // predicateContainsSecret where relevant) so any state-ref reachable from
 // the new field still propagates the secret marker.
 type RefValue struct {
-	// Path is the namespace-rooted locator. Legal roots:
-	// state.<name>, cursor.<name>, extract.<name>,
-	// steps.<id>.body.<path>, steps.<id>.header.<name>,
-	// response.body.<path>, response.header.<name>, item.<path>.
-	// The response.<...> roots are contextual: valid only at the
-	// call sites listed in docs/schema.md ("response.* call-site
-	// table") — most commonly inside complete_when predicates.
+	// Path is the namespace-rooted locator.
 	Path Path `yaml:"ref" json:"ref"`
 	// Default, when set, is the fallback Value used when the reference
 	// resolves to nil at evaluation time.
 	Default *Value `yaml:"default,omitempty" json:"default,omitempty"`
 }
 
-// NowValue is the {now: true, offset?: <Value>} form. To coerce a Now value to
-// a specific representation, wrap it with a Format Value:
-// {format: rfc3339, value: {now: true}}. This keeps Now and Format orthogonal
-// and avoids a discriminator-key clash between Now and the Format Value form.
-type NowValue struct {
-	// Offset, when set, is a duration Value added to (or subtracted
-	// from) now() before returning. Use a negative duration to look
-	// backwards (e.g. {offset: "-5m"}).
-	Offset *Value `yaml:"offset,omitempty" json:"offset,omitempty"`
-}
+// NowValue is the {now: true} form. To coerce a Now value to a specific
+// representation, wrap it with a Format Value:
+// {format: rfc3339, value: {now: true}}. To shift the moment by a duration,
+// use Arithmetic: {add: [{now: true}, "1h"]} or
+// {subtract: [{now: true}, "30m"]}.
+type NowValue struct{}
 
 // SelectBranch is one branch of a {select: ...} Value.
 type SelectBranch struct {
@@ -192,14 +236,34 @@ type SelectValue struct {
 	Default Value `yaml:"default" json:"default"`
 }
 
-// FormatValue is the {format: <verb>, value: <Value>} form.
+// FormatValue is the {format: <verb-or-layout>, value: <Value>} form.
 type FormatValue struct {
-	// Verb is the format-verb name: string, int, bool, rfc3339,
-	// rfc3339nano, unix_seconds, unix_millis, duration, url_encode,
-	// parse_duration.
+	// Verb is the format-verb name or a Go date layout string.
 	Verb string `yaml:"format" json:"format"`
 	// Value is the inner Value the verb is applied to.
 	Value Value `yaml:"value" json:"value"`
+}
+
+// ArithExpr is the operand pair for {add: [...]} and {subtract: [...]}. The
+// codec enforces exactly two operands; operand order is significant.
+type ArithExpr struct {
+	// Operands holds the two positional operands.
+	Operands []Value
+}
+
+// RegexExpr is the {regex: {pattern, from, capture?, default?}} form.
+type RegexExpr struct {
+	// Pattern is the Go regular expression source.
+	Pattern string `yaml:"pattern" json:"pattern"`
+	// From is the Value whose resolved string the pattern matches.
+	From Value `yaml:"from" json:"from"`
+	// Capture, when non-zero, selects the 1-based capture group to
+	// return. Zero (or omitted) returns the full match.
+	Capture int `yaml:"capture,omitempty" json:"capture,omitempty"`
+	// Default, when set, is the Value returned when the pattern does
+	// not match. Absent both match and default, the result is a zero
+	// Value.
+	Default *Value `yaml:"default,omitempty" json:"default,omitempty"`
 }
 
 // ---- YAML unmarshalling ----
@@ -238,9 +302,14 @@ func (v *Value) unmarshalYAMLScalar(node *yaml.Node) error {
 		v.LiteralBool = &b
 		return nil
 	default:
-		// All other scalars (!!str, !!float, untagged) become LiteralString.
-		s := node.Value
-		v.LiteralString = &s
+		// All other scalars (!!str, !!float, untagged) flow through
+		// the interpolation desugaring path. Strings with no '$' are
+		// returned as plain LiteralString on the fast path.
+		desugared, err := desugarInterpolation(node.Value)
+		if err != nil {
+			return fmt.Errorf("schema.Value at line %d: %w", node.Line, err)
+		}
+		*v = desugared
 		return nil
 	}
 }
@@ -276,8 +345,7 @@ func (v *Value) unmarshalYAMLMap(node *yaml.Node) error {
 
 	case "now":
 		var raw struct {
-			Now    bool   `yaml:"now"`
-			Offset *Value `yaml:"offset,omitempty"`
+			Now bool `yaml:"now"`
 		}
 		if err := node.Decode(&raw); err != nil {
 			return fmt.Errorf("schema.Value now at line %d: %w", node.Line, err)
@@ -285,7 +353,7 @@ func (v *Value) unmarshalYAMLMap(node *yaml.Node) error {
 		if !raw.Now {
 			return fmt.Errorf("schema.Value: {now: false} is not valid at line %d", node.Line)
 		}
-		v.Now = &NowValue{Offset: raw.Offset}
+		v.Now = &NowValue{}
 		return nil
 
 	case "concat":
@@ -357,9 +425,91 @@ func (v *Value) unmarshalYAMLMap(node *yaml.Node) error {
 		}
 		v.Object = raw.Object
 		return nil
+
+	case "add", "subtract":
+		ops, err := decodeArithOperandsYAML(node, disc)
+		if err != nil {
+			return err
+		}
+		if disc == "add" {
+			v.Add = &ArithExpr{Operands: ops}
+		} else {
+			v.Subtract = &ArithExpr{Operands: ops}
+		}
+		return nil
+
+	case "max", "min", "first", "last", "count":
+		inner, err := decodeReducerOperandYAML(node, disc)
+		if err != nil {
+			return err
+		}
+		switch disc {
+		case "max":
+			v.Max = &inner
+		case "min":
+			v.Min = &inner
+		case "first":
+			v.First = &inner
+		case "last":
+			v.Last = &inner
+		case "count":
+			v.Count = &inner
+		}
+		return nil
+
+	case "regex":
+		var raw struct {
+			Regex RegexExpr `yaml:"regex"`
+		}
+		if err := node.Decode(&raw); err != nil {
+			return fmt.Errorf("schema.Value regex at line %d: %w", node.Line, err)
+		}
+		if raw.Regex.Pattern == "" {
+			return fmt.Errorf("schema.Value regex at line %d: pattern is required", node.Line)
+		}
+		v.Regex = &raw.Regex
+		return nil
 	}
 
 	return fmt.Errorf("schema.Value at line %d: unreachable discriminator %q", node.Line, disc)
+}
+
+// decodeArithOperandsYAML extracts the two-element operand list under disc
+// from a YAML mapping node. Operand count is enforced at parse time.
+func decodeArithOperandsYAML(node *yaml.Node, disc string) ([]Value, error) {
+	var raw map[string][]Value
+	if err := node.Decode(&raw); err != nil {
+		return nil, fmt.Errorf("schema.Value %s at line %d: %w", disc, node.Line, err)
+	}
+	ops := raw[disc]
+	if len(ops) != 2 {
+		return nil, fmt.Errorf("schema.Value %s at line %d: must have exactly 2 operands, got %d", disc, node.Line, len(ops))
+	}
+	return ops, nil
+}
+
+// decodeReducerOperandYAML extracts the operand of a reducer (max/min/first/
+// last/count). A bare sequence is sugar for {list: [...]}; any other shape
+// decodes as a regular Value (typically a {ref: ...} projection).
+func decodeReducerOperandYAML(node *yaml.Node, disc string) (Value, error) {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Kind == yaml.ScalarNode && node.Content[i].Value == disc {
+			inner := node.Content[i+1]
+			if inner.Kind == yaml.SequenceNode {
+				var items []Value
+				if err := inner.Decode(&items); err != nil {
+					return Value{}, fmt.Errorf("schema.Value %s at line %d: %w", disc, node.Line, err)
+				}
+				return Value{List: items}, nil
+			}
+			var v Value
+			if err := inner.Decode(&v); err != nil {
+				return Value{}, fmt.Errorf("schema.Value %s at line %d: %w", disc, node.Line, err)
+			}
+			return v, nil
+		}
+	}
+	return Value{}, fmt.Errorf("schema.Value %s at line %d: missing operand", disc, node.Line)
 }
 
 // valueVariants returns the (name, payload) pairs for every Value variant
@@ -382,6 +532,14 @@ func valueVariants(v Value) (names []string, payloads []any) {
 	add("base64", v.Base64, v.Base64 != nil)
 	add("list", v.List, v.List != nil)
 	add("object", v.Object, v.Object != nil)
+	add("add", v.Add, v.Add != nil)
+	add("subtract", v.Subtract, v.Subtract != nil)
+	add("max", v.Max, v.Max != nil)
+	add("min", v.Min, v.Min != nil)
+	add("first", v.First, v.First != nil)
+	add("last", v.Last, v.Last != nil)
+	add("count", v.Count, v.Count != nil)
+	add("regex", v.Regex, v.Regex != nil)
 	return names, payloads
 }
 
@@ -414,11 +572,8 @@ func (v Value) IsAbsent() bool {
 	return v.IsZero || len(v.VariantNames()) == 0
 }
 
-// pickValueDiscriminator returns the single Value discriminator key present in
-// keys, or an error when zero or more than one are present. If keys contains a
-// removed-but-still-recognisable discriminator (see removedValueDiscriminatorKeys)
-// the error names the new replacement form so authors get a precise migration
-// hint rather than the generic "no recognised discriminator key" message.
+// pickValueDiscriminator returns the single Value discriminator key present
+// in keys, or an error when zero or more than one are present.
 func pickValueDiscriminator(keys map[string]struct{}) (string, error) {
 	matches := make([]string, 0, 2)
 	for _, k := range valueDiscriminatorKeys {
@@ -428,14 +583,10 @@ func pickValueDiscriminator(keys map[string]struct{}) (string, error) {
 	}
 	switch len(matches) {
 	case 0:
-		for k := range keys {
-			if hint, ok := removedValueDiscriminatorKeys[k]; ok {
-				return "", fmt.Errorf("%s", hint)
-			}
-		}
 		return "", fmt.Errorf("no recognised discriminator key " +
 			"(want one of literal_string|ref|now|concat|select|" +
-			"format|base64|list|object); wrap a literal map in {object: {...}}")
+			"format|base64|list|object|add|subtract|max|min|first|" +
+			"last|count|regex); wrap a literal map in {object: {...}}")
 	case 1:
 		return matches[0], nil
 	default:
@@ -452,6 +603,145 @@ func mapKeys(node *yaml.Node) map[string]struct{} {
 		}
 	}
 	return keys
+}
+
+// ---- String interpolation ----
+
+// desugarInterpolation scans s for ${<path>[|<default>]} segments and returns
+// the equivalent Value. A string with no '$' is returned as a plain
+// LiteralString on the fast path. A string with a single interpolation
+// segment and no surrounding text is returned as that segment directly;
+// otherwise the result is a Concat over the literal and ref segments.
+func desugarInterpolation(s string) (Value, error) {
+	if !strings.ContainsRune(s, '$') {
+		lit := s
+		return Value{LiteralString: &lit}, nil
+	}
+
+	var segments []Value
+	var lit strings.Builder
+	flushLit := func() {
+		if lit.Len() == 0 {
+			return
+		}
+		piece := lit.String()
+		segments = append(segments, Value{LiteralString: &piece})
+		lit.Reset()
+	}
+
+	for i := 0; i < len(s); {
+		if s[i] == '\\' && i+1 < len(s) && s[i+1] == '$' {
+			lit.WriteByte('$')
+			i += 2
+			continue
+		}
+		if s[i] == '$' && i+1 < len(s) && s[i+1] == '{' {
+			flushLit()
+			end, segText, err := scanInterpSegment(s, i+2)
+			if err != nil {
+				return Value{}, err
+			}
+			ref, err := parseInterpSegment(segText)
+			if err != nil {
+				return Value{}, fmt.Errorf("interpolation segment %q: %w", segText, err)
+			}
+			segments = append(segments, ref)
+			i = end
+			continue
+		}
+		lit.WriteByte(s[i])
+		i++
+	}
+	flushLit()
+
+	switch len(segments) {
+	case 0:
+		empty := ""
+		return Value{LiteralString: &empty}, nil
+	case 1:
+		return segments[0], nil
+	default:
+		return Value{Concat: segments}, nil
+	}
+}
+
+// scanInterpSegment reads the body of a ${...} segment starting at index start
+// (just after the opening '{'). Returns the index just past the closing '}'
+// and the unescaped segment body. A literal '{' inside the segment is written
+// '\{'.
+func scanInterpSegment(s string, start int) (end int, body string, err error) {
+	var b strings.Builder
+	i := start
+	for i < len(s) {
+		if s[i] == '\\' && i+1 < len(s) && s[i+1] == '{' {
+			b.WriteByte('{')
+			i += 2
+			continue
+		}
+		if s[i] == '}' {
+			return i + 1, b.String(), nil
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return 0, "", fmt.Errorf("unterminated ${...} segment")
+}
+
+// parseInterpSegment turns a segment body (path[|default]) into a Ref Value.
+// The text before '|' is the path; the text after '|' (if any) is parsed as
+// a YAML scalar so non-string defaults (int, bool) round-trip naturally.
+func parseInterpSegment(body string) (Value, error) {
+	pathStr := body
+	var defaultStr string
+	hasDefault := false
+	if idx := strings.IndexByte(body, '|'); idx >= 0 {
+		pathStr = body[:idx]
+		defaultStr = body[idx+1:]
+		hasDefault = true
+	}
+	pathStr = strings.TrimSpace(pathStr)
+	if pathStr == "" {
+		return Value{}, fmt.Errorf("empty path")
+	}
+	path, err := ParsePath(pathStr)
+	if err != nil {
+		return Value{}, err
+	}
+	ref := &RefValue{Path: path}
+	if hasDefault {
+		def, err := parseInterpDefault(defaultStr)
+		if err != nil {
+			return Value{}, fmt.Errorf("default %q: %w", defaultStr, err)
+		}
+		ref.Default = &def
+	}
+	return Value{Ref: ref}, nil
+}
+
+// parseInterpDefault decodes the text after '|' as a YAML scalar. An empty
+// default is an explicit empty string (the canonical "${ref|}" form).
+func parseInterpDefault(text string) (Value, error) {
+	if text == "" {
+		empty := ""
+		return Value{LiteralString: &empty}, nil
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		return Value{}, err
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		s := text
+		return Value{LiteralString: &s}, nil
+	}
+	scalar := doc.Content[0]
+	if scalar.Kind != yaml.ScalarNode {
+		return Value{}, fmt.Errorf("default must be a scalar")
+	}
+	var v Value
+	if err := v.unmarshalYAMLScalar(scalar); err != nil {
+		return Value{}, err
+	}
+	return v, nil
 }
 
 // ---- YAML marshalling ----
@@ -480,11 +770,7 @@ func (v Value) MarshalYAML() (interface{}, error) {
 		return map[string]interface{}{"ref": v.Ref.Path}, nil
 
 	case v.Now != nil:
-		m := map[string]interface{}{"now": true}
-		if v.Now.Offset != nil {
-			m["offset"] = v.Now.Offset
-		}
-		return m, nil
+		return map[string]interface{}{"now": true}, nil
 
 	case len(v.Concat) > 0:
 		return map[string]interface{}{"concat": v.Concat}, nil
@@ -503,6 +789,30 @@ func (v Value) MarshalYAML() (interface{}, error) {
 
 	case v.Object != nil:
 		return map[string]interface{}{"object": v.Object}, nil
+
+	case v.Add != nil:
+		return map[string]interface{}{"add": v.Add.Operands}, nil
+
+	case v.Subtract != nil:
+		return map[string]interface{}{"subtract": v.Subtract.Operands}, nil
+
+	case v.Max != nil:
+		return map[string]interface{}{"max": *v.Max}, nil
+
+	case v.Min != nil:
+		return map[string]interface{}{"min": *v.Min}, nil
+
+	case v.First != nil:
+		return map[string]interface{}{"first": *v.First}, nil
+
+	case v.Last != nil:
+		return map[string]interface{}{"last": *v.Last}, nil
+
+	case v.Count != nil:
+		return map[string]interface{}{"count": *v.Count}, nil
+
+	case v.Regex != nil:
+		return map[string]interface{}{"regex": v.Regex}, nil
 	}
 
 	return nil, fmt.Errorf("schema.Value: zero value cannot be marshalled; for an explicit absent value set IsZero, for an empty string use literal_string: \"\"")
@@ -532,7 +842,11 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(bs, &s); err != nil {
 			return fmt.Errorf("schema.Value string: %w", err)
 		}
-		v.LiteralString = &s
+		desugared, err := desugarInterpolation(s)
+		if err != nil {
+			return fmt.Errorf("schema.Value: %w", err)
+		}
+		*v = desugared
 		return nil
 	case '{':
 		return v.unmarshalJSONMap(bs)
@@ -585,8 +899,7 @@ func (v *Value) unmarshalJSONMap(data []byte) error {
 
 	case "now":
 		var nv struct {
-			Now    bool   `json:"now"`
-			Offset *Value `json:"offset,omitempty"`
+			Now bool `json:"now"`
 		}
 		if err := json.Unmarshal(data, &nv); err != nil {
 			return fmt.Errorf("schema.Value.now: %w", err)
@@ -594,7 +907,7 @@ func (v *Value) unmarshalJSONMap(data []byte) error {
 		if !nv.Now {
 			return fmt.Errorf("schema.Value: {now: false} is not valid")
 		}
-		v.Now = &NowValue{Offset: nv.Offset}
+		v.Now = &NowValue{}
 		return nil
 
 	case "concat":
@@ -664,9 +977,73 @@ func (v *Value) unmarshalJSONMap(data []byte) error {
 		}
 		v.Object = o.Object
 		return nil
+
+	case "add", "subtract":
+		var ops []Value
+		if err := json.Unmarshal(raw[disc], &ops); err != nil {
+			return fmt.Errorf("schema.Value.%s: %w", disc, err)
+		}
+		if len(ops) != 2 {
+			return fmt.Errorf("schema.Value.%s: must have exactly 2 operands, got %d", disc, len(ops))
+		}
+		if disc == "add" {
+			v.Add = &ArithExpr{Operands: ops}
+		} else {
+			v.Subtract = &ArithExpr{Operands: ops}
+		}
+		return nil
+
+	case "max", "min", "first", "last", "count":
+		inner, err := decodeReducerOperandJSON(raw[disc])
+		if err != nil {
+			return fmt.Errorf("schema.Value.%s: %w", disc, err)
+		}
+		switch disc {
+		case "max":
+			v.Max = &inner
+		case "min":
+			v.Min = &inner
+		case "first":
+			v.First = &inner
+		case "last":
+			v.Last = &inner
+		case "count":
+			v.Count = &inner
+		}
+		return nil
+
+	case "regex":
+		var r RegexExpr
+		if err := json.Unmarshal(raw["regex"], &r); err != nil {
+			return fmt.Errorf("schema.Value.regex: %w", err)
+		}
+		if r.Pattern == "" {
+			return fmt.Errorf("schema.Value.regex: pattern is required")
+		}
+		v.Regex = &r
+		return nil
 	}
 
 	return fmt.Errorf("schema.Value: unreachable discriminator %q", disc)
+}
+
+// decodeReducerOperandJSON parses the operand of a reducer from a JSON
+// RawMessage. A bare array is sugar for {list: [...]}; any other shape
+// decodes as a regular Value.
+func decodeReducerOperandJSON(raw json.RawMessage) (Value, error) {
+	trimmed := bytes.TrimSpace([]byte(raw))
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var items []Value
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return Value{}, err
+		}
+		return Value{List: items}, nil
+	}
+	var inner Value
+	if err := json.Unmarshal(raw, &inner); err != nil {
+		return Value{}, err
+	}
+	return inner, nil
 }
 
 // ---- JSON marshalling ----
@@ -696,10 +1073,9 @@ func (v Value) MarshalJSON() ([]byte, error) {
 
 	case v.Now != nil:
 		type nowOut struct {
-			Now    bool   `json:"now"`
-			Offset *Value `json:"offset,omitempty"`
+			Now bool `json:"now"`
 		}
-		return json.Marshal(nowOut{Now: true, Offset: v.Now.Offset})
+		return json.Marshal(nowOut{Now: true})
 
 	case len(v.Concat) > 0:
 		type concatOut struct {
@@ -737,6 +1113,54 @@ func (v Value) MarshalJSON() ([]byte, error) {
 			Object map[string]Value `json:"object"`
 		}
 		return json.Marshal(objOut{Object: v.Object})
+
+	case v.Add != nil:
+		type addOut struct {
+			Add []Value `json:"add"`
+		}
+		return json.Marshal(addOut{Add: v.Add.Operands})
+
+	case v.Subtract != nil:
+		type subOut struct {
+			Subtract []Value `json:"subtract"`
+		}
+		return json.Marshal(subOut{Subtract: v.Subtract.Operands})
+
+	case v.Max != nil:
+		type maxOut struct {
+			Max Value `json:"max"`
+		}
+		return json.Marshal(maxOut{Max: *v.Max})
+
+	case v.Min != nil:
+		type minOut struct {
+			Min Value `json:"min"`
+		}
+		return json.Marshal(minOut{Min: *v.Min})
+
+	case v.First != nil:
+		type firstOut struct {
+			First Value `json:"first"`
+		}
+		return json.Marshal(firstOut{First: *v.First})
+
+	case v.Last != nil:
+		type lastOut struct {
+			Last Value `json:"last"`
+		}
+		return json.Marshal(lastOut{Last: *v.Last})
+
+	case v.Count != nil:
+		type countOut struct {
+			Count Value `json:"count"`
+		}
+		return json.Marshal(countOut{Count: *v.Count})
+
+	case v.Regex != nil:
+		type regexOut struct {
+			Regex *RegexExpr `json:"regex"`
+		}
+		return json.Marshal(regexOut{Regex: v.Regex})
 	}
 
 	return nil, fmt.Errorf("schema.Value: zero value cannot be marshalled; for an explicit absent value set IsZero, for an empty string use literal_string: \"\"")
@@ -757,16 +1181,18 @@ func (v Value) MarshalJSON() ([]byte, error) {
 // The traversal covers every container the IR can express:
 //
 //   - Ref (and Ref.Default)
-//   - Now.Offset
 //   - Concat elements
 //   - Select branches (when, value) and Select default
 //   - Format.Value
 //   - Base64 (the wrapped Value)
 //   - List elements
 //   - Object map values
+//   - Add / Subtract operand pairs
+//   - Max / Min / First / Last / Count reducer operands
+//   - Regex.From and Regex.Default
 //
 // Predicate.Eq.Path is checked the same way as a state.<name> Ref. Literal
-// scalars are never secret.
+// scalars and {now: true} are never secret.
 func IsSecret(d *Doc, v Value) bool {
 	switch {
 	case v.Ref != nil:
@@ -774,10 +1200,6 @@ func IsSecret(d *Doc, v Value) bool {
 			return true
 		}
 		if v.Ref.Default != nil && IsSecret(d, *v.Ref.Default) {
-			return true
-		}
-	case v.Now != nil:
-		if v.Now.Offset != nil && IsSecret(d, *v.Now.Offset) {
 			return true
 		}
 	case v.Concat != nil:
@@ -815,6 +1237,45 @@ func IsSecret(d *Doc, v Value) bool {
 				return true
 			}
 		}
+	case v.Add != nil:
+		for _, e := range v.Add.Operands {
+			if IsSecret(d, e) {
+				return true
+			}
+		}
+	case v.Subtract != nil:
+		for _, e := range v.Subtract.Operands {
+			if IsSecret(d, e) {
+				return true
+			}
+		}
+	case v.Max != nil:
+		if IsSecret(d, *v.Max) {
+			return true
+		}
+	case v.Min != nil:
+		if IsSecret(d, *v.Min) {
+			return true
+		}
+	case v.First != nil:
+		if IsSecret(d, *v.First) {
+			return true
+		}
+	case v.Last != nil:
+		if IsSecret(d, *v.Last) {
+			return true
+		}
+	case v.Count != nil:
+		if IsSecret(d, *v.Count) {
+			return true
+		}
+	case v.Regex != nil:
+		if IsSecret(d, v.Regex.From) {
+			return true
+		}
+		if v.Regex.Default != nil && IsSecret(d, *v.Regex.Default) {
+			return true
+		}
 	}
 	return false
 }
@@ -825,7 +1286,7 @@ func isSecretStatePath(d *Doc, p Path) bool {
 	if d == nil || d.State == nil || len(p.Parts) < 2 || p.Parts[0] != "state" {
 		return false
 	}
-	fd, ok := d.State.Fields[p.Parts[1]]
+	fd, ok := d.State[p.Parts[1]]
 	if !ok {
 		return false
 	}
