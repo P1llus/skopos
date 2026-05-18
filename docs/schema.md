@@ -3,40 +3,34 @@
 Per-field lookup for the YAML spec the runner consumes — every field,
 every rule, every namespace, every Value form. Grep this file by field
 name. For runtime behaviour see [`runtime.md`](runtime.md); for the
-catalogue of vendor patterns see [`api-methods.md`](api-methods.md).
-
-> **Looking for the bare Go-struct → YAML mapping?**
-> [`schema-reference.md`](schema-reference.md) is a generated sidecar
-> listing every exported field on every struct in `schema/` with its
-> YAML name, Go type, optionality, and one-line description. This
-> document carries the prose — authoring rules, namespace tables,
-> Value forms, examples, design rules — that the generator cannot
-> derive from Go types alone.
+catalogue of vendor patterns see [`api-methods.md`](api-methods.md); for
+state and cache persistence see [`stores.md`](stores.md); for end-to-end
+usage walkthroughs see [`usage.md`](usage.md).
 
 A spec is one YAML (or JSON) document with these top-level keys:
 
-| Key            | Required | Section                            |
-|----------------|----------|------------------------------------|
-| `ir_version`   | yes      | [#ir_version](#ir_version)         |
-| `state`        | no       | [#state](#state)                   |
-| `defaults`     | no       | [#defaults](#defaults)             |
-| `auth`         | yes      | [#auth](#auth)                     |
-| `requests`     | yes      | [#requests](#requests)             |
-| `response`     | yes      | [#response](#response)             |
-| `pagination`   | yes      | [#pagination](#pagination)         |
-| `progress`     | yes      | [#progress](#progress)             |
-| `error`        | no       | [#error](#error)                   |
+| Key            | Required | Section                              |
+|----------------|----------|--------------------------------------|
+| `ir_version`   | yes      | [#ir_version](#ir_version)           |
+| `state`        | no       | [#state](#state)                     |
+| `auth`         | yes      | [#auth](#auth)                       |
+| `requests`     | yes      | [#requests](#requests)               |
+| `response`     | yes      | [#response](#response)               |
+| `pagination`   | yes      | [#pagination](#pagination)           |
+| `progress`     | yes      | [#progress](#progress)               |
+| `error`        | no       | [#error](#error)                     |
 
 Cross-cutting:
 
 - [Values](#values) — the universal dynamic-field type used everywhere
   a string, number, or boolean could appear.
-- [Paths](#paths) — dotted-string references into the runtime
-  namespaces (`state`, `cursor`, `extract`, `steps`, `response`,
-  `item`).
+- [Paths](#paths) — namespace-rooted dotted-string references.
 - [Predicates](#predicates) — boolean expressions for `if:`,
-  `complete_when:`, `multi_mode.branches[].when:`,
+  `terminate_when:`, `multi_mode.branches[].when:`,
   `Value.select.branches[].when:`.
+- [Namespaces](#namespaces) — every root that paths and refs can start
+  with, and where each is written.
+- [Types](#types) — the closed set of `state.<name>.type` verbs.
 - [Design rules](#design-rules) — invariants that hold across the
   whole schema.
 
@@ -60,51 +54,62 @@ bump.
 
 ## `state`
 
-Typed field declarations for operator-supplied configuration (URLs, API
-keys, durations) and runtime-mutated state slots that authors name
-explicitly. Optional — omit if the spec has no operator input.
+A flat map of typed field declarations. Each key is a state field name;
+each value is a [field declaration](#state-field-declaration). The map
+covers operator-supplied configuration (URLs, API keys, page sizes),
+high-water marks persisted across drains (timestamps, server cursors),
+and per-drain scratch slots written by `pagination:`.
+
+Optional — omit when the spec has no state at all (rare; most templates
+declare at least a URL and credentials).
 
 ```yaml
 state:
-  fields:
-    url:           {type: url,      default: "https://api.example.com"}
-    api_key:       {type: secret}
-    page_size:     {type: int,      default: 100}
-    poll_interval: {type: duration, default: "30s"}
-    region:        {type: enum,     values: [us, eu, ap], default: us}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  api_key:
+    type: secret
+  page_size:
+    type: int
+    default: 5
+  last_timestamp:
+    type: timestamp
+    format: rfc3339
+    default: {subtract: [{now: true}, "720h"]}
+  next_token:
+    type: string
 ```
 
-### Field shape
+### State field declaration
 
-| Field        | Required | Description                                                                                  |
-|--------------|----------|----------------------------------------------------------------------------------------------|
-| `type`       | yes      | One of `string`, `int`, `bool`, `secret`, `duration`, `url`, `enum`.                         |
-| `default`    | no       | Default value when the operator does not supply one. Must match `type`.                      |
-| `values`     | no       | Allowed values; only valid when `type: enum`.                                                |
-| `mutability` | no       | `config` (default; operator-set, not persisted) or `runtime` (program-mutated, persisted).   |
+| Field      | Required | Description |
+|------------|----------|-------------|
+| `type`     | yes      | One of `string`, `int`, `bool`, `secret`, `duration`, `timestamp`, `url`, `enum`. See the [type table](#types). |
+| `default`  | no       | Any [Value](#values), not just a literal. The default is applied on first run (or whenever the operator supplies no input) and may compose `{now: true}`, `{subtract: [...]}`, `{ref: ...}`, etc. |
+| `values`   | no       | Closed enumeration. Required and valid only when `type: enum`. |
+| `format`   | no       | Wire-format hint for `type: timestamp` and `type: duration`. Closed-set verb (`rfc3339`, `rfc3339nano`, `unix_seconds`, `unix_millis`) or a Go layout string (e.g. `"2006-01-02T15:04:05.000-0700"`). Default for `timestamp` is `rfc3339`. Ignored on other types. |
 
-### Field types
+### Inferred lifetime
 
-| Type | Wire type | Semantic |
-|------|-----------|----------|
-| `string` | YAML/JSON string | UTF-8 string; no special parsing. |
-| `int` | YAML/JSON integer | 64-bit signed integer. |
-| `bool` | YAML/JSON boolean | `true` or `false`. |
-| `secret` | YAML/JSON string | Like `string` but marked non-logging. |
-| `duration` | YAML/JSON string | Go-style duration (e.g. `"720h"`, `"-30m"`). |
-| `url` | YAML/JSON string | URL string; no validation at load time. |
-| `enum` | YAML/JSON string | One of the declared `values`. |
+A state field's *lifetime* — whether it is operator config, per-drain
+scratch, or a persistent high-water mark — is **not** declared on the
+field. It is derived from where the field appears as the `to:` of a
+write:
 
-### Mutability
+| Lifetime          | Inference rule                                                                   | Examples                                          |
+|-------------------|----------------------------------------------------------------------------------|---------------------------------------------------|
+| Operator config   | Has a `default:` (or is operator-supplied) and is never the `to:` of any write.  | `state.url`, `state.api_key`, `state.page_size`   |
+| Per-drain scratch | Appears as the `to:` of any `pagination.*.to` write.                             | `state.next_token`, `state.page`, `state.next_url`|
+| Persistent        | Appears as the `to:` of any `progress:` write, or of any `requests[].extract` with `to: state.*`. | `state.last_timestamp`, `state.window_start` |
 
-- `config` (default): operator-set; never written back at runtime. The
-  most common case for credentials, URLs, intervals, page sizes, etc.
-- `runtime`: program-mutated. The runner persists the value across
-  iterations (e.g. an OAuth2 access token cached by
-  `auth.oauth2.<grant>.cache`, or any application-level cached login).
-  The OAuth2 cache `store_in` slot auto-registers a `runtime`-typed
-  `string` field with the same name; authors must not redeclare that
-  name under `state.fields`.
+The runner wipes per-drain fields at the start of every drain. Operator
+config and persistent fields survive restarts (see
+[`stores.md`](stores.md)).
+
+A field written from both `pagination:` and `progress:` is rejected at
+validate time. This conflict almost never arises in practice; when it
+does, the author renames one of the destinations.
 
 ### Secret propagation
 
@@ -112,58 +117,33 @@ state:
 through every `Value` form they participate in:
 
 - Runtime callers MUST omit the value (and any `Format` / `Concat` /
-  `Base64` Value that transitively contains it) from rendered error
-  messages, logs, and debug output. The contract attaches to the
-  value's reference path, not just the field declaration: a `Format`
-  wrapping `{ref: state.api_key}` is also secret.
+  `Base64` / interpolated string Value that transitively contains it)
+  from rendered error messages, logs, and debug output.
 - Where the runtime cannot redact a transitive composition (e.g. a
-  `Concat` whose inputs include both a literal URL and a secret
-  token), the entire composed Value MUST be treated as secret.
+  `Concat` whose inputs include both a literal URL and a secret token),
+  the entire composed Value MUST be treated as secret.
 
 Callers MUST call `schema.IsSecret(d, v)` on any Value before rendering
 it into a log line, error message, or debug surface. The helper walks
 `Concat` / `Format.Value` / `Base64` / `Object` values / `List` /
-`Select` branches / `Select.Default` / `Now.Offset` / `Ref.Default` and
-returns true when any reachable `Ref` resolves to a secret-typed state
-field.
+`Select` branches / `Select.Default` / `Ref.Default` and returns true
+when any reachable `Ref` resolves to a secret-typed state field.
 
 ### Rules
 
-- Field names must be unique within `state.fields`.
+- Field names must be unique within `state`.
 - `enum` fields must carry a non-empty `values` list.
-- `auth.oauth2.<grant>.cache.store_in` implicitly registers a
-  `runtime` `string` state slot. Authors must not also declare that
-  name under `state.fields`.
-- All `state.<name>` references in `Value` and `Predicate` must
-  resolve to a declared field.
-
----
-
-## `defaults`
-
-Cross-cutting defaults applied to every request.
-
-| Field      | Required | Description                                                                  |
-|------------|----------|------------------------------------------------------------------------------|
-| `base_url` | yes      | A [Value](#values) prepended to every `requests[].path`. Use `state.url`.    |
-
-```yaml
-defaults:
-  base_url: {ref: state.url}
-```
-
-A request can override by setting `url:` (absolute) instead of `path:`
-— `base_url` is NOT applied when a request uses `url:`. When
-`defaults.base_url` is unset and a request uses `path:`, the bare path
-string IS the URL — no prefix is applied. Authors who want a host
-prefix must declare `defaults.base_url` explicitly.
+- Every `to: state.<name>` write (from `pagination:`, `progress:`, or
+  `requests[].extract`) must target a declared state field.
+- Every `{ref: state.<name>}` in any Value or Predicate must resolve
+  to a declared state field.
 
 ---
 
 ## `auth`
 
 Discriminated union — exactly one variant key. Applied to every
-request (including OAuth2 token fetches, which use the operator's
+request, including OAuth2 token fetches (which use the operator's
 `Client`).
 
 ### `auth.none`
@@ -231,7 +211,7 @@ required.
 | `client_secret` | yes      | [Value](#values) — typically secret.                                       |
 | `scopes`        | no       | List of strings; joined with spaces.                                       |
 | `audience`      | no       | String; sent as the `audience` form field when set.                        |
-| `cache`         | no       | [TokenCache](#tokencache) — when set, the token is cached across drains.   |
+| `cache`         | no       | [Cache](#cache) — when set, the token is cached in `cache.<name>`.         |
 
 #### `auth.oauth2.password_grant`
 
@@ -244,28 +224,17 @@ OAuth2 Resource Owner Password Credentials (RFC 6749 §4.3).
 | `password`  | yes      | [Value](#values) — typically secret.                 |
 | `client_id` | no       | [Value](#values); some servers Basic-auth instead.   |
 | `scopes`    | no       | List of strings; joined with spaces.                 |
-| `cache`     | no       | [TokenCache](#tokencache).                           |
-
-#### TokenCache
-
-Caches the fetched OAuth2 token between drains so the next request
-hits the API directly rather than re-fetching a token.
-
-| Field           | Required | Description                                                                                  |
-|-----------------|----------|----------------------------------------------------------------------------------------------|
-| `store_in`      | yes      | State slot name. Auto-registers as a runtime `string` field — do NOT declare under `state`.  |
-| `expiry_field`  | yes      | Body-relative [Path](#paths) to the response field carrying the token's lifetime.            |
-| `expiry_buffer` | yes      | Go-style duration — re-fetch when remaining lifetime drops below this.                       |
+| `cache`     | no       | [Cache](#cache).                                     |
 
 ### `auth.multi_mode`
 
 Dispatch between auth strategies based on a [Predicate](#predicates)
-over state or cursor.
+over `state.*` or any other namespace.
 
-| Field      | Required | Description                                                          |
-|------------|----------|----------------------------------------------------------------------|
-| `branches` | yes      | List of `{when: <predicate>, auth: <Auth>}`; first matching wins.    |
-| `default`  | yes      | `{auth: <Auth>}` — fallback when no branch matches.                  |
+| Field      | Required | Description                                                                                 |
+|------------|----------|---------------------------------------------------------------------------------------------|
+| `branches` | yes      | List of `{when: <Predicate>, auth: <Auth>}`; first matching branch wins.                    |
+| `default`  | yes      | Bare `Auth` value (same shape as `branches[].auth`). Fallback when no branch matches.       |
 
 ```yaml
 auth:
@@ -273,23 +242,52 @@ auth:
     branches:
       - when: {eq: {path: state.region, value: "gov"}}
         auth: {bearer: {token: {ref: state.gov_token}}}
-    default:
-      auth: {bearer: {token: {ref: state.commercial_token}}}
+    default: {bearer: {token: {ref: state.commercial_token}}}
 ```
 
 ### Auth rules
 
 - `multi_mode` may not nest another `multi_mode`.
-- `multi_mode.default.auth` is required and may itself be `none: {}`
-  — the explicit form when the operator wants the request to fire
+- `multi_mode.default` is required and may itself be `none: {}` — the
+  explicit form when the operator wants the request to fire
   unauthenticated whenever no branch's predicate matches.
 - `auth.oauth2` must carry exactly one grant key
   (`client_credentials` or `password_grant`). Zero or multiple grant
   keys are rejected.
-- `oauth2.<grant>.cache.store_in` must not match any `state.fields`
-  key.
 - Every `{ref: state.<name>}` used inside any auth Value must resolve
   to a declared field.
+
+### Cache
+
+Both `auth.oauth2.<grant>.cache` and `requests[].cache` (§
+[Per-entry fields](#per-entry-fields)) carry the same `Cache` struct.
+The cache writes its captured value into a `cache.<name>` slot, which
+other request slots read back with `{ref: cache.<name>}`. Cache slots
+are process-memory only; they are cleared on runner restart and never
+persisted (see [`stores.md`](stores.md)).
+
+| Field         | Required | Description |
+|---------------|----------|-------------|
+| `to`          | yes      | `cache.<name>` slot. Reads use `{ref: cache.<name>}`. The runner allocates the slot if absent; authors do not declare it under `state:`. |
+| `expires_at`  | yes      | [Value](#values) resolving to a `time.Time`. Accepts a `default:` for APIs that return no explicit expiry (e.g. `{ref: response.body.expires_in, default: "1h"}`). |
+| `buffer`      | yes      | Go-style duration. Re-fetch when the remaining lifetime falls below this. |
+
+```yaml
+auth:
+  oauth2:
+    client_credentials:
+      token_url: {ref: state.token_url}
+      client_id: {ref: state.client_id}
+      client_secret: {ref: state.client_secret}
+      cache:
+        to: cache.access_token
+        expires_at: {ref: response.body.expires_in, default: "1h"}
+        buffer: 60s
+```
+
+The cached value is whatever the cached step writes — the OAuth2 access
+token for a grant, or the captured body field for a `requests[].cache`
+login. Subsequent requests reference it with `{ref: cache.<name>}`.
 
 ### Refresh tokens
 
@@ -299,9 +297,8 @@ separate auth variant. They are a secret-typed state field that feeds
 
 ```yaml
 state:
-  fields:
-    refresh_token:
-      type: secret
+  refresh_token:
+    type: secret
 auth:
   bearer:
     token: {ref: state.refresh_token}
@@ -317,100 +314,146 @@ model.
 ## `requests`
 
 Ordered list of HTTP requests run on every iteration. At least one
-required. The producer step (the one whose body holds events) is the
-last request by default; set `produces_events: true` on a different
-step to override.
+required. The producer step (the one whose body holds the events list)
+is the last request by default; set `produces_events: true` on a
+different step to override.
 
-Per-entry fields:
+Every request declares an absolute `url:` Value. There is no
+spec-level URL prefix; templates compose their URLs either with
+[string interpolation](#string-interpolation) (`"${state.url}/events"`)
+or with `{concat: [...]}`.
 
-| Field             | Required                       | Description                                                                                                                            |
-|-------------------|--------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|
-| `id`              | when referenced from elsewhere | Step identifier. Required for `steps.<id>.body.<path>` references and `async_job.*.step`.                                              |
-| `method`          | yes                            | HTTP verb (`GET`, `POST`, …).                                                                                                          |
-| `path`            | when `url` unset               | Path appended to `defaults.base_url`. [Value](#values).                                                                                |
-| `url`             | when `path` unset              | Absolute URL. [Value](#values). Mutually exclusive with `path`.                                                                        |
-| `query`           | no                             | Map of name → [Value](#values).                                                                                                        |
-| `headers`         | no                             | Map of name → [Value](#values).                                                                                                        |
-| `body`            | no                             | Discriminated union: `json:` (map of [Value](#values)), `form:` (same), or `raw:` ([Value](#values)). Exactly one.                     |
-| `extract`         | no                             | List of [ExtractVar](#extractvar) — capture fields out of the response.                                                                |
-| `fan_out`         | no                             | Per-item iteration over a list `Value`: the runner runs the step once per item with the `fan_out.as` name bound to the current value, then merges the per-item responses per `fan_out.merge`. Mutually exclusive with `cache`. |
-| `expect_status`   | no                             | List of HTTP status codes treated as success. Defaults to `[200]`.                                                                     |
-| `if`              | no                             | [Predicate](#predicates) — skip the step when false.                                                                                   |
-| `on_status`       | no                             | Map of status code → verb (`skip`, `fail`, `empty_events`, `invalidate_cache`). Per-step override of `error.mode` for that status.     |
-| `produces_events` | no                             | Marks this step as the events producer. At most one in the chain; defaults to the last request.                                       |
-| `cache`           | no                             | [RequestCache](#requestcache) — generic step-level cache for non-OAuth2 cached logins.                                                 |
+```yaml
+requests:
+  - method: GET
+    url: {concat: [{ref: state.url}, "/events"]}
+    query:
+      since: {ref: state.last_timestamp}
+      limit: "${state.page_size}"
+```
+
+### Per-entry fields
+
+| Field              | Required                       | Description |
+|--------------------|--------------------------------|-------------|
+| `id`               | when referenced from elsewhere | Step identifier. Required for `steps.<id>.body.<path>` references and for fan_out. |
+| `method`           | yes                            | HTTP verb (`GET`, `POST`, …). |
+| `url`              | yes                            | Absolute URL [Value](#values). |
+| `query`            | no                             | Map of name → [Value](#values). |
+| `headers`          | no                             | Map of name → [Value](#values). |
+| `body`             | no                             | Discriminated union: `json:` (map of [Value](#values)), `form:` (same), or `raw:` ([Value](#values)). Exactly one. |
+| `extract`          | no                             | List of [ExtractVar](#extractvar) — capture fields out of the response. |
+| `fan_out`          | no                             | [FanOut](#fanout) — per-item iteration over a list Value. Mutually exclusive with `cache`. |
+| `expect_status`    | no                             | List of HTTP status codes treated as success. Defaults to `[200]`. |
+| `if`               | no                             | [Predicate](#predicates) — skip the step when false. |
+| `terminate_when`   | no                             | [Predicate](#predicates) — when true, stop looping this step and proceed to the next request. See [Request-level loops](#request-level-loops). |
+| `on_status`        | no                             | Map of status code → verb (`skip`, `fail`, `empty_events`, `invalidate_cache`). Per-step override of `error.mode` for that status. |
+| `produces_events`  | no                             | Marks this step as the events producer. At most one in the chain; defaults to the last request. |
+| `cache`            | no                             | [Cache](#cache) — generic step-level cache for non-OAuth2 cached logins. Mutually exclusive with `fan_out`. |
 
 ### Request rules
 
 - At least one element.
-- `path:` and `url:` are mutually exclusive.
-- `if:` and `on_status:` may appear on **any** step. When a step is
-  skipped (by `if=false` or by `on_status: <code>: skip`):
-  - `{ref: steps.<that-id>.body.<...>}` resolves to a zero `Value`.
+- `if:` and `on_status:` may appear on any step. When a step is skipped
+  (by `if=false` or by `on_status: <code>: skip`):
+  - `{ref: steps.<that-id>.body.<...>}` resolves to a zero Value.
   - `{present: steps.<that-id>.body.<...>}` returns `false`.
   - Downstream `{select}` branches must guard with `{present: ...}` to
     handle the skipped path.
 - `on_status` keys must be HTTP status codes in `[100, 599]`. Values
   are one of the closed action set:
-  - `skip` — drop the response, emit no events, advance the cursor as
-    if successful (the canonical "304 Not Modified" handling).
-  - `fail` — non-success: emit no events and stop the iteration with
-    an error.
-  - `empty_events` — non-success: emit no events but ADVANCE the
-    cursor as if successful (the cisco_duo
-    429-with-`ignore_api_errors` pattern).
+  - `skip` — drop the response, emit no events, advance progress as if
+    successful (the canonical "304 Not Modified" handling).
+  - `fail` — non-success: emit no events and stop the iteration with an
+    error.
+  - `empty_events` — non-success: emit no events but DO fire `progress:`
+    writes (the "429-with-`ignore_api_errors`" pattern).
   - `invalidate_cache` — drop the cached value backing the active
-    auth's `oauth2.<grant>.cache` slot AND every `requests[].cache`
-    step-cache slot, then treat the response as a non-event "retry next
-    iteration" signal.
+    auth's `cache.<name>` slot AND every `requests[].cache` slot, then
+    treat the response as a non-event "retry next iteration" signal.
 
   `retry` is intentionally absent until the retry/backoff contract
   lands.
 - Steps with `id:` must have unique IDs across the list.
 - `fan_out.as` must not shadow any existing namespace name.
-- `fan_out.over` must resolve to a list-typed `Value`. The validator
+- `fan_out.over` must resolve to a list-typed Value. The validator
   rejects obvious non-list top-level forms (literal scalars,
   `{now: ...}`, `{format: ...}`, `{base64: ...}`, `{object: ...}`);
   list-ness for composite forms (`{ref: ...}`, `{concat: ...}`,
   `{list: ...}`) is decided at lowering time when the runtime can see
   the resolved type.
 - At most one request may carry `produces_events: true`. When no step
-  is marked explicitly:
-  - For non-`async_job` documents, the **last** request in
-    `requests[]` is the implicit producer.
-  - For `progress.async_job` documents, the implicit producer is the
-    last-declared async role (`fetch` if set, else `poll`, else
-    `submit`), NOT the last entry in `requests[]`. An explicit
-    `produces_events: true` on any request overrides this rule.
+  is marked explicitly, the **last** request in `requests[]` is the
+  implicit producer.
+
+### Request-level loops
+
+`terminate_when:` is the request-level loop primitive. After the
+response is received, the predicate is evaluated against the response
+and the active `state.*`. If true, the loop exits and the runner moves
+to the next request. If false, the same request is re-fired.
+
+`terminate_when:` is the schema's only loop construct outside
+[`pagination:`](#pagination); it covers async-job submit/poll/fetch
+patterns without any dedicated state machine. Every phase is a regular
+request:
+
+```yaml
+requests:
+  - id: submit
+    method: POST
+    url: "${state.url}/exports"
+    expect_status: [202]
+    extract:
+      - {to: state.export_id, from: response.body.export_id}
+
+  - id: poll
+    method: GET
+    url: "${state.url}/exports/${state.export_id}/status"
+    expect_status: [200, 404]
+    terminate_when:
+      and:
+        - {present: response.body.status}
+        - {eq: {path: response.body.status, value: complete}}
+    extract:
+      - {to: state.result_url, from: response.body.result_url}
+
+  - id: fetch
+    method: GET
+    url: {ref: state.result_url}
+    produces_events: true
+```
+
+The phase information lives in `state.export_id` and `state.result_url`
+as plain extracts. No phase machine; no dedicated async variant; no
+state field declared by the runner on the author's behalf.
 
 ### ExtractVar
 
-| Field    | Required | Description                                                                                                                                                          |
-|----------|----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `name`   | yes      | Binding name.                                                                                                                                                        |
+| Field    | Required | Description |
+|----------|----------|-------------|
+| `to`     | yes      | `state.<name>` (persistent — must be declared under `state:`) or `extract.<name>` (per-iteration, no declaration needed). |
 | `from`   | yes      | Namespace-rooted [Path](#paths). One of `response.body.<path>`, `response.header.<name>`, `steps.<id>.body.<path>`, `steps.<id>.header.<name>`. The runner dispatches body-walk vs header-lookup off the path root. |
-| `coerce` | no       | Type coercion verb (e.g. `to_string`, `to_int`).                                                                                                                     |
-| `target` | no       | `extract` (default; per-iteration) or `cursor` (persisted; auto-registers a cursor field).                                                                            |
+| `coerce` | no       | Type coercion verb (e.g. `to_string`, `to_int`). |
+| `regex`  | no       | Optional regex transform applied to the resolved value before writing. See [`regex`](#values) under Values. |
 
-`target: cursor` auto-registers a `cursor.<name>` field that persists
-across iterations. This is the structured form for multi-field cursors
-(worklists, freeze flags, rolling-max timestamps that aren't tied to
-event timestamps).
+The destination's namespace prefix (`state.*` vs `extract.*`) decides
+persistence. There is no separate `target:` field.
 
 ### FanOut
 
 ```yaml
 fan_out:
   over: <Value>               # a list Value
-  as: <string>                # per-item binding name; refs use {ref: <as>.<path>}
+  as:   <string>              # per-item binding name; refs use {ref: <as>.<path>}
   merge: flatten | wrap       # how per-item responses combine
 ```
 
-The runner evaluates `over` to a list, then runs the step once per item
-with the author-chosen `as` name bound to the current value. Inside the
-step (and inside `extract.from` paths it owns), `{ref: <as>.<path>}`
-resolves against the current item — `<as>` is whatever the operator
-wrote, NOT a fixed `item.` prefix.
+The runner evaluates `over:` to a list, then runs the step once per
+item with the author-chosen `as:` name bound to the current value.
+Inside the step (and inside `extract.from` paths it owns),
+`{ref: <as>.<path>}` resolves against the current item — `<as>` is
+whatever the operator wrote, NOT a fixed prefix.
 
 `merge: flatten` (default) concatenates per-item response bodies, which
 must each decode as JSON lists; a non-list body is a template error.
@@ -419,44 +462,9 @@ preserving each item's response shape.
 
 Per-item errors run through the same `on_status` / `error.mode`
 dispatcher as a single-request step: `skip` / `empty_events` drop the
-item, `fail` aborts the drain, `invalidate_cache` clears the active auth
-+ step caches and stops the fan-out early. `requests[].cache` cannot be
-combined with `fan_out` — see the rules below.
-
-### RequestCache
-
-The non-OAuth2 counterpart of [TokenCache](#tokencache): wraps a
-token-style step (custom JSON logins, session-key exchanges) in a
-fresh-vs-cached conditional so the login round-trip is skipped while the
-cached token is still inside its expiry buffer.
-
-| Field           | Required | Description                                                                                                                       |
-|-----------------|----------|-----------------------------------------------------------------------------------------------------------------------------------|
-| `store_in`      | yes      | Names *both* the top-level response field captured *and* the state slot it lands in. Auto-registers as a runtime `string` field — do NOT declare under `state`. The paired expiry slot (`<store_in>_expires_at`) auto-registers the same way. |
-| `expiry_field`  | yes      | [Path](#paths) rooted at `response.body.<path>` (of the cached step's own response) carrying the token's lifetime / expiry instant.                                |
-| `expiry_buffer` | yes      | Go-style duration — re-run the step when the remaining lifetime drops below this.                                                 |
-| `expiry_format` | no       | How `expiry_field` is read: `duration` (default — a remaining lifetime) or an absolute-instant format (`unix_seconds`, `unix_millis`, `rfc3339`, `rfc3339nano`). |
-
-The expiry timestamp is tracked at `state.<store_in>_expires_at` as an
-RFC 3339 string. A `on_status: invalidate_cache` verb clears both slots
-(see [`on_status`](#request-rules)), forcing a re-login on the next
-drain.
-
-```yaml
-requests:
-  - id: login
-    method: POST
-    path: /api/v1/login
-    body:
-      json:
-        username: {ref: state.username}
-        password: {ref: state.password}
-    cache:
-      store_in: session_token                       # body field captured + state slot (auto-registered as runtime)
-      expiry_field: response.body.expires_in        # namespace-rooted Path
-      expiry_buffer: 60s                            # Go duration; re-run ahead of expiry
-      expiry_format: duration                       # optional; default "duration"
-```
+item, `fail` aborts the drain, `invalidate_cache` clears the active
+auth + step caches and stops the fan-out early. `requests[].cache`
+cannot be combined with `fan_out`.
 
 ---
 
@@ -465,11 +473,10 @@ requests:
 How to decode the producer step's body and where to find the events
 list.
 
-| Field               | Required | Description                                                                                                                                                                            |
-|---------------------|----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `decode`            | yes      | `json` or `ndjson`.                                                                                                                                                                    |
-| `events_at`         | yes      | [Path](#paths) rooted at `response.body.<path>` (or `steps.<id>.body.<path>`) locating the events list. The zero (empty) Path means "the body root IS the events list".                |
-| `placeholder_event` | no       | [Value](#values) used when `events_at` resolves to an empty list and pagination wants another iteration.                                                                               |
+| Field        | Required | Description |
+|--------------|----------|-------------|
+| `decode`     | yes      | `json` or `ndjson`. |
+| `events_at`  | yes      | [Path](#paths) rooted at `response.body.<path>` or `steps.<id>.body.<path>` locating the events list. The zero (empty) Path means "the body root IS the events list". |
 
 ```yaml
 response:
@@ -479,24 +486,64 @@ response:
 
 ### Response rules
 
-- `events_at` is namespace-rooted: `response.body.<path>` reads from the
-  events-bearing step's own response; `steps.<id>.body.<path>` reads
-  from a labelled prior step's response. The zero `Path` means "body
-  root" — the whole decoded body IS the events list (or single event
-  when ndjson). Bare dotted strings (`data.events`) are rejected.
+- `events_at` is namespace-rooted: `response.body.<path>` reads the
+  events-bearing step's own response; `steps.<id>.body.<path>` reads a
+  labelled prior step's response. The zero Path means "body root" — the
+  whole decoded body IS the events list (or a single event when
+  `ndjson`). Bare dotted strings (`data.events` with no namespace
+  prefix) are rejected.
 - When `decode: ndjson` and `events_at` is empty (zero Path), each
   decoded line IS one event. When `decode: ndjson` and `events_at` is
   non-empty, the trailing body segments below the namespace root are
-  applied to EACH decoded line and the flattened sequence is the
-  events list.
+  applied to EACH decoded line and the flattened sequence is the events
+  list.
 - The HTTP status-code success set is configured per-step via
   `requests[].expect_status`. There is no `response.success_status`.
+
+### `events.*` namespace
+
+Once `events_at` resolves, the decoded events list is exposed as the
+[`events.*`](#namespaces) namespace. This separates the events
+projection from response-body field access — even when a response body
+also has a top-level field literally named `events`.
+
+| Form                       | Resolves to                                              |
+|----------------------------|----------------------------------------------------------|
+| `events.*.<field>`         | The `<field>` value projected across every event.        |
+| `events.first.<field>`     | `<field>` from the first event in declared order.        |
+| `events.last.<field>`      | `<field>` from the last event in declared order.         |
+| `events.<int>.<field>`     | `<field>` from the event at position `<int>` (0-based).  |
+| `events.count`             | Number of events on the current page.                    |
+
+The `events.*` namespace is per-iteration. The runner does not buffer
+events across pages; reducers (`max`, `min`, `first`, `last`, `count`)
+are streaming operations over the current page.
+
+An empty page (zero events) is still a valid accepted page-response
+when its status passes `expect_status:` and `on_status:`. The loop
+controls itself; an empty page simply triggers the next page fetch.
 
 ---
 
 ## `pagination`
 
-Discriminated union — exactly one variant key.
+Discriminated union — exactly one variant key. Named variants cover the
+common 80%; the `custom:` variant exposes the primitive form for APIs
+that don't fit.
+
+### Execution order per page
+
+1. Request fires; response received.
+2. `terminate_when` (variant-specific default or author-supplied) is
+   evaluated against `response.*` and the pre-advance `state.*`. If
+   true, the loop ends — no advance writes fire for this page.
+3. Otherwise, the variant's `to:` write (or `custom.advance:` writes)
+   runs, populating the per-drain state slot.
+4. Loop.
+
+This ordering is important for `custom:` blocks: termination should
+not depend on the side effect of `advance:`, so the predicate reads
+`response.*` directly.
 
 ### `pagination.none`
 
@@ -508,236 +555,224 @@ pagination: {none: {}}
 
 ### `pagination.cursor_token`
 
-Opaque server cursor token round-tripped on each page. The runner
-captures the next token into `cursor.token`; the request reads it back
-on the next iteration via an explicit `{ref: cursor.token, default: ""}`
-in whichever slot (query / header / body) it belongs.
+Server returns a next-cursor token (or `null`/missing when no more
+pages). Covers opaque cursors, GraphQL Relay end cursors, scroll IDs,
+and "next page number from body".
 
-| Field      | Required | Description                                                                                                |
-|------------|----------|------------------------------------------------------------------------------------------------------------|
-| `token_at` | yes      | [Path](#paths) rooted at `response.body.<path>` (or `steps.<id>.body.<path>`) to the next-cursor field.    |
+| Field             | Required | Description |
+|-------------------|----------|-------------|
+| `from`            | yes      | [Path](#paths) rooted at `response.body.<path>`, `response.header.<name>`, or `steps.<id>.body.<path>` to the next-cursor field. |
+| `to`              | yes      | `state.<name>` destination. Per-drain (lifetime inferred). The state field must be declared under `state:`. |
+| `terminate_when`  | no       | [Predicate](#predicates). Default: `{not: {present: <from>}}` — loop ends when the source path resolves to absent. |
 
-Default completion fires when `{ref: cursor.token}` resolves to a zero
-`Value` (empty / null) after `token_at` is applied to the response.
+```yaml
+pagination:
+  cursor_token:
+    from: response.body.meta.next_token
+    to:   state.next_token
+```
 
-### `pagination.page_number`
+The request reads the active token back with
+`{ref: state.next_token, default: ""}` (or with no default when the
+bootstrap iteration should omit the slot entirely).
 
-Incrementing 1-based page number. The active page lives at
-`cursor.page`; read it back into a request slot with
-`{ref: cursor.page}` (commonly under a `{format: string, ...}` wrapper
-for query placement).
+### `pagination.next_url`
 
-| Field         | Required | Description                                                                                                |
-|---------------|----------|------------------------------------------------------------------------------------------------------------|
-| `page_param`  | yes      | Author-supplied param name. Diagnostic-only — it does NOT control placement; placement follows the ref.    |
-| `has_more_at` | no       | [Path](#paths) rooted at `response.body.<path>` (or `steps.<id>.body.<path>`) to a bool flag; loop stops when false. |
-| `batch_size`  | no       | [Value](#values) — page size hint; the author writes it into the request explicitly.                       |
+Server returns a fully-formed next-page URL — either as a body field or
+inside a `Link` header.
 
-### `pagination.offset`
+| Field             | Required | Description |
+|-------------------|----------|-------------|
+| `from`            | yes      | [Path](#paths) — `response.body.<path>`, `response.header.<name>`, or `steps.<id>.body.<path>`. |
+| `to`              | yes      | `state.<name>` destination, typed `url`. Per-drain. |
+| `regex`           | no       | Regex applied to the resolved string before writing. Useful for `Link: <url>; rel="next"` parsing. |
+| `capture`         | no       | Capture group index for `regex:` (1-based). |
+| `terminate_when`  | no       | [Predicate](#predicates). Default: `{not: {present: <from>}}` — empty / missing / non-matching URL ends the drain. |
 
-0-based offset, increments by `batch_size` (or observed event count).
-The active offset lives at `cursor.offset` (and `cursor.offset_end`
-when `batch_size` is set); read them back with
-`{ref: cursor.offset}` / `{ref: cursor.offset_end}`.
+```yaml
+pagination:
+  next_url:
+    from: response.header.link
+    to:   state.next_url
+    regex: '<(.*?)>;\s*rel="next"'
+    capture: 1
+```
 
-| Field          | Required | Description                                                                                                |
-|----------------|----------|------------------------------------------------------------------------------------------------------------|
-| `offset_param` | yes      | Author-supplied param name. Diagnostic-only — placement follows the ref.                                   |
-| `batch_size`   | no       | [Value](#values).                                                                                          |
+The request reads the next URL back with
+`{ref: state.next_url, default: "${state.url}/<bootstrap-path>"}`. The
+default fires on the first iteration when no next URL is yet known.
 
-### `pagination.link_header`
+### `pagination.counter`
 
-RFC 5988 `Link: <url>; rel="next"`.
+Client-incremented counter. Replaces both `page_number` and `offset`
+patterns: choose `start:`/`step:` to match the API.
 
-| Field     | Required | Description                                                       |
-|-----------|----------|-------------------------------------------------------------------|
-| `pattern` | no       | Override the regex (first capture group = next URL).              |
+| Field             | Required | Description |
+|-------------------|----------|-------------|
+| `to`              | yes      | `state.<name>` destination, typed `int`. Per-drain. |
+| `start`           | no       | Starting value. Default `1` (page number); use `0` for offset. |
+| `step`            | no       | Increment per accepted page. Default `1`. For offset-style pagination, `{ref: state.page_size}`. |
+| `terminate_when`  | no       | [Predicate](#predicates). Default: short-page detection — `{lt: {path: events.count, value: <step>}}`. |
 
-The runner parses the header into `cursor.next_link`; it is **not**
-auto-injected. The request must read it back in its `url` slot via
-`{ref: cursor.next_link, default: <bootstrap-url>}`. The drain ends when a
-response carries no `rel="next"` entry.
+```yaml
+pagination:
+  counter:
+    to:    state.page
+    start: 1
+    step:  1
+    terminate_when:
+      not: {present: response.body.meta.has_next}
+```
 
-### `pagination.next_url_in_body`
+The request reads the counter back with `{ref: state.page}` (typically
+wrapped as `"${state.page}"` for query placement).
 
-Fully-formed next-page URL inside the body.
+### `pagination.custom`
 
-| Field         | Required | Description                                                                                                |
-|---------------|----------|------------------------------------------------------------------------------------------------------------|
-| `next_url_at` | yes      | [Path](#paths) rooted at `response.body.<path>` (or `steps.<id>.body.<path>`) to the URL.                  |
+Author-controlled primitive form for APIs that don't fit the named
+variants.
 
-The runner parses the URL into `cursor.next_url`. The request must read
-it back in its `url` slot via
-`{ref: cursor.next_url, default: <bootstrap-url>}`. A missing,
-non-string, or empty value terminates the drain.
+| Field             | Required | Description |
+|-------------------|----------|-------------|
+| `advance`         | yes      | List of `{to, from, regex?, coerce?}` writes. Each `to:` must be a declared per-drain state field; each `from:` is any [Value](#values). |
+| `terminate_when`  | yes      | [Predicate](#predicates). No default — `custom:` blocks state termination explicitly. |
 
-### `pagination.scroll_id`
+```yaml
+pagination:
+  custom:
+    advance:
+      - to: state.next_token
+        from: {ref: response.body.cursor}
+      - to: state.reset_at
+        from: {ref: response.header.x-rate-limit-reset}
+    terminate_when:
+      or:
+        - {not: {present: response.body.cursor}}
+        - {lt: {path: response.body.remaining, value: 1}}
+```
 
-Server-side scroll session. The active id lives at `cursor.scroll_id`;
-the request reads it back via `{ref: cursor.scroll_id}` (typically with
-no `default:` so the bootstrap iteration omits the slot and the server
-opens a fresh session).
-
-| Field            | Required | Description                                                                                                |
-|------------------|----------|------------------------------------------------------------------------------------------------------------|
-| `scroll_id_at`   | yes      | [Path](#paths) rooted at `response.body.<path>` (or `steps.<id>.body.<path>`) to the scroll id.            |
-| `complete_when`  | no       | [Predicate](#predicates) — terminates the scroll when true and clears the scroll id.                       |
-
-Default completion (when `complete_when` is omitted) fires when
-`{ref: cursor.scroll_id}` resolves to a zero `Value` after `scroll_id_at`
-is applied to the response.
-
-### `pagination.graphql_relay`
-
-GraphQL Relay-style cursors. The active end-cursor lives at
-`cursor.<cursor_var>`; the request reads it back via
-`{ref: cursor.<cursor_var>}` inside the GraphQL `variables:` object.
-
-| Field              | Required | Description                                                                                                |
-|--------------------|----------|------------------------------------------------------------------------------------------------------------|
-| `has_next_page_at` | yes      | [Path](#paths) rooted at `response.body.<path>` (or `steps.<id>.body.<path>`) to the `pageInfo.hasNextPage` bool. |
-| `end_cursor_at`    | yes      | [Path](#paths) rooted at `response.body.<path>` (or `steps.<id>.body.<path>`) to the `pageInfo.endCursor` string. |
-| `cursor_var`       | yes      | Author-named cursor variable (typically `after`).                                                          |
+Termination reads `response.*` directly so the predicate sees the
+pre-advance values; see [execution order](#execution-order-per-page).
 
 ### Pagination rules
 
-- The active value for every strategy lives on `cursor.<name>` (see the
-  [cursor namespace table](#cursor-namespace-inferred)). Authors wire it
-  into a request explicitly with `{ref: cursor.<name>}` — there is no
-  auto-injection. Placement follows where the ref is written
-  (`query: {p: {ref: cursor.token}}` rides as a query param;
-  `body: {json: {p: {ref: cursor.offset}}}` rides in the JSON body).
-- `cursor_token` accepts an empty default (`{ref: cursor.token, default: ""}`)
-  on the bootstrap iteration to preserve the historical
-  `?cursor=` wire shape; without a default, the slot is simply absent
-  until the cursor populates.
-- `scroll_id` typically omits `default:` so the bootstrap iteration
-  opens a fresh server session.
-- `link_header` and `next_url_in_body` carry the next URL in
-  `cursor.next_link` / `cursor.next_url`; read them back in the request's
-  `url` slot via `{ref: cursor.next_link, default: <bootstrap-url>}` /
-  `{ref: cursor.next_url, default: <bootstrap-url>}`.
+- The destination of every named variant's `to:` (and every
+  `custom.advance[].to:`) is a per-drain `state.<name>` field. Per-drain
+  fields are wiped at the start of every drain — a drain that fails
+  mid-page re-bootstraps pagination on the next start. Recovery is the
+  author's responsibility via `progress:` writes that persist to
+  long-lived state fields.
+- The request reads per-drain state back explicitly with
+  `{ref: state.<name>}` Values. Placement follows where the ref is
+  written: `query: {p: {ref: state.next_token}}` rides as a query
+  param; `body: {json: {p: {ref: state.page}}}` rides in the JSON
+  body.
+- `next_url`'s `to:` field must be typed `url`; `counter`'s `to:` field
+  must be typed `int`; `cursor_token`'s `to:` field is typically
+  `string`.
+- A request reading per-drain state on the first iteration must supply
+  a `default:` on the `{ref: ...}` (or rely on the field's declared
+  `default:` if any) — the per-drain slot is empty at drain start.
 
 ---
 
 ## `progress`
 
-Discriminated union — exactly one variant key. Controls how the cursor
-advances at the end of a drain.
+A flat list of state writes evaluated after each accepted page. There
+are no named variants; the primitive form IS the only form. The empty
+list (or an omitted `progress:` block) means "no progress tracking".
 
-### `progress.stateless`
-
-Cursor never advances. Use for endpoints that always return "current
-state" with no time dimension.
+Every entry writes one persistent `state.*` field.
 
 ```yaml
-progress: {stateless: {}}
+progress: []                            # no progress tracking
 ```
 
-### `progress.latest_event_timestamp`
+```yaml
+# max-of-events high-water mark, merged with prior state
+progress:
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}
+```
 
-Cursor advances to the maximum event timestamp seen across the drain.
+```yaml
+# clock-driven cursor
+progress:
+  - to: state.last_timestamp
+    from: {now: true}
+```
 
-| Field        | Required | Description                                                                                              |
-|--------------|----------|----------------------------------------------------------------------------------------------------------|
-| `event_time` | yes      | `{path: <body-Path>}` — per-event timestamp field inside the events list.                                |
-| `initial`    | no       | `{lookback: <Value>}` — first-run lookback (e.g. `"720h"`).                                              |
-| `lookback`   | no       | [Value](#values) — every-iteration lag, subtracted from the reference on every advance.                  |
+```yaml
+# sliding [window_start, window_end) window
+progress:
+  - to: state.window_start
+    from: {ref: state.window_end, default: {subtract: [{now: true}, "30d"]}}
+  - to: state.window_end
+    from: {now: true}
+```
 
-### `progress.max_event_field`
+```yaml
+# pin the first event's id for sort-order-resistant tracking
+progress:
+  - to: state.last_event_id
+    from: {ref: events.first.id}
+```
 
-Same as `latest_event_timestamp` but the `event_time.path` is treated
-as an arbitrary monotonically-increasing field (numeric id, etc.), not
-specifically a timestamp.
+### Entry shape
 
-### `progress.use_now`
+| Field    | Required | Description |
+|----------|----------|-------------|
+| `to`     | yes      | `state.<name>`. Persistent across drains (lifetime inferred). The field must be declared under `state:`. |
+| `from`   | yes      | Any [Value](#values). Has access to every namespace the request scope has: `state.*`, `cache.*`, `events.*`, `response.body.*`, `response.header.*`, `steps.<id>.body.*`, `steps.<id>.header.*`. May use reducers (`max`/`min`/`first`/`last`/`count`) over `events.*`, arithmetic primitives, refs, etc. |
+| `coerce` | no       | Type coercion verb. |
+| `regex`  | no       | Optional regex transform. |
 
-Cursor advances to `now()` on every iteration.
+### Evaluation semantics
 
-| Field      | Required | Description                                                                       |
-|------------|----------|-----------------------------------------------------------------------------------|
-| `lookback` | no       | [Value](#values) — subtract from `now()` so late events still land on next drain. |
+- **One firing per accepted page-response.** A page-response is
+  accepted when its status passes `requests[].expect_status` and any
+  `on_status:` action did not abort the drain. Progress fires even when
+  `events.*` is empty — server-provided cursors, ingestion timestamps,
+  and other response-body fields can be persisted independently of
+  event production. Progress does NOT fire when a request is skipped by
+  `if:`, aborted by `on_status: fail`, or errored out before a response
+  was decoded.
+- **Batch semantics across entries.** All `from:` expressions evaluate
+  against the same snapshot of state. A later entry referencing
+  `state.window_start` sees the pre-write value of that field,
+  whatever order the entries appear in. The window pattern above is
+  correct regardless of declaration order: when the new
+  `window_start` reads `state.window_end`, it always sees the *old*
+  `window_end` value.
+- **Sink delivery before commit.** The runner emits the page's events
+  to the sink, then evaluates progress writes, then commits state.
+  Failure between events-sent and state-committed is acceptable
+  (at-least-once); failure before events-sent leaves state unchanged.
+- **No implicit accumulation.** A cumulative high-water mark is written
+  explicitly:
+  `from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}`.
+  The runner never guesses what "merging" means for a given field.
+- **First-write-wins via ref default.** "Persist on the very first
+  drain only" is just `from: {ref: state.x, default: <new-value>}`:
+  when `state.x` is set, it writes itself back (no-op); when absent,
+  the default kicks in.
 
-### `progress.time_window`
+### First-run seeding
 
-Sliding `[window_start, window_end)` window.
+First-run seeding is the `default:` on the destination state field.
+There is no separate first-run mechanism.
 
-| Field            | Required | Description                                                              |
-|------------------|----------|--------------------------------------------------------------------------|
-| `initial_offset` | yes      | [Value](#values) — first-run window size.                                |
-| `format`         | no       | Format verb for the window timestamps; defaults to `rfc3339`.            |
+```yaml
+state:
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
+```
 
-`format`, when set, must be one of the format verbs in
-[Values](#values). Only the timestamp-producing verbs (`rfc3339`,
-`rfc3339nano`, `unix_seconds`, `unix_millis`) make semantic sense as
-the window representation; the validator enforces closed-set
-membership but not the timestamp-only subset.
-
-### `progress.async_job`
-
-Three-phase submit → poll → fetch loop. State machine lives on
-`cursor.phase`.
-
-| Field         | Required | Description                                                                                                                                                                  |
-|---------------|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `submit`      | one of   | `{step: <id>, extract: {<name>: {from: <Path>}, ...}}` — submit step + per-extract bindings. Each `from` is rooted at `response.body.<path>` or `steps.<id>.body.<path>`.    |
-| `poll`        | one of   | `{step: <id>, complete_when: <Predicate>, extract: {...}}` — poll step + completion predicate. `extract` follows the same `{from: <Path>}` shape as `submit.extract`.        |
-| `fetch`       | one of   | `{step: <id>}` — fetch step (the producer).                                                                                                                                  |
-| `on_complete` | no       | `{cursor_update: <CursorUpdateDirective>}` — how to advance the cursor after a completed fetch.                                                                              |
-
-At least one of `submit`, `poll`, `fetch` must be set; the IR does not
-encode a fixed three-phase contract. Each role is independently
-optional and is exercised in declared order.
-
-`poll.complete_when` is a `Predicate` that evaluates against the poll
-step's response body. The `response.body.<path>` and
-`response.header.<name>` roots ARE valid inside this predicate (and
-only inside `complete_when` predicates —
-`pagination.scroll_id.complete_when` follows the same rule).
-
-The async job's events-bearing step is the last-declared role
-(`fetch` > `poll` > `submit`) unless one of the requests carries
-`produces_events: true`. The validator rejects HEAD as the
-events-bearing step (HEAD has no response body for `response.decode` /
-`events_at` to operate on).
-
-#### CursorUpdateDirective
-
-Map form only. The scalar shorthand (`cursor_update: use_now`) is
-rejected at parse time.
-
-| Field        | Required                              | Description                                                                                |
-|--------------|---------------------------------------|--------------------------------------------------------------------------------------------|
-| `kind`       | yes                                   | `use_now`, `latest_event_timestamp`, or `stateless`.                                       |
-| `lookback`   | no                                    | [Value](#values). Rejected when `kind: stateless` (no advance to subtract from).           |
-| `event_time` | when `kind: latest_event_timestamp`   | `{path: <body-Path>}`. Rejected for the other kinds.                                       |
-
-#### Async job cursor fields
-
-`progress.async_job` auto-provides these cursor fields:
-
-- `cursor.phase` — current phase. Default `submit` when `submit` is
-  set, then `poll` when `poll` is set, then `fetch`.
-- `cursor.<name>` for every name declared in `submit.extract` and
-  `poll.extract`.
-
-### Progress rules
-
-- `latest_event_timestamp.lookback` / `max_event_field.lookback` /
-  `use_now.lookback` (per-iteration) is a duration `Value` subtracted
-  from the chosen reference on EVERY advance, not just the first run.
-  It pairs with `initial.lookback` (first-run only) for time cursors
-  that need both a first-run lookback and an every-iteration lag.
-- Every progress strategy publishes its active value on
-  `cursor.<name>` (see the
-  [cursor namespace table](#cursor-namespace-inferred)) — read it into
-  a request slot with `{ref: cursor.<name>}`. The validator rejects
-  `{ref: cursor.<name>}` for any name no active strategy populates, so
-  e.g. `cursor.window_start` is rejected outside `progress.time_window`.
-  `async_job` advances `cursor.last_timestamp` lazily via
-  `on_complete.cursor_update.kind: latest_event_timestamp`, so the
-  cursor namespace stays populated even when the value is unset on
-  the first iteration.
+A `default:` accepts the full Value language, including `{now: true}`,
+`{subtract: [...]}`, `{ref: ...}`, and reducers. The runner applies it
+on first run (or whenever the operator does not supply a value), and
+`progress:` writes take over from there.
 
 ---
 
@@ -746,10 +781,10 @@ rejected at parse time.
 How non-success HTTP responses (and network / decode failures) are
 surfaced.
 
-| Field          | Required | Description                                                                              |
-|----------------|----------|------------------------------------------------------------------------------------------|
-| `mode`         | yes      | `standard` (default), `warn`, or `fail`. See [`runtime.md`](runtime.md) for semantics.   |
-| `include_body` | no       | When `true`, include the response body in the error message. Off by default.             |
+| Field          | Required | Description |
+|----------------|----------|-------------|
+| `mode`         | yes      | `standard` (default), `warn`, or `fail`. See [`runtime.md`](runtime.md) for semantics. |
+| `include_body` | no       | When `true`, include the response body in the error message. Off by default. |
 
 ```yaml
 error:
@@ -769,8 +804,10 @@ structured forms use a discriminator key.
 
 ### Authoring rules
 
-- **Bare YAML scalar (string):** treated as a string literal.
-  `path: /api/v1/events` is the literal string `"/api/v1/events"`.
+- **Bare YAML string scalar:** treated as a string literal, with one
+  exception — any string in a Value position is scanned for
+  [`${...}` interpolation segments](#string-interpolation). A string
+  with no `$` is a plain literal.
 - **YAML integer scalar:** `LiteralInt`.
 - **YAML boolean scalar:** `LiteralBool`.
 - **YAML null:** zero Value (`IsZero`). Authors should omit the field
@@ -780,69 +817,163 @@ structured forms use a discriminator key.
 
 ### Discriminated forms
 
-| Scalar / form                                          | Meaning                                                                                       |
-|--------------------------------------------------------|-----------------------------------------------------------------------------------------------|
-| `/api/v1/events`, `100`, `true`, `null`                 | LiteralString, LiteralInt, LiteralBool, zero.                                                 |
-| `{literal_string: "x"}`                                 | Explicit literal string form (when YAML would otherwise misparse as int/bool).                |
-| `{ref: cursor.last_timestamp}`                          | Reference into a namespace. Active pagination / progress signals (`cursor.token`, `cursor.page`, `cursor.last_timestamp`, `cursor.window_start`, …) ride through plain `ref` Values. |
-| `{ref: state.url, default: "https://…"}`                | Reference with fallback when unset.                                                           |
-| `{now: true, offset: "-1h"}`                            | Current time, optionally offset. Wrap with `{format: <verb>, value: {now: true}}` to coerce.  |
-| `{concat: [<Value>, ...]}`                              | String concatenation; at least 2 elements (`{concat: []}` and `{concat: [<single>]}` are rejected). |
-| `{select: {branches: [...], default: <Value>}}`         | Conditional select; first matching branch wins.                                               |
-| `{format: rfc3339, value: <Value>}`                     | Coerce `value` to a formatted representation.                                                 |
-| `{base64: <Value>}`                                     | Base64-encode the inner Value's string.                                                       |
-| `{list: [<Value>, ...]}`                                | List literal.                                                                                 |
-| `{object: {<key>: <Value>, ...}}`                       | Object literal. Required for any map-shaped Value; inner keys are NOT re-interpreted.         |
+| Form                                                | Produces |
+|-----------------------------------------------------|----------|
+| `"foo"`                                             | string literal (with interpolation; see below). |
+| `100`                                               | int64. |
+| `true` / `false`                                    | bool. |
+| `{literal_string: "x"}`                             | string literal, no interpolation. Use when YAML would otherwise misparse (e.g. a string of all digits). |
+| `{ref: state.url}`                                  | resolved value from any namespace. |
+| `{ref: state.token, default: ""}`                   | resolved value, falling back to the default when unset. |
+| `{now: true}`                                       | `time.Time` for the current moment. |
+| `{concat: [<Value>, ...]}`                          | string concatenation; at least 2 elements (`{concat: []}` and `{concat: [<single>]}` are rejected). |
+| `{select: {branches: [...], default: <Value>}}`     | conditional; first matching branch wins, else `default`. |
+| `{format: <verb-or-layout>, value: <Value>}`        | coerce `value` to a formatted representation. |
+| `{base64: <Value>}`                                 | base64-encode the inner Value's string. |
+| `{list: [<Value>, ...]}`                            | list literal. |
+| `{object: {<key>: <Value>, ...}}`                   | map literal; inner keys are NOT re-interpreted as discriminators. |
+| `{add: [<Value>, <Value>]}`                         | `time + duration → time`; `duration + duration → duration`; `int + int → int`. |
+| `{subtract: [<Value>, <Value>]}`                    | `time - duration → time`; `time - time → duration`; `duration - duration → duration`; `int - int → int`. |
+| `{max: <list-or-projection>}`                       | reducer — largest value. |
+| `{min: <list-or-projection>}`                       | reducer — smallest value. |
+| `{first: <list-or-projection>}`                     | reducer — first element in declared order. |
+| `{last: <list-or-projection>}`                      | reducer — last element in declared order. |
+| `{count: <list-or-projection>}`                     | reducer — number of elements. |
+| `{regex: {pattern: <string>, from: <Value>, capture?: <int>, default?: <Value>}}` | extracted substring. |
+
+### String interpolation
+
+Any YAML string literal in a Value position is scanned for `${<path>}`
+segments. Each segment resolves against the same namespaces as
+`{ref: <path>}`. The string desugars to a `{concat: [...]}` Value with
+interleaved literal segments and refs:
+
+```yaml
+url: "${state.url}/api/${state.endpoint}/events"
+```
+
+is exactly:
+
+```yaml
+url: {concat: [{ref: state.url}, "/api/", {ref: state.endpoint}, "/events"]}
+```
+
+Each `${...}` segment may use a default with the `|` sigil:
+
+- `"${state.next_token|}"` → `{ref: state.next_token, default: ""}`.
+- `"${state.page|1}"` → the text after the pipe is parsed as a YAML
+  scalar, so non-string defaults work too (here, integer `1`).
+
+Literal `$` needs escaping as `\$`; once inside a `${...}` segment, a
+literal `{` after `$` is `\{`. Outside an `${...}` segment, `$` and
+`{` are plain text.
+
+Interpolation produces a string. Refs that resolve to non-string values
+inside `${...}` are coerced as if wrapped in
+`{format: string, value: ...}`. Secret-tainted refs propagate their
+secret status to the composed string (same rule as `{concat}` today).
+
+A string literal that should NOT be interpolated (e.g. an opaque token
+that may itself contain `${...}`) uses the `{literal_string: "x"}`
+form.
+
+### Reducers
+
+A reducer accepts either:
+
+- **A list literal:** `{max: [v1, v2, v3]}` — sugar for
+  `{max: {list: [v1, v2, v3]}}`.
+- **A list-shaped Value:** `{max: {ref: events.*.timestamp}}` —
+  projects the `.timestamp` field across every event and returns the
+  max.
+
+`first`, `last`, and `count` operate over the same list-shaped inputs;
+`first` and `last` return one element, `count` returns the cardinality.
+
+Reducer inputs may be empty; in that case the reducer's result is a
+zero Value (no exception). Predicates downstream of an empty reducer
+behave the same way as predicates over any other absent path
+(`{present: ...}` returns false; comparisons return false).
+
+### Arithmetic
+
+`add` and `subtract` operate over the type pairs in the discriminated
+forms table above. Mixed-type operations that don't match a documented
+pair (e.g. `time + time`, `int + duration`) are rejected at lowering
+time.
+
+`{subtract: [{now: true}, "720h"]}` is the canonical first-run
+lookback. `{add: [{now: true}, "1h"]}` is the canonical "expires in 1
+hour" cache fallback.
 
 ### Format verbs
 
-The format-verb set is closed.
+The `format:` verb set is closed.
 
-| Verb | Converts to |
-|------|-------------|
-| `string` | string representation. |
-| `int` | integer (parse or truncate). |
-| `bool` | boolean. |
-| `rfc3339` | RFC 3339 timestamp string. |
-| `rfc3339nano` | RFC 3339 with nanoseconds. |
-| `unix_seconds` | integer Unix timestamp (seconds). |
-| `unix_millis` | integer Unix timestamp (milliseconds). |
-| `duration` | Go-style duration string. |
-| `url_encode` | percent-encoded URL component (RFC 3986 unreserved + percent). |
-| `parse_duration` | Go-style duration string → integer (nanoseconds). |
+| Verb            | Converts to |
+|-----------------|-------------|
+| `string`        | string representation. |
+| `int`           | integer (parse or truncate). |
+| `bool`          | boolean. |
+| `rfc3339`       | RFC 3339 timestamp string. |
+| `rfc3339nano`   | RFC 3339 with nanoseconds. |
+| `unix_seconds`  | integer Unix timestamp (seconds). |
+| `unix_millis`   | integer Unix timestamp (milliseconds). |
+| `duration`      | Go-style duration string. |
+| `url_encode`    | percent-encoded URL component (RFC 3986 unreserved + percent). |
+| `parse_duration`| Go-style duration string → integer (nanoseconds). |
 
 `parse_duration` outputs a 64-bit signed integer count of nanoseconds.
 Targets that cannot represent a 64-bit signed integer natively MUST
 surface a lowering error rather than silently truncating.
 
-Not in the set today: `regex_extract`, `sha256`, `hmac_sign`,
-`json_encode`. New verbs land when a concrete template motivates them.
+**Go layout strings.** In addition to the closed-set verbs, `format:`
+accepts a Go date layout string (e.g.
+`"2006-01-02T15:04:05.000-0700"`). The validator distinguishes by
+closed-set membership: a recognised verb is the named parser; anything
+else is tried as a Go layout.
+
+For state fields whose wire form is a non-default timestamp shape,
+prefer declaring `format:` on the state field
+([§state](#state-field-declaration)) and never wrap the ref. The
+Value-time `format:` verb is most useful for ad-hoc coercions.
+
+### Regex
+
+`{regex: {pattern: ..., from: ..., capture?: ..., default?: ...}}`
+applies a Go regular expression to the resolved string of `from:`. The
+return value is the matched substring (or the chosen capture group when
+`capture:` is set, 1-based). When no match, the optional `default:`
+fires; absent both match and default, the result is a zero Value.
+
+`pagination.next_url`'s `regex:` / `capture:` fields use the same
+engine; the same applies to `regex:` on extracts and progress writes.
 
 ### Value rules
 
 - A map-shaped Value MUST carry exactly one discriminator key. There
   is no silent fallback for arbitrary maps — wrap a literal map in
   `{object: {…}}`. A map carrying more than one discriminator key is
-  rejected at parse time (e.g. `now` may not also carry `format`; use
-  `{format: <verb>, value: {now: true}}`).
+  rejected at parse time.
 - Each discriminator has a closed set of allowed sibling keys
-  (`ref` → `default`; `now` → `offset`; `format` → `value`; the rest
-  → no siblings). Unknown sibling keys are rejected at parse time so
+  (`ref` → `default`; `format` → `value`; `regex` → `pattern`, `from`,
+  `capture`, `default`; the rest → no extra siblings beyond their
+  declared shape). Unknown sibling keys are rejected at parse time so
   typos like `{ref: state.x, defualt: "y"}` do not drop into the void.
 - Empty `{and: []}` and `{or: []}` in Predicates are rejected as
   authoring errors. Use `{literal_bool: true | false}` for a constant
   predicate.
-- `{ref: cursor.<name>}` is valid only when the cursor namespace
-  provides `<name>` for the active strategies (see the
-  [cursor namespace table](#cursor-namespace-inferred)).
+- `{ref: <namespace>.<name>}` is valid only when the namespace
+  populates `<name>` (see [Namespaces](#namespaces)).
 
 ---
 
 ## Paths
 
-`Path` is the typed kind for dotted-string identifiers used in
-`{ref: ...}`, `{present: ...}`, `{eq: {path: ...}}`, `events_at`,
-`extract[].from`, `fan_out.over`, `pagination.*.token_at`, etc.
+`Path` is the typed kind for namespace-rooted dotted-string identifiers
+used in `{ref: ...}`, `{present: ...}`, `{eq: {path: ...}}`,
+`response.events_at`, `requests[].extract[].from`,
+`pagination.cursor_token.from`, `pagination.next_url.from`, etc.
 
 Primary form: `response.body.data.issues.nodes` (dotted string with a
 namespace-root prefix).
@@ -857,78 +988,75 @@ The IR encoder emits the escape form **whenever any segment contains a
 `.`**; all other paths emit as a dotted string. This guarantees
 byte-stable round-trips through the dotted parser.
 
-A Path is **empty** when `IsZero` is true OR `Parts` is
-nil / zero-length. Both forms are equivalent at every reference site;
-the validator and codec call `Path.IsEmpty()` for this combined
-condition.
+A Path is **empty** when `IsZero` is true OR `Parts` is nil /
+zero-length. Both forms are equivalent at every reference site; the
+validator and codec call `Path.IsEmpty()` for this combined condition.
 
-### Namespace table
+Bare dotted strings without a namespace prefix (`data.events`) are
+rejected at parse / validate time, with a hint pointing at the
+namespace-rooted form.
 
-Every Path begins with one of the roots below. Bare dotted strings
-(e.g. `data.events` with no namespace prefix) are rejected at parse /
-validate time, with a hint pointing at the new form.
+---
 
-| Root                       | Valid in                                                                                          | Populated by                                                          |
-|----------------------------|---------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------|
-| `state.<name>`             | anywhere                                                                                          | `state.fields` declarations + cache `store_in` auto-registrations.    |
-| `cursor.<name>`            | anywhere                                                                                          | Inferred from `pagination` + `progress` + `async_job`; `extract.target=cursor`. |
-| `extract.<name>`           | requests that follow the producing step                                                           | `requests[].extract`.                                                 |
-| `steps.<id>.body.<path>`   | anywhere (after step `<id>` has run)                                                              | Prior step's decoded response body.                                   |
-| `steps.<id>.header.<name>` | anywhere (after step `<id>` has run)                                                              | Prior step's response headers.                                        |
-| `response.body.<path>`     | body-rooted IR slots (`events_at`, `token_at`, `scroll_id_at`, etc.) AND inside `complete_when`   | The active step's decoded response body.                              |
-| `response.header.<name>`   | `extract[].from` AND inside `complete_when`                                                       | The active step's response headers.                                   |
-| `<fan_out.as>.<path>`      | inside a step with `fan_out:`                                                                     | The author-chosen `fan_out.as` name (e.g. `incident.id` when `as: incident`); bound to the current item for the duration of one per-item iteration. |
+## Namespaces
 
-Body-rooted IR slots — `response.events_at`, `pagination.*.token_at` /
-`scroll_id_at` / `next_url_at` / `has_next_page_at` / `end_cursor_at` /
-`has_more_at`, `progress.async_job.<phase>.extract.<name>.from`,
-`auth.oauth2.<grant>.cache.expiry_field`,
-`requests[].cache.expiry_field` — accept the body-flavoured roots
-(`response.body.<path>`, `steps.<id>.body.<path>`) only.
-`extract[].from` additionally accepts the matching header roots.
-`complete_when` predicates (`pagination.scroll_id.complete_when`,
-`progress.async_job.poll.complete_when`) are the only sites where the
-bare `response.<...>` roots resolve against the predicate-step's
-response without an `id:` qualifier.
+Every Path begins with one of the roots below.
 
-Per-event sub-paths under `event_time: {path: ...}`
-(`progress.{latest_event_timestamp,max_event_field}.event_time.path`,
-`async_job.on_complete.cursor_update.event_time.path`) stay bare —
-they index into each element of the events list and reject any
-namespace root.
+| Root                       | Lifetime                          | Written by                                                                                                                                                                                                              |
+|----------------------------|-----------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `state.<name>`             | persisted (or per-drain)          | `state.<name>.default`, `requests[].extract` with `to: state.*`, `pagination.*.to`, `progress[].to`. Lifetime sub-flavour (operator-config / per-drain / persistent) is inferred from write sites; see [§state](#state). |
+| `cache.<name>`             | process memory only               | [Cache](#cache) blocks on auth grants or requests. Cleared on runner restart; never persisted.                                                                                                                          |
+| `events.<...>`             | per-iteration (current page)      | The runner, after `response.events_at` resolves. `events.*.field` projects across all events; `events.first.field` / `events.last.field` are declared-order shortcuts; `events.<int>.field` is positional; `events.count` is cardinality. |
+| `extract.<name>`           | per-iteration                     | `requests[].extract` with `to: extract.*`. Reset at the top of every iteration.                                                                                                                                         |
+| `steps.<id>.body.<path>`   | per-iteration (after step runs)   | The decoded response body of a labelled prior step.                                                                                                                                                                     |
+| `steps.<id>.header.<name>` | per-iteration                     | The response headers of a labelled prior step.                                                                                                                                                                          |
+| `response.body.<path>`     | per-evaluation                    | The active step's decoded response body. Valid in `response.events_at`, `pagination.*.from`, `progress[].from`, `requests[].extract.from`, `requests[].terminate_when`, `requests[].cache.expires_at`, and inside predicates. |
+| `response.header.<name>`   | per-evaluation                    | The active step's response headers. Same sites as `response.body.*`.                                                                                                                                                    |
+| `<fan_out.as>.<path>`      | per-fan-out-iteration             | The author-chosen `fan_out.as` name; bound to the current item for the duration of one per-item iteration.                                                                                                              |
 
-### Cursor namespace (inferred)
+Body-rooted IR slots — `response.events_at`, `pagination.*.from`,
+`progress[].from`, `requests[].extract.from`,
+`requests[].terminate_when`, `requests[].cache.expires_at`,
+`auth.oauth2.<grant>.cache.expires_at` — accept the body-flavoured
+roots (`response.body.<path>`, `steps.<id>.body.<path>`) and (where
+useful) the matching header roots
+(`response.header.<name>`, `steps.<id>.header.<name>`).
+`pagination.*.from` and `requests[].extract.from` are the two sites
+that explicitly accept header roots.
 
-The following cursor fields are auto-provided based on active
-strategies. Authors read them with plain `{ref: cursor.<name>}` Values;
-they do not need to be declared anywhere.
+`response.*` roots resolve against the active step's response without
+an `id:` qualifier. Authors who need a prior step's response use the
+`steps.<id>.body.<path>` / `steps.<id>.header.<name>` form.
 
-| Strategy / form                       | Cursor fields provided                                                |
-|---------------------------------------|------------------------------------------------------------------------|
-| `pagination: cursor_token`            | `cursor.token`                                                         |
-| `pagination: page_number`             | `cursor.page`                                                          |
-| `pagination: offset`                  | `cursor.offset`; `cursor.offset_end` when `batch_size` is set          |
-| `pagination: scroll_id`               | `cursor.scroll_id`                                                     |
-| `pagination: next_url_in_body`        | `cursor.next_url`                                                      |
-| `pagination: graphql_relay`           | `cursor.<cursor_var>` (the declared var name)                          |
-| `pagination: link_header`             | `cursor.next_link`                                                     |
-| `progress: latest_event_timestamp`    | `cursor.last_timestamp`                                                |
-| `progress: max_event_field`           | `cursor.last_timestamp`                                                |
-| `progress: use_now`                   | `cursor.last_timestamp`                                                |
-| `progress: async_job` (when `on_complete.cursor_update.kind` is `use_now` or `latest_event_timestamp`) | `cursor.last_timestamp`         |
-| `progress: time_window`               | `cursor.window_start`, `cursor.window_end`                             |
-| `progress: async_job`                 | `cursor.phase`, plus all names from `submit.extract` + `poll.extract`  |
-| `requests[].extract[].target: cursor` | `cursor.<name>` for each author-declared binding                       |
+---
+
+## Types
+
+The closed set of `state.<name>.type` verbs.
+
+| Type        | Wire shape   | Semantic |
+|-------------|--------------|----------|
+| `string`    | string       | UTF-8; no parsing. |
+| `int`       | integer      | 64-bit signed. |
+| `bool`      | boolean      | true/false. |
+| `secret`    | string       | Non-logging marker; otherwise like `string`. See [secret propagation](#secret-propagation). |
+| `duration`  | string       | Go-style (`"720h"`, `"-30s"`). |
+| `timestamp` | string       | Parsed per the declared `format:` ([§state](#state-field-declaration)). Refs always resolve to `time.Time` in-process. |
+| `url`       | string       | URL string; no validation at load time. |
+| `enum`      | string       | One of the declared `values`. |
+
+The wire form of `timestamp` and `duration` is configurable via the
+field's `format:`; the in-process representation is always `time.Time`
+(for `timestamp`) or `time.Duration` (for `duration`).
 
 ---
 
 ## Predicates
 
 Boolean expressions used in `requests[].if`,
-`auth.multi_mode.branches[].when`, `Value.select.branches[].when`,
-`async_job.poll.complete_when`, and
-`pagination.scroll_id.complete_when`. Discriminated union — exactly
-one variant key.
+`requests[].terminate_when`, `auth.multi_mode.branches[].when`,
+`Value.select.branches[].when`, and `pagination.*.terminate_when`.
+Discriminated union — exactly one variant key.
 
 | Form                                                | Meaning                                                  |
 |-----------------------------------------------------|----------------------------------------------------------|
@@ -943,15 +1071,22 @@ one variant key.
 | `{or:  [<Predicate>, ...]}`                         | Disjunction (short-circuits).                            |
 | `{literal_bool: true \| false}`                     | Constant truth value.                                    |
 
+All predicates are **absent-tolerant**. A Path that resolves to absent
+makes `present` return false, makes `eq` / `gt` / `lt` / `gte` / `lte`
+return false, and never throws. There is no "force a failure to
+terminate" idiom; the loop primitives (`terminate_when:` on a request
+and `terminate_when:` on a pagination variant) read predicates
+directly.
+
 `gt | lt | gte | lte` are ordered comparisons. The LHS (`path`)
 resolves to a namespace ref; the RHS (`value`) is any Value. Targets
 that cannot type-check both operands at lower time (e.g. when the path
 resolves to a string and the Value is an int literal) MUST surface a
 lowering error rather than silently coercing.
 
-The verbs `matches` (regex) and `in` (set membership) are not
-modelled — `in` is expressible today as nested `{or: [...]}`;
-`matches` would need a regex Value form.
+The verbs `matches` (regex) and `in` (set membership) are not modelled
+— `in` is expressible today as nested `{or: [...]}`; `matches` is
+expressible as `{present: {regex: {...}}}` against a string Value.
 
 ---
 
@@ -966,15 +1101,20 @@ time.
 - No embedded expressions or scripting language anywhere in the
   schema.
 - All Value forms are structurally tagged. Bare YAML scalars in Value
-  positions are **string literals**, never interpreted as expressions.
+  positions are string literals (subject to
+  [string interpolation](#string-interpolation)), never interpreted as
+  expressions.
 
 ### Pure discriminated unions
 
-Every union block (`auth`, `pagination`, `progress`, `body`, `Value`,
-`Predicate`) carries **exactly one** variant key. The IR codec rejects
-any mapping that carries zero or more than one discriminator key at
-parse time — this rule applies equally to `Value` and `Predicate`, not
-just to the top-level union blocks.
+Every union block (`auth`, `pagination`, `body`, `Value`, `Predicate`)
+carries **exactly one** variant key. The IR codec rejects any mapping
+that carries zero or more than one discriminator key at parse time —
+this rule applies equally to `Value` and `Predicate`, not just to the
+top-level union blocks.
+
+`progress:` is NOT a union — it is a flat list of writes. The empty
+list (or an omitted `progress:` block) is the no-progress form.
 
 Authors who want a literal map at a `Value` position must use the
 explicit `{object: {...}}` wrapper. There is no silent fallback to
@@ -984,27 +1124,41 @@ explicit `{object: {...}}` wrapper. There is no silent fallback to
 
 `schema.Validate` checks structure: references resolve, unions have
 exactly one key, required fields are present, mutual exclusivities
-hold, type shapes match. It does NOT check whether the in-process
-runner currently implements the combination — runtime capability
-checks live in the runner (see [`runtime.md`](runtime.md)).
+hold, type shapes match, write destinations exist under `state:`. It
+does NOT check whether the in-process runner currently implements the
+combination — runtime capability checks live in the runner (see
+[`runtime.md`](runtime.md)).
 
-### Cursor is fully inferred
+### No hidden namespaces
 
-Cursor fields are derived by the lowering layer from `pagination`,
-`progress`, and `async_job.<step>.extract` declarations. Authors do
-not write a `cursor.fields:` block.
+Every name the runner reads or writes belongs to a namespace the author
+can see. There is no auto-injection — pagination, progress, and
+extracts all write to explicit `state.<name>` (or `cache.<name>` /
+`extract.<name>`) slots that the author named, and the request reads
+them back with `{ref: <namespace>.<name>}` Values placed where the
+author chose.
+
+### Single source of lifetime
+
+A state field's lifetime is inferred from its write sites; there is no
+separate annotation on the declaration. A field written only by
+`pagination:` is per-drain. A field written by `progress:` (or
+extracted with `to: state.*`) is persistent. A field with `default:`
+and no writes is operator config. Conflicts are rejected at validate
+time.
 
 ### Codec invariants
 
 - Every `Value` round-trips through YAML and JSON byte-identically
   (same map shapes, same key names).
-- Slice fields (`requests`, `branches`, `extract`, `concat`, `list`)
-  preserve YAML/JSON parse order.
-- Map fields (`state.fields`, `query`, `headers`, `body.json`,
-  `body.form`, `object`) are emitted alphabetically by key during
-  marshal. Authors who rely on a specific emission order (e.g. an
-  HMAC signature pre-image hashing the canonical form) must use a
-  slice-shaped construction.
+- Slice fields (`requests`, `branches`, `extract`, `concat`, `list`,
+  `progress`, `pagination.custom.advance`) preserve YAML/JSON parse
+  order.
+- Map fields (`state`, `query`, `headers`, `body.json`, `body.form`,
+  `object`) are emitted alphabetically by key during marshal. Authors
+  who rely on a specific emission order (e.g. an HMAC signature
+  pre-image hashing the canonical form) must use a slice-shaped
+  construction.
 - `schema.Load` rejects `ir_version != "1"` before returning a
   `*Doc`.
 - `schema.Validate` operates on a parsed `*Doc`, never on raw bytes.
