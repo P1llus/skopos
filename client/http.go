@@ -33,16 +33,27 @@ type stepResult struct {
 // non-nil *unexpectedStatusError that the caller can interpret per
 // error.mode (standard / fail / warn) or per-request on_status.
 //
+// req.Cache is consulted BEFORE firing: when the cache slot is fresh, the
+// cached body is returned as the stepResult without an HTTP round trip
+// (status 200, no headers). The cache MISS path fires the request, decodes
+// the body, evaluates cache.expires_at against the just-decoded body, and
+// writes the slot. The cache namespace lives in scope.cache (process
+// memory only) and is never persisted.
+//
 // trace is an optional trace-collection scratchpad. When non-nil
 // executeRequest populates it as it goes (final URL, post-auth headers,
-// timing, body metadata) — the caller composes a public Exchange from
-// the scratchpad plus iteration/phase context only it knows.
-//
-// Pagination cursors reach the wire only through the template's own
-// `query:` / `headers:` / `body:` declarations. Slice 5 deleted the
-// implicit `send_as` auto-injector that used to fabricate a producer-step
-// slot from the active pagination strategy.
+// timing, body metadata) — the caller composes a public Exchange from the
+// scratchpad plus iteration context only it knows. Cache hits do NOT emit
+// a trace record (no wire exchange happened); the caller can disambiguate
+// hit-vs-miss by inspecting the returned stepResult against the prior
+// scope.cache state if needed.
 func (s *scope) executeRequest(ctx context.Context, client *http.Client, req schema.Request, trace *httpTrace) (*stepResult, error) {
+	if req.Cache != nil {
+		if v, ok := s.cacheGet(req.Cache); ok {
+			return &stepResult{statusCode: 200, body: v}, nil
+		}
+	}
+
 	u, err := s.buildURL(req)
 	if err != nil {
 		return nil, fmt.Errorf("url: %w", redactURLError(err))
@@ -124,8 +135,8 @@ func (s *scope) executeRequest(ctx context.Context, client *http.Client, req sch
 		// Go's *url.Error embeds the full request URL — including any
 		// query-string credentials (auth.api_key.in_query, or a
 		// {query.<k>: <secret-typed ref>}). Strip the query before the
-		// error chain crosses into operational logging or Drain's
-		// error return.
+		// error chain crosses into operational logging or Drain's error
+		// return.
 		return nil, fmt.Errorf("http.Do: %w", redactURLError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -157,59 +168,55 @@ func (s *scope) executeRequest(ctx context.Context, client *http.Client, req sch
 			expect: req.ExpectStatus,
 		}
 	}
+
+	var decoded any
 	if trace != nil {
 		raw, rerr := io.ReadAll(resp.Body)
 		if rerr != nil {
 			return res, fmt.Errorf("read body: %w", rerr)
 		}
 		trace.respBodyMeta = bodyMeta(len(raw), raw)
-		decoded, err := decodeResponseBytes(raw, s.doc.Response.Decode)
+		decoded, err = decodeResponseBytes(raw, s.doc.Response.Decode)
 		if err != nil {
 			return res, fmt.Errorf("decode: %w", err)
 		}
-		res.body = decoded
-		return res, nil
-	}
-	decoded, err := decodeResponse(resp, s.doc.Response.Decode)
-	if err != nil {
-		return res, fmt.Errorf("decode: %w", err)
+	} else {
+		decoded, err = decodeResponse(resp, s.doc.Response.Decode)
+		if err != nil {
+			return res, fmt.Errorf("decode: %w", err)
+		}
 	}
 	res.body = decoded
+
+	// Write the cache slot from the just-decoded body. The cache.expires_at
+	// Value resolves against the cached step's own body via {ref:
+	// response.body.<path>}, so bind scope.body for the evaluation and
+	// restore it on the way out — a downstream extract / predicate should
+	// see whatever the runner binds, not whatever the cache layer
+	// transiently bound.
+	if req.Cache != nil {
+		prev := s.body
+		s.body = res.body
+		storeErr := s.cacheStore(req.Cache, res.body)
+		s.body = prev
+		if storeErr != nil {
+			return res, fmt.Errorf("cache: %w", storeErr)
+		}
+	}
+
 	return res, nil
 }
 
-// buildURL combines defaults.base_url with req.Path, or evaluates req.URL
-// verbatim. The IR validator already enforces that exactly one of Path /
-// URL is set.
+// buildURL evaluates req.URL — an absolute URL Value, often a string
+// interpolation like "${state.base_url}/events" — and parses the result.
+// Every request carries its own absolute URL; there is no document-level
+// URL prefix.
 func (s *scope) buildURL(req schema.Request) (*url.URL, error) {
-	if req.URL != nil {
-		got, err := s.evalValue(*req.URL)
-		if err != nil {
-			return nil, fmt.Errorf("url: %w", err)
-		}
-		u, perr := url.Parse(toString(got))
-		if perr != nil {
-			return nil, redactURLError(perr)
-		}
-		return u, nil
+	got, err := s.evalValue(req.URL)
+	if err != nil {
+		return nil, fmt.Errorf("url: %w", err)
 	}
-	var prefix string
-	if s.doc.Defaults != nil {
-		got, err := s.evalValue(s.doc.Defaults.BaseURL)
-		if err != nil {
-			return nil, fmt.Errorf("base_url: %w", err)
-		}
-		prefix = toString(got)
-	}
-	pathPart := ""
-	if req.Path != nil {
-		got, err := s.evalValue(*req.Path)
-		if err != nil {
-			return nil, fmt.Errorf("path: %w", err)
-		}
-		pathPart = toString(got)
-	}
-	u, perr := url.Parse(prefix + pathPart)
+	u, perr := url.Parse(toString(got))
 	if perr != nil {
 		return nil, redactURLError(perr)
 	}
