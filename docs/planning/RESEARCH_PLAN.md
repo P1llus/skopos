@@ -105,27 +105,47 @@ We then pause for review before Phase 2 research is planned.
 
 ## Phase 2 — Code and template rewrite
 
-Planned AFTER Phase 1 is complete and reviewed. Domains expected:
+Phase 1 closed. Phase 2 is planned in detail in
+[`PHASE-2-PLAN.md`](PHASE-2-PLAN.md), which carries per-slice scope,
+file ownership, downstream-impacting decisions, and the verification
+posture (when each piece becomes testable end-to-end).
 
-- **`schema/` package** — struct definitions (`schema.go`), parsing
-  (`value.go`, `path.go`, `predicate.go`), validator (`validate.go`).
-  Likely 3-4 slices because `validate.go` alone is 1487 lines.
-- **`client/` package** — runtime. Drain loop (`runner.go`),
-  pagination (`pagination.go`), progress (`progress.go`), state
-  (`state.go`), value resolution (`value.go`), caches
-  (`oauth2.go` + `requestcache.go`). Likely 5-6 slices.
-- **`cmd/` package** — CLI. Small, probably one slice.
-- **`templates/` directory** — 26 templates to rewrite plus the
-  schema fixtures in `schema/testdata/`. Likely one slice once the
-  schema package is rewritten so the rewrites can be validated.
-- **Tests** — final slice. All test files across `schema/` and
-  `client/` are rewritten against the new shape. Run `go test ./...`
-  to a green build at the end.
-- **`docs/schema-reference.md` regeneration** — final step. Run
-  whatever generator produces the file; commit the regenerated
-  output.
+The slice table below is the index. Each slice agent reads
+`PHASE-2-PLAN.md` once for the cross-slice context, then writes their
+own `IMPL-NN-<short-tag>.md` artefact with the executed plan for their
+slice.
 
-These are deferred. Do not plan them in detail until Phase 1 closes.
+| #   | Status | Domain     | Slice                                                                          | Impl plan file                          |
+|-----|--------|------------|--------------------------------------------------------------------------------|-----------------------------------------|
+| 4   | [ ]    | schema     | `schema/schema.go` + `read.go` + `doc.go` — struct definitions                 | `IMPL-04-schema-structs.md`             |
+| 5   | [ ]    | schema     | `schema/value.go` — Value language (reducers, interpolation, add/subtract)     | `IMPL-05-schema-value.md`               |
+| 6   | [ ]    | schema     | `schema/path.go` + `predicate.go` — namespace roots, path & predicate rules    | `IMPL-06-schema-path-predicate.md`      |
+| 7   | [ ]    | schema     | `schema/validate.go` — full validator rewrite                                  | `IMPL-07-schema-validator.md`           |
+| 8   | [ ]    | client     | `client/state.go` — Snapshot shape, scope, per-drain wipe, new namespace roots | `IMPL-08-client-state.md`               |
+| 9   | [ ]    | client     | `client/value.go` + `predicate.go` + `extract.go` + `bodypath.go` — value runtime | `IMPL-09-client-value.md`             |
+| 10  | [ ]    | client     | `client/pagination.go` — collapse 7 variants → 4 + `custom`                    | `IMPL-10-client-pagination.md`          |
+| 11  | [ ]    | client     | `client/progress.go` — variants → flat list of writes, per-page firing         | `IMPL-11-client-progress.md`            |
+| 12  | [ ]    | client     | `client/runner.go` — drain loop, request loop, on_status, error.mode           | `IMPL-12-client-runner.md`              |
+| 13  | [ ]    | client     | `client/http.go` + `auth.go` + `cache.go` (merging `oauth2.go` + `requestcache.go`) + `fanout.go` | `IMPL-13-client-http-cache-auth.md` |
+| 14  | [ ]    | client     | `client/sink.go` + `filestore.go` + `redact.go` + `trace.go` + `doc.go` — secret propagation, trace records, last cleanup | `IMPL-14-client-sink-trace.md` |
+| 15  | [ ]    | cmd        | `cmd/skopos/*` — `validate` / `run` / `init` / `template list|show`            | `IMPL-15-cmd-cli.md`                    |
+| 16  | [ ]    | templates  | `templates/*.yml` + `templates/templates.go` + `schema/testdata/*.yml`         | `IMPL-16-templates.md`                  |
+| 17  | [ ]    | tests      | All `*_test.go` files in `schema/`, `client/`, `cmd/`, `internal/testserver/`  | `IMPL-17-tests.md`                      |
+| 18  | [ ]    | docs       | Regenerate `docs/schema-reference.md`                                          | `IMPL-18-schema-reference.md`           |
+
+**Order:** strictly sequential, 4 → 18. Domain order is schema → client
+→ cmd → templates → tests → schema-reference. Within each domain,
+slices execute in the listed order — each slice's struct or interface
+shape is what the next slice's code reads from.
+
+**Verification posture.** Tests will be red between slices 4 and 16.
+That is the project's stated posture: golden-file-heavy testing means
+end-to-end verification is only possible once templates (Slice 16) and
+the test rewrite (Slice 17) land. Slice agents do NOT slow themselves
+down trying to keep stale tests green. They DO verify the package they
+own builds (`go build ./<domain>/...`) and they MAY write throwaway
+smoke tests inside their slice, **deleted before slice close**. See
+[`PHASE-2-PLAN.md`](PHASE-2-PLAN.md) §4 for the full posture table.
 
 ---
 
