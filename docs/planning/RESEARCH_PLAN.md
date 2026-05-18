@@ -122,7 +122,7 @@ slice.
 | 6   | [x]    | schema     | `schema/path.go` + `predicate.go` — namespace roots, path & predicate rules    | [`IMPL-06-schema-path-predicate.md`](IMPL-06-schema-path-predicate.md) |
 | 7   | [x]    | schema     | `schema/validate.go` — full validator rewrite                                  | [`IMPL-07-schema-validator.md`](IMPL-07-schema-validator.md) |
 | 8   | [x]    | client     | `client/state.go` — Snapshot shape, scope, per-drain wipe, new namespace roots | [`IMPL-08-client-state.md`](IMPL-08-client-state.md) |
-| 9   | [ ]    | client     | `client/value.go` + `predicate.go` + `extract.go` + `bodypath.go` — value runtime | `IMPL-09-client-value.md`             |
+| 9   | [x]    | client     | `client/value.go` + `predicate.go` + `extract.go` + `bodypath.go` — value runtime | [`IMPL-09-client-value.md`](IMPL-09-client-value.md) |
 | 10  | [ ]    | client     | `client/pagination.go` — collapse 7 variants → 4 + `custom`                    | `IMPL-10-client-pagination.md`          |
 | 11  | [ ]    | client     | `client/progress.go` — variants → flat list of writes, per-page firing         | `IMPL-11-client-progress.md`            |
 | 12  | [ ]    | client     | `client/runner.go` — drain loop, request loop, on_status, error.mode           | `IMPL-12-client-runner.md`              |
