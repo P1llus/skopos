@@ -21,7 +21,7 @@ const configTemplate = `# skopos run configuration
 # input: path to the spec file to run. Equivalent to -i / --input.
 # input: spec.yml
 
-# state: path to the JSON state file for persisting the cursor between runs.
+# state: path to the JSON state file for persisting state.* between runs.
 # Equivalent to --state. Omit to use an in-memory store (state lost on exit).
 # state: state.json
 

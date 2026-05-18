@@ -128,7 +128,7 @@ slice.
 | 12  | [x]    | client     | `client/runner.go` — drain loop, request loop, on_status, error.mode           | [`IMPL-12-client-runner.md`](IMPL-12-client-runner.md) |
 | 13  | [x]    | client     | `client/http.go` + `auth.go` + `cache.go` (merging `oauth2.go` + `requestcache.go`) + `fanout.go` | [`IMPL-13-client-http-cache-auth.md`](IMPL-13-client-http-cache-auth.md) |
 | 14  | [x]    | client     | `client/sink.go` + `filestore.go` + `redact.go` + `trace.go` + `doc.go` — secret propagation, trace records, last cleanup | [`IMPL-14-client-sink-trace.md`](IMPL-14-client-sink-trace.md) |
-| 15  | [ ]    | cmd        | `cmd/skopos/*` — `validate` / `run` / `init` / `template list|show`            | `IMPL-15-cmd-cli.md`                    |
+| 15  | [x]    | cmd        | `cmd/skopos/*` — `validate` / `run` / `init` / `template list|show`            | [`IMPL-15-cmd-cli.md`](IMPL-15-cmd-cli.md) |
 | 16  | [ ]    | templates  | `templates/*.yml` + `templates/templates.go` + `schema/testdata/*.yml`         | `IMPL-16-templates.md`                  |
 | 17  | [ ]    | tests      | All `*_test.go` files in `schema/`, `client/`, `cmd/`, `internal/testserver/`  | `IMPL-17-tests.md`                      |
 | 18  | [ ]    | docs       | Regenerate `docs/schema-reference.md`                                          | `IMPL-18-schema-reference.md`           |
