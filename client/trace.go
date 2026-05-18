@@ -36,15 +36,24 @@ import (
 //     in_query=true: the configured header name's value is redacted.
 //   - Headers are emitted with values replaced by "<redacted>" for:
 //     (a) the always-sensitive name allowlist (Authorization, Cookie,
-//     Proxy-Authorization), (b) any header whose IR Value is schema.IsSecret,
-//     (c) any header named by auth.custom.header or
+//     Proxy-Authorization, Set-Cookie), (b) any header whose IR Value is
+//     schema.IsSecret, (c) any header named by auth.custom.header or
 //     auth.api_key.header (the runtime injects credentials into those).
 //   - Request and response bodies are metadata-only by default (byte length
-//   - leading-byte classification). Surfacing raw bytes would put
+//     + leading-byte classification). Surfacing raw bytes would put
 //     access_token / refresh_token responses from OAuth2-style token
 //     endpoints into the trace. Authors who genuinely need the raw bytes
 //     during template development should plug a *http.Client whose
 //     Transport logs request/response — that is an explicit opt-in.
+//
+// # Cache HIT tombstones
+//
+// When a request resolves from a populated cache slot (auth.oauth2.<grant>.
+// cache or requests[].cache), the runner does NOT fire an HTTP round trip.
+// buildExchange returns an Exchange carrying only Iteration, StepID, and
+// CacheHit=true so the trace consumer can correlate the step without
+// inventing fake wire fields. Method / URL / StartedAt / Elapsed all stay
+// zero-valued and serialise away.
 //
 // # Stability
 //
@@ -54,23 +63,27 @@ import (
 type Exchange struct {
 	// Iteration is the 1-based drain iteration this exchange ran in. One
 	// iteration may emit multiple exchanges (one per request in
-	// doc.requests). Async-job drains where a phase is skipped still
-	// increment iteration but contribute no exchanges for the skipped step.
+	// doc.requests, plus one per per-item fan-out expansion).
 	Iteration int `json:"iteration"`
-	// Phase is the async_job phase ("submit" | "poll" | "fetch") this
-	// exchange ran under, or "" for non-async_job drains.
-	Phase string `json:"phase,omitempty"`
 	// StepID is the request's IR id when set, otherwise empty. Match against
 	// doc.requests[].id when triaging which step produced this exchange.
 	StepID string `json:"step_id,omitempty"`
 
+	// CacheHit is true when the step resolved from a cache.<name> slot
+	// without a wire round trip. In that case every other wire field
+	// (Method, URL, StartedAt, Elapsed, Status, headers, bodies) is left
+	// zero-valued; the record exists so operators can correlate the step
+	// against the spec without seeing a gap in the trace.
+	CacheHit bool `json:"cache_hit,omitempty"`
+
 	// Method is the HTTP verb actually sent (uppercased; "GET" when the IR
-	// did not set one).
-	Method string `json:"method"`
+	// did not set one). Empty for CacheHit records.
+	Method string `json:"method,omitempty"`
 	// URL is the wire URL with query and userinfo stripped. The full URL is
 	// never emitted because auth.api_key.in_query and any
-	// {query.<k>: <secret>-typed-ref} put credentials into RawQuery.
-	URL string `json:"url"`
+	// {query.<k>: <secret>-typed-ref} put credentials into RawQuery. Empty
+	// for CacheHit records.
+	URL string `json:"url,omitempty"`
 	// Query is the IR-declared query map, with secret-typed values
 	// redacted. Auth-injected query keys (api_key in_query=true) are
 	// also redacted by name.
@@ -83,17 +96,21 @@ type Exchange struct {
 	RequestBody string `json:"request_body,omitempty"`
 
 	// Status is the HTTP status code, or 0 when the request never reached
-	// the server (transport-level error before a response).
+	// the server (transport-level error before a response, or a cache HIT
+	// short-circuit).
 	Status int `json:"status,omitempty"`
 	// ResponseBody is a metadata-only description of the response body.
 	ResponseBody string `json:"response_body,omitempty"`
 
 	// StartedAt is when the runner began the round trip (post-build, just
-	// before client.Do). UTC. Useful for sorting traces.
-	StartedAt time.Time `json:"started_at"`
+	// before client.Do). UTC. Useful for sorting traces. Zero on cache
+	// HITs and on early build failures. omitzero (Go 1.24+) drops the
+	// field when time.Time.IsZero(); plain omitempty would leak the
+	// "0001-01-01T00:00:00Z" sentinel.
+	StartedAt time.Time `json:"started_at,omitzero"`
 	// Elapsed is the wall-clock duration of the round trip — connect +
 	// TLS + request + response — as measured around client.Do.
-	Elapsed time.Duration `json:"elapsed"`
+	Elapsed time.Duration `json:"elapsed,omitempty"`
 
 	// Error is the redaction-safe stringification of any error the runner
 	// encountered for this exchange (transport, decode, unexpected status).
@@ -140,7 +157,7 @@ type JSONLTracer struct {
 //
 // HTML escaping is disabled on the encoder: the trace is not embedded in
 // HTML, and the redaction markers (<redacted>) and valueShape output
-// (<format:string>, <ref cursor.last_timestamp>, ...) read as
+// (<format:string>, <ref state.window_start>, ...) read as
 // nonsense when '<'/'>'/'&' get rewritten to \u003c/\u003e/\u0026.
 func NewJSONLTracer(w io.Writer) *JSONLTracer {
 	enc := json.NewEncoder(w)
@@ -198,9 +215,13 @@ var sensitiveHeaderNames = map[string]bool{
 }
 
 // httpTrace is the internal scratchpad executeRequest populates when a
-// Tracer is attached to the Runner. The runIteration step composes it
-// into a public Exchange (adding iteration / phase / step id) and
-// dispatches to the Tracer.
+// Tracer is attached to the Runner. The runner composes it into a public
+// Exchange (adding iteration + step id) and dispatches to the Tracer.
+//
+// A zero-valued scratchpad with no wire error signals a cache HIT:
+// executeRequest's cache-hit fast path returns before any field is set,
+// and the runner still calls OnExchange so consumers see a tombstone for
+// the step.
 type httpTrace struct {
 	method       string
 	finalURL     *url.URL
@@ -213,13 +234,30 @@ type httpTrace struct {
 }
 
 // buildExchange composes the public Exchange from the IR request, the
-// internal trace scratchpad, an optional error, and the iteration/phase
-// context known only to runIteration. doc is required for the IsSecret
-// checks; iter is 1-based.
-func buildExchange(doc *schema.Doc, req schema.Request, t *httpTrace, runErr error, iter int, phase string) Exchange {
+// internal trace scratchpad, an optional error, and the iteration context
+// known only to the runner. doc is required for the IsSecret checks; iter
+// is 1-based. The trailing string is the runner's reserved positional slot
+// kept stable across slices — buildExchange does not read it.
+//
+// Cache HIT: when t.method == "" and runErr is nil, executeRequest served
+// the step from a cache slot without touching the wire. buildExchange
+// returns a minimal Exchange carrying only Iteration / StepID / CacheHit;
+// leaving wire fields zero so the JSONL line stays a clean tombstone.
+//
+// Build-time failures (URL build, body build, applyAuth) bail before
+// t.method is set but surface a non-nil runErr — those produce a normal
+// Exchange whose Error captures the redacted diagnostic and whose wire
+// fields stay zero (no Method, no URL, no Status).
+func buildExchange(doc *schema.Doc, req schema.Request, t *httpTrace, runErr error, iter int, _ string) Exchange {
+	if t.method == "" && runErr == nil {
+		return Exchange{
+			Iteration: iter,
+			StepID:    req.ID,
+			CacheHit:  true,
+		}
+	}
 	ex := Exchange{
 		Iteration:      iter,
-		Phase:          phase,
 		StepID:         req.ID,
 		Method:         t.method,
 		URL:            safeURL(t.finalURL),

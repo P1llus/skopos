@@ -16,6 +16,19 @@ import (
 // FileStore persists a Snapshot to a single JSON file. Writes are atomic
 // (write to a temp file in the same directory + rename).
 //
+// # On-disk format
+//
+// The file holds the JSON encoding of Snapshot — a single object with
+// a "state" key carrying the persistable state map. No other namespaces
+// are persisted (cache, events, extract, steps, response are process
+// memory only; see Snapshot's docstring for the full rationale).
+//
+// json.Unmarshal silently drops keys that no longer appear on Snapshot,
+// so a file written by an earlier runner version (carrying an
+// out-of-band top-level key) loads cleanly: the unknown key is dropped
+// and the next Save writes only the current shape. No migration code
+// runs.
+//
 // # Concurrency contract: single-writer per path
 //
 // In-process Save/Load calls are serialised by the embedded mutex, so a
@@ -44,6 +57,12 @@ func NewFileStore(path string) *FileStore {
 
 // Load reads the snapshot from disk. A missing file is not an error —
 // Load returns the zero Snapshot, signalling a first-run state.
+//
+// Unknown top-level keys in the on-disk JSON are silently dropped by
+// json.Unmarshal (Snapshot has no UnknownFields rejection). A file
+// written by an earlier runner shape loads under the current Snapshot
+// without a migration step; the next Save writes only the current
+// fields.
 func (f *FileStore) Load() (Snapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -72,7 +91,8 @@ func (f *FileStore) Save(s Snapshot) error {
 	defer f.mu.Unlock()
 	// Use an encoder rather than json.MarshalIndent so we can disable
 	// HTML escaping — state values legitimately contain '<' / '>' / '&'
-	// (cursor tokens, opaque pagination state) and we want them stored
+	// (opaque server-issued tokens, embedded URLs, HTML-looking page
+	// markers) and we want them stored
 	// verbatim rather than as \u003c / \u003e / \u0026.
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

@@ -17,13 +17,18 @@ import (
 // into RawQuery, and any {query.<k>: <secret-typed ref>} in the IR puts a
 // secret-typed state field into the URL.
 //
+// A nil URL returns "" so the caller's omitempty serialisation drops the
+// field rather than emitting a sentinel. Trace and error machinery
+// distinguish "no wire call happened" (URL empty) from "wire call ran
+// against host" (URL populated) via the empty-string convention.
+//
 // The runner treats request URLs as untrusted-for-logging from this point
 // on. Authors who genuinely need to inspect the full URL during template
 // development should plug a *http.Client whose Transport prints the
 // request — that is an explicit opt-in, not the default.
 func safeURL(u *url.URL) string {
 	if u == nil {
-		return "<nil-url>"
+		return ""
 	}
 	safe := url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}
 	return safe.String()
@@ -74,6 +79,13 @@ func redactURLError(err error) error {
 // name and any structural hints (literal text, ref path, format verb),
 // but never a resolved runtime value.
 //
+// schema.IsSecret walks every reachable operand — Ref / Concat / Select /
+// Format / Base64 / List / Object / Add / Subtract / Max / Min / First /
+// Last / Count / Regex — so a composite Value like
+// "${state.token}/${state.suffix}" (which desugars to {concat: [...]})
+// taints the entire composition when any operand reaches a secret-typed
+// state field.
+//
 // The runner does NOT currently render Values verbatim anywhere — this
 // helper exists so any future debug surface attaches it uniformly. New
 // log lines or error messages that need to mention a Value MUST go
@@ -88,6 +100,14 @@ func redactValue(doc *schema.Doc, v schema.Value) string {
 // valueShape returns a structure-only description of v — never a resolved
 // runtime value. Used as the non-secret rendering inside redactValue and
 // directly when the caller has already confirmed v is not secret-bearing.
+//
+// The switch covers every Value variant the schema package emits today:
+// literals, Ref / Now, the string forms (Concat, Format, Base64), the
+// container forms (List, Object), the Select branching form, the
+// arithmetic pair (Add, Subtract), the list reducers (Max, Min, First,
+// Last, Count), and the Regex extractor. When a new variant lands in
+// schema/value.go this switch MUST grow to match — otherwise the helper
+// falls through to "<empty>" and obscures the IR shape.
 func valueShape(v schema.Value) string {
 	switch {
 	case v.IsZero:
@@ -114,6 +134,22 @@ func valueShape(v schema.Value) string {
 		return "<list>"
 	case v.Object != nil:
 		return "<object>"
+	case v.Add != nil:
+		return "<add>"
+	case v.Subtract != nil:
+		return "<subtract>"
+	case v.Max != nil:
+		return "<max>"
+	case v.Min != nil:
+		return "<min>"
+	case v.First != nil:
+		return "<first>"
+	case v.Last != nil:
+		return "<last>"
+	case v.Count != nil:
+		return "<count>"
+	case v.Regex != nil:
+		return "<regex>"
 	}
 	return "<empty>"
 }
