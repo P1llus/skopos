@@ -16,14 +16,12 @@ import (
 const invalidDoc = `ir_version: "1"
 requests:
   - method: GET
-    path: /api/v1/events
+    url: "http://x/y"
 response:
   decode: json
   events_at: response.body.events
 pagination:
   none: {}
-progress:
-  stateless: {}
 `
 
 // TestValidate_FailReturnsSentinel exercises the in-process path: an
@@ -48,6 +46,38 @@ func TestValidate_FailReturnsSentinel(t *testing.T) {
 	}
 	if !strings.Contains(out, "error") {
 		t.Errorf("expected diagnostic on stdout, got: %q", out)
+	}
+}
+
+// TestValidate_CleanDocReturnsNil pins the happy path: a structurally
+// valid document returns nil and prints no diagnostics.
+func TestValidate_CleanDocReturnsNil(t *testing.T) {
+	clean := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    url: "http://x/y"
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "good.yml")
+	if err := os.WriteFile(path, []byte(clean), 0o644); err != nil {
+		t.Fatalf("write doc: %v", err)
+	}
+	var err error
+	out := captureStdout(t, func() {
+		err = runValidate([]string{"-i", path})
+	})
+	if err != nil {
+		t.Fatalf("clean doc: %v", err)
+	}
+	if strings.Contains(out, "error") {
+		t.Errorf("expected no error diagnostics; got %q", out)
 	}
 }
 

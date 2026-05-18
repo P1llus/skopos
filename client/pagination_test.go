@@ -3,1405 +3,282 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"log"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"strconv"
 	"sync/atomic"
 	"testing"
 
 	"github.com/p1llus/skopos/schema"
 )
 
-// TestNonePagination — the no-op driver. seed clears nothing, advance always
-// returns wantMore=false.
-func TestNonePagination(t *testing.T) {
-	p := &nonePagination{}
-	s := newTestScope(t, nil, nil)
-	p.seed(s)
-	more, err := p.advance(s, nil, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if more {
-		t.Errorf("nonePagination wantMore = true, want false")
-	}
-}
-
-// TestCursorTokenPagination_SeedFirstIteration: cursor.token unset, so a
-// template's {ref: cursor.token} resolves to nil on the first page. seed
-// is a no-op for cursor_token after slice 4.
-func TestCursorTokenPagination_SeedFirstIteration(t *testing.T) {
-	p := &cursorTokenPagination{cfg: &schema.CursorTokenPagination{
-		TokenAt: mustPath("response.body.next_cursor"),
-	}}
-	s := newTestScope(t, nil, nil)
-	p.seed(s)
-	if _, ok := s.cursor["token"]; ok {
-		t.Errorf("first-iteration seed wrote cursor.token; expected absent")
-	}
-}
-
-// TestCursorTokenPagination_AdvanceMid: token_at resolves to a non-zero
-// value → cursor.token is updated, wantMore=true. The next iteration's
-// {ref: cursor.token} reads the same map seed never touches.
-func TestCursorTokenPagination_AdvanceMid(t *testing.T) {
-	p := &cursorTokenPagination{cfg: &schema.CursorTokenPagination{
-		TokenAt: mustPath("response.body.next_cursor"),
-	}}
-	s := newTestScope(t, nil, nil)
-
-	body := map[string]any{"next_cursor": "tok-2", "findings": []any{}}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if !more {
-		t.Errorf("advance after non-zero token: wantMore=false")
-	}
-	if got := s.cursor["token"]; got != "tok-2" {
-		t.Errorf("cursor.token = %v, want tok-2", got)
-	}
-
-	p.seed(s)
-	if got := s.cursor["token"]; got != "tok-2" {
-		t.Errorf("cursor.token after re-seed = %v, want tok-2 (seed must not clobber advance writes)", got)
-	}
-}
-
-// TestCursorTokenPagination_AdvanceTerminate: token_at resolves to zero →
-// cursor cleared, wantMore=false (drain done).
-func TestCursorTokenPagination_AdvanceTerminate(t *testing.T) {
-	p := &cursorTokenPagination{cfg: &schema.CursorTokenPagination{
-		TokenAt: mustPath("response.body.next_cursor"),
-	}}
-	s := newTestScope(t, nil, map[string]any{"token": "tok-1"})
-
-	body := map[string]any{"next_cursor": "", "findings": []any{}}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if more {
-		t.Errorf("advance after zero token: wantMore=true")
-	}
-	if _, ok := s.cursor["token"]; ok {
-		t.Errorf("cursor.token left set after termination")
-	}
-}
-
-// TestPageNumberPagination_SeedFirstIteration: cursor.page absent ⇒ seed
-// writes int64(1) into the cursor so {ref: cursor.page} renders "1" on
-// the bootstrap iteration.
-func TestPageNumberPagination_SeedFirstIteration(t *testing.T) {
-	p := &pageNumberPagination{cfg: &schema.PageNumberPagination{}}
-	s := newTestScope(t, nil, nil)
-	p.seed(s)
-	if got := s.cursor["page"]; got != int64(1) {
-		t.Errorf("cursor.page = %v, want 1", got)
-	}
-}
-
-// TestPageNumberPagination_AdvanceHasMore drives has_more_at=true → next
-// page, has_more_at=false → reset to 1.
-func TestPageNumberPagination_AdvanceHasMore(t *testing.T) {
-	p := &pageNumberPagination{cfg: &schema.PageNumberPagination{
-		HasMoreAt: mustPath("response.body.meta.has_next"),
-	}}
-	s := newTestScope(t, nil, map[string]any{"page": int64(2)})
-
-	body := map[string]any{"meta": map[string]any{"has_next": true}}
-	more, err := p.advance(s, body, nil, []any{1, 2, 3})
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if !more {
-		t.Errorf("has_next=true: wantMore=false")
-	}
-	if got := s.cursor["page"]; got != int64(3) {
-		t.Errorf("cursor.page = %v, want 3", got)
-	}
-
-	body = map[string]any{"meta": map[string]any{"has_next": false}}
-	more, _ = p.advance(s, body, nil, []any{1, 2, 3})
-	if more {
-		t.Errorf("has_next=false: wantMore=true")
-	}
-	if got := s.cursor["page"]; got != int64(1) {
-		t.Errorf("cursor.page after terminate = %v, want 1", got)
-	}
-}
-
-// TestPageNumberPagination_AdvanceNoHasMoreField: with no has_more_at signal,
-// stop when events come back empty, otherwise advance.
-func TestPageNumberPagination_AdvanceNoHasMoreField(t *testing.T) {
-	p := &pageNumberPagination{cfg: &schema.PageNumberPagination{}}
-	s := newTestScope(t, nil, map[string]any{"page": int64(2)})
-
-	more, _ := p.advance(s, nil, nil, []any{1, 2})
-	if !more {
-		t.Errorf("non-empty events with no has_more: wantMore=false")
-	}
-	if got := s.cursor["page"]; got != int64(3) {
-		t.Errorf("cursor.page = %v, want 3", got)
-	}
-
-	more, _ = p.advance(s, nil, nil, nil)
-	if more {
-		t.Errorf("empty events: wantMore=true")
-	}
-	if got := s.cursor["page"]; got != int64(1) {
-		t.Errorf("cursor.page after empty = %v, want 1", got)
-	}
-}
-
-// TestPageNumberPagination_BatchSizeStopsShort: when batch_size is set, the
-// short page (fewer events than batch_size) terminates the drain.
-func TestPageNumberPagination_BatchSizeStopsShort(t *testing.T) {
-	bs := vInt(5)
-	p := &pageNumberPagination{cfg: &schema.PageNumberPagination{
-		BatchSize: &bs,
-	}}
-	s := newTestScope(t, nil, map[string]any{"page": int64(2)})
-
-	more, _ := p.advance(s, nil, nil, []any{1, 2, 3}) // 3 < 5 → done
-	if more {
-		t.Errorf("short page with batch_size: wantMore=true")
-	}
-	if got := s.cursor["page"]; got != int64(1) {
-		t.Errorf("cursor.page after short page = %v, want 1", got)
-	}
-}
-
-// TestOffsetPagination_SeedFirstIteration: cursor.offset absent ⇒ seed
-// writes int64(0) so {ref: cursor.offset} renders "0" on the bootstrap.
-// offset_end is unset when batch_size is absent (cursorSchema rejects
-// {ref: cursor.offset_end} in that case).
-func TestOffsetPagination_SeedFirstIteration(t *testing.T) {
-	p := &offsetPagination{cfg: &schema.OffsetPagination{}}
-	s := newTestScope(t, nil, nil)
-	p.seed(s)
-	if got := s.cursor["offset"]; got != int64(0) {
-		t.Errorf("cursor.offset = %v, want 0", got)
-	}
-	if _, ok := s.cursor["offset_end"]; ok {
-		t.Errorf("cursor.offset_end should be absent when batch_size unset")
-	}
-}
-
-// TestOffsetPagination_SeedWithBatchSize_OffsetEnd: when batch_size is set,
-// seed writes offset_end = offset + batch_size into the cursor so APIs
-// that take an exclusive upper bound (e.g. ?from=N&to=N+50) can render
-// {ref: cursor.offset_end}.
-func TestOffsetPagination_SeedWithBatchSize_OffsetEnd(t *testing.T) {
-	bs := vInt(50)
-	p := &offsetPagination{cfg: &schema.OffsetPagination{BatchSize: &bs}}
-	s := newTestScope(t, nil, map[string]any{"offset": int64(100)})
-	p.seed(s)
-	if got := s.cursor["offset"]; got != int64(100) {
-		t.Errorf("cursor.offset = %v, want 100", got)
-	}
-	if got := s.cursor["offset_end"]; got != int64(150) {
-		t.Errorf("cursor.offset_end = %v, want 150", got)
-	}
-}
-
-// TestOffsetPagination_AdvanceBatchSize: full page (len(events)==batch_size)
-// advances offset by batch_size and signals more; short page resets to 0
-// and signals done.
-func TestOffsetPagination_AdvanceBatchSize(t *testing.T) {
-	bs := vInt(3)
-	p := &offsetPagination{cfg: &schema.OffsetPagination{BatchSize: &bs}}
-	s := newTestScope(t, nil, map[string]any{"offset": int64(6)})
-
-	more, err := p.advance(s, nil, nil, []any{1, 2, 3})
-	if err != nil {
-		t.Fatalf("advance full page: %v", err)
-	}
-	if !more {
-		t.Errorf("full page (len==batch_size): wantMore=false")
-	}
-	if got := s.cursor["offset"]; got != int64(9) {
-		t.Errorf("cursor.offset after full page = %v, want 9", got)
-	}
-
-	// Short page: 2 < batch_size=3 → terminate, reset to 0.
-	more, _ = p.advance(s, nil, nil, []any{1, 2})
-	if more {
-		t.Errorf("short page: wantMore=true")
-	}
-	if got := s.cursor["offset"]; got != int64(0) {
-		t.Errorf("cursor.offset after short page = %v, want 0 (reset)", got)
-	}
-}
-
-// TestOffsetPagination_AdvanceNoBatchSize: with no batch_size signal, advance
-// by the count of events returned; empty page terminates.
-func TestOffsetPagination_AdvanceNoBatchSize(t *testing.T) {
-	p := &offsetPagination{cfg: &schema.OffsetPagination{}}
-	s := newTestScope(t, nil, map[string]any{"offset": int64(10)})
-
-	more, _ := p.advance(s, nil, nil, []any{1, 2, 3, 4})
-	if !more {
-		t.Errorf("non-empty events with no batch_size: wantMore=false")
-	}
-	if got := s.cursor["offset"]; got != int64(14) {
-		t.Errorf("cursor.offset = %v, want 14 (10 + 4)", got)
-	}
-
-	more, _ = p.advance(s, nil, nil, nil)
-	if more {
-		t.Errorf("empty events: wantMore=true")
-	}
-	if got := s.cursor["offset"]; got != int64(0) {
-		t.Errorf("cursor.offset after empty = %v, want 0 (reset)", got)
-	}
-}
-
-// TestUnsupportedPaginationVariants asserts that an empty pagination block
-// (no variant set) fails at plan construction with a clear error.
-func TestUnsupportedPaginationVariants(t *testing.T) {
-	doc := &schema.Doc{Pagination: schema.Pagination{}}
-	if _, err := makePaginationPlan(doc); err == nil {
-		t.Errorf("makePaginationPlan with empty pagination block: expected error, got nil")
-	}
-}
-
-// TestLinkHeaderPagination_SeedFirstIteration: cursor.next_link absent ⇒
-// {ref: cursor.next_link} resolves to nil so the template's
-// {ref: cursor.next_link, default: ...} branch wins. seed is a no-op for
-// link_header after slice 4.
-func TestLinkHeaderPagination_SeedFirstIteration(t *testing.T) {
-	p, err := newLinkHeaderPagination(&schema.LinkHeaderPagination{})
-	if err != nil {
-		t.Fatalf("newLinkHeaderPagination: %v", err)
-	}
-	s := newTestScope(t, nil, nil)
-	p.seed(s)
-	if _, ok := s.cursor["next_link"]; ok {
-		t.Errorf("first-iteration seed wrote cursor.next_link; expected absent")
-	}
-}
-
-// TestLinkHeaderPagination_AdvanceNext: Link header with rel="next" →
-// cursor.next_link captured, wantMore=true. The next iteration's
-// {ref: cursor.next_link} reads the same map seed never touches.
-func TestLinkHeaderPagination_AdvanceNext(t *testing.T) {
-	p, err := newLinkHeaderPagination(&schema.LinkHeaderPagination{})
-	if err != nil {
-		t.Fatalf("newLinkHeaderPagination: %v", err)
-	}
-	s := newTestScope(t, nil, nil)
-
-	headers := http.Header{
-		"Link": []string{`<https://api.example.com/events?page=2>; rel="next", <https://api.example.com/events?page=10>; rel="last"`},
-	}
-	more, err := p.advance(s, nil, headers, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if !more {
-		t.Errorf("advance with rel=next: wantMore=false")
-	}
-	want := "https://api.example.com/events?page=2"
-	if got := s.cursor["next_link"]; got != want {
-		t.Errorf("cursor.next_link = %v, want %q", got, want)
-	}
-
-	p.seed(s)
-	if got := s.cursor["next_link"]; got != want {
-		t.Errorf("cursor.next_link after re-seed = %v, want %q (seed must not clobber advance writes)", got, want)
-	}
-}
-
-// TestLinkHeaderPagination_AdvanceTerminate: response without a rel="next"
-// entry → wantMore=false and cursor.next_link cleared so the next drain
-// starts from the bootstrap URL again.
-func TestLinkHeaderPagination_AdvanceTerminate(t *testing.T) {
-	p, err := newLinkHeaderPagination(&schema.LinkHeaderPagination{})
-	if err != nil {
-		t.Fatalf("newLinkHeaderPagination: %v", err)
-	}
-	s := newTestScope(t, nil, map[string]any{"next_link": "https://api.example.com/events?page=9"})
-
-	// Only rel="prev" — no rel="next" → terminate.
-	headers := http.Header{
-		"Link": []string{`<https://api.example.com/events?page=8>; rel="prev"`},
-	}
-	more, err := p.advance(s, nil, headers, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if more {
-		t.Errorf("advance without rel=next: wantMore=true")
-	}
-	if _, ok := s.cursor["next_link"]; ok {
-		t.Errorf("cursor.next_link left set after termination")
-	}
-}
-
-// TestLinkHeaderPagination_AdvanceNoHeader: empty / absent Link header →
-// terminate and reset.
-func TestLinkHeaderPagination_AdvanceNoHeader(t *testing.T) {
-	p, err := newLinkHeaderPagination(&schema.LinkHeaderPagination{})
-	if err != nil {
-		t.Fatalf("newLinkHeaderPagination: %v", err)
-	}
-	s := newTestScope(t, nil, map[string]any{"next_link": "https://api.example.com/events?page=2"})
-
-	more, err := p.advance(s, nil, http.Header{}, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if more {
-		t.Errorf("advance with no Link header: wantMore=true")
-	}
-	if _, ok := s.cursor["next_link"]; ok {
-		t.Errorf("cursor.next_link left set after termination")
-	}
-}
-
-// TestParseNextLink covers the RFC 5988 default parser's edge cases that
-// matter in the wild: multi-value headers, multi-rel param values, missing
-// quotes around rel, and split-header continuations.
-func TestParseNextLink(t *testing.T) {
-	cases := []struct {
-		name string
-		hdr  []string
-		want string
-	}{
-		{
-			name: "simple_next",
-			hdr:  []string{`<https://api.example.com/p2>; rel="next"`},
-			want: "https://api.example.com/p2",
-		},
-		{
-			name: "multi_entry_next_first",
-			hdr:  []string{`<https://api.example.com/p2>; rel="next", <https://api.example.com/p10>; rel="last"`},
-			want: "https://api.example.com/p2",
-		},
-		{
-			name: "multi_entry_next_last",
-			hdr:  []string{`<https://api.example.com/p1>; rel="prev", <https://api.example.com/p3>; rel="next"`},
-			want: "https://api.example.com/p3",
-		},
-		{
-			name: "unquoted_rel",
-			hdr:  []string{`<https://api.example.com/p2>; rel=next`},
-			want: "https://api.example.com/p2",
-		},
-		{
-			name: "multi_rel_value",
-			hdr:  []string{`<https://api.example.com/p2>; rel="next first"`},
-			want: "https://api.example.com/p2",
-		},
-		{
-			name: "split_across_two_header_lines",
-			hdr: []string{
-				`<https://api.example.com/p1>; rel="prev"`,
-				`<https://api.example.com/p3>; rel="next"`,
-			},
-			want: "https://api.example.com/p3",
-		},
-		{
-			name: "no_next_rel",
-			hdr:  []string{`<https://api.example.com/p1>; rel="prev"`},
-			want: "",
-		},
-		{
-			name: "empty_header",
-			hdr:  []string{},
-			want: "",
-		},
-		{
-			name: "whitespace_only_value",
-			hdr:  []string{"   "},
-			want: "",
-		},
-		{
-			name: "malformed_entry_ignored",
-			hdr:  []string{`not-a-link, <https://api.example.com/p2>; rel="next"`},
-			want: "https://api.example.com/p2",
-		},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			if got := parseNextLink(tc.hdr, nil); got != tc.want {
-				t.Errorf("parseNextLink(%v) = %q, want %q", tc.hdr, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestParseNextLink_CustomPattern: the optional pattern field overrides
-// RFC 5988 detection — first capture group of the first match wins. Useful
-// for APIs that misuse Link's shape (or use a different header entirely
-// and pipe it through headers["Link"] for the runner).
-func TestParseNextLink_CustomPattern(t *testing.T) {
-	p, err := newLinkHeaderPagination(&schema.LinkHeaderPagination{
-		Pattern: `<([^>]+)>;\s*rel="next-page"`,
-	})
-	if err != nil {
-		t.Fatalf("newLinkHeaderPagination: %v", err)
-	}
-	headers := http.Header{
-		"Link": []string{`<https://api.example.com/p2>; rel="next-page"`},
-	}
-	s := newTestScope(t, nil, nil)
-	more, err := p.advance(s, nil, headers, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if !more {
-		t.Errorf("advance with custom pattern match: wantMore=false")
-	}
-	want := "https://api.example.com/p2"
-	if got := s.cursor["next_link"]; got != want {
-		t.Errorf("cursor.next_link = %v, want %q", got, want)
-	}
-}
-
-// TestLinkHeaderPagination_InvalidPatternRejectedAtConstruction asserts a
-// bad regex surfaces at plan construction, before any HTTP traffic.
-func TestLinkHeaderPagination_InvalidPatternRejectedAtConstruction(t *testing.T) {
-	_, err := newLinkHeaderPagination(&schema.LinkHeaderPagination{Pattern: "[unterminated"})
-	if err == nil {
-		t.Fatal("newLinkHeaderPagination with bad regex: expected error, got nil")
-	}
-}
-
-// TestNextURLInBodyPagination_SeedFirstIteration: cursor.next_url absent ⇒
-// {ref: cursor.next_url} resolves to nil so the template's
-// {ref: cursor.next_url, default: ...} branch wins. seed is a no-op for
-// next_url_in_body after slice 4.
-func TestNextURLInBodyPagination_SeedFirstIteration(t *testing.T) {
-	p := &nextURLInBodyPagination{cfg: &schema.NextURLInBodyPagination{
-		NextURLAt: mustPath("response.body.paging.next"),
-	}}
-	s := newTestScope(t, nil, nil)
-	p.seed(s)
-	if _, ok := s.cursor["next_url"]; ok {
-		t.Errorf("first-iteration seed wrote cursor.next_url; expected absent")
-	}
-}
-
-// TestNextURLInBodyPagination_AdvanceNext: a body carrying a non-empty
-// string at next_url_at → cursor.next_url captured, wantMore=true. The
-// next iteration's {ref: cursor.next_url} reads the same map.
-func TestNextURLInBodyPagination_AdvanceNext(t *testing.T) {
-	p := &nextURLInBodyPagination{cfg: &schema.NextURLInBodyPagination{
-		NextURLAt: mustPath("response.body.paging.next"),
-	}}
-	s := newTestScope(t, nil, nil)
-
-	body := map[string]any{
-		"paging": map[string]any{"next": "https://api.example.com/events?cursor=p2"},
-		"items":  []any{},
-	}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if !more {
-		t.Errorf("advance with next URL: wantMore=false")
-	}
-	want := "https://api.example.com/events?cursor=p2"
-	if got := s.cursor["next_url"]; got != want {
-		t.Errorf("cursor.next_url = %v, want %q", got, want)
-	}
-
-	p.seed(s)
-	if got := s.cursor["next_url"]; got != want {
-		t.Errorf("cursor.next_url after re-seed = %v, want %q (seed must not clobber advance writes)", got, want)
-	}
-}
-
-// TestNextURLInBodyPagination_AdvanceTerminate: a body whose next_url_at
-// path resolves to "" → wantMore=false and cursor.next_url cleared so the
-// next drain starts from the bootstrap URL again.
-func TestNextURLInBodyPagination_AdvanceTerminate(t *testing.T) {
-	p := &nextURLInBodyPagination{cfg: &schema.NextURLInBodyPagination{
-		NextURLAt: mustPath("response.body.paging.next"),
-	}}
-	s := newTestScope(t, nil, map[string]any{"next_url": "https://api.example.com/events?cursor=p9"})
-
-	body := map[string]any{
-		"paging": map[string]any{"next": ""},
-		"items":  []any{},
-	}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if more {
-		t.Errorf("advance with empty next URL: wantMore=true")
-	}
-	if _, ok := s.cursor["next_url"]; ok {
-		t.Errorf("cursor.next_url left set after termination")
-	}
-}
-
-// TestNextURLInBodyPagination_AdvanceMissingPath: a body that doesn't
-// carry next_url_at at all → terminate and reset. Mirrors the spec's
-// "missing path is a zero Value" rule.
-func TestNextURLInBodyPagination_AdvanceMissingPath(t *testing.T) {
-	p := &nextURLInBodyPagination{cfg: &schema.NextURLInBodyPagination{
-		NextURLAt: mustPath("response.body.paging.next"),
-	}}
-	s := newTestScope(t, nil, map[string]any{"next_url": "https://api.example.com/events?cursor=p2"})
-
-	body := map[string]any{"items": []any{}}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if more {
-		t.Errorf("advance with missing next path: wantMore=true")
-	}
-	if _, ok := s.cursor["next_url"]; ok {
-		t.Errorf("cursor.next_url left set after termination")
-	}
-}
-
-// TestNextURLInBodyPagination_AdvanceNilValue: a body with an explicit
-// null at next_url_at → terminate and reset. Distinct from missing-path
-// (the lookup ok flag is true but the value is nil); the runner treats
-// both the same way per the §15 zero-Value rule.
-func TestNextURLInBodyPagination_AdvanceNilValue(t *testing.T) {
-	p := &nextURLInBodyPagination{cfg: &schema.NextURLInBodyPagination{
-		NextURLAt: mustPath("response.body.paging.next"),
-	}}
-	s := newTestScope(t, nil, map[string]any{"next_url": "https://api.example.com/events?cursor=p2"})
-
-	body := map[string]any{"paging": map[string]any{"next": nil}, "items": []any{}}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if more {
-		t.Errorf("advance with nil next value: wantMore=true")
-	}
-	if _, ok := s.cursor["next_url"]; ok {
-		t.Errorf("cursor.next_url left set after termination")
-	}
-}
-
-// TestNextURLInBodyPagination_AdvanceNonString: a non-string value at
-// next_url_at (e.g. server returns a JSON number by mistake) → terminate
-// rather than crash. Defensive — real APIs always serve URLs as strings,
-// but the runner refuses to fabricate a URL from a number.
-func TestNextURLInBodyPagination_AdvanceNonString(t *testing.T) {
-	p := &nextURLInBodyPagination{cfg: &schema.NextURLInBodyPagination{
-		NextURLAt: mustPath("response.body.paging.next"),
-	}}
-	s := newTestScope(t, nil, map[string]any{"next_url": "https://api.example.com/events?cursor=p2"})
-
-	body := map[string]any{"paging": map[string]any{"next": float64(42)}, "items": []any{}}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if more {
-		t.Errorf("advance with non-string next value: wantMore=true")
-	}
-	if _, ok := s.cursor["next_url"]; ok {
-		t.Errorf("cursor.next_url left set after termination")
-	}
-}
-
-// TestScrollIDPagination_SeedFirstIteration: cursor.scroll_id absent ⇒
-// {ref: cursor.scroll_id} resolves to nil so the server opens a new
-// scroll session on the bootstrap request. seed is a no-op for scroll_id
-// after slice 4.
-func TestScrollIDPagination_SeedFirstIteration(t *testing.T) {
-	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt: mustPath("response.body.request_metadata.scroll"),
-	}}
-	s := newTestScope(t, nil, nil)
-	p.seed(s)
-	if _, ok := s.cursor["scroll_id"]; ok {
-		t.Errorf("first-iteration seed wrote cursor.scroll_id; expected absent")
-	}
-}
-
-// TestScrollIDPagination_AdvanceNext: a body carrying a non-empty scroll id
-// at scroll_id_at → cursor.scroll_id captured, wantMore=true. The next
-// iteration's {ref: cursor.scroll_id} reads the same map.
-func TestScrollIDPagination_AdvanceNext(t *testing.T) {
-	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
-	}}
-	s := newTestScope(t, nil, nil)
-
-	body := map[string]any{
-		"request_metadata": map[string]any{"scroll": "scroll-tok-2"},
-		"events":           []any{},
-	}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if !more {
-		t.Errorf("advance with scroll id: wantMore=false")
-	}
-	if got := s.cursor["scroll_id"]; got != "scroll-tok-2" {
-		t.Errorf("cursor.scroll_id = %v, want scroll-tok-2", got)
-	}
-
-	p.seed(s)
-	if got := s.cursor["scroll_id"]; got != "scroll-tok-2" {
-		t.Errorf("cursor.scroll_id after re-seed = %v, want scroll-tok-2 (seed must not clobber advance writes)", got)
-	}
-}
-
-// TestScrollIDPagination_AdvanceTerminateOnZeroID: with no complete_when
-// declared, a missing / empty scroll id ends the drain and clears the
-// cursor. Mirrors §15's implicit-default contract for scroll_id.
-func TestScrollIDPagination_AdvanceTerminateOnZeroID(t *testing.T) {
-	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
-	}}
-	s := newTestScope(t, nil, map[string]any{"scroll_id": "scroll-tok-1"})
-
-	body := map[string]any{
-		"request_metadata": map[string]any{"scroll": ""},
-		"events":           []any{},
-	}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if more {
-		t.Errorf("advance with empty scroll id: wantMore=true")
-	}
-	if _, ok := s.cursor["scroll_id"]; ok {
-		t.Errorf("cursor.scroll_id left set after termination")
-	}
-}
-
-// TestScrollIDPagination_AdvanceMissingPath: a body that doesn't carry
-// scroll_id_at at all → terminate and reset. Mirrors the spec's "missing
-// path is a zero Value" rule.
-func TestScrollIDPagination_AdvanceMissingPath(t *testing.T) {
-	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
-	}}
-	s := newTestScope(t, nil, map[string]any{"scroll_id": "scroll-tok-1"})
-
-	body := map[string]any{"events": []any{}}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if more {
-		t.Errorf("advance with missing scroll_id path: wantMore=true")
-	}
-	if _, ok := s.cursor["scroll_id"]; ok {
-		t.Errorf("cursor.scroll_id left set after termination")
-	}
-}
-
-// TestScrollIDPagination_AdvanceCompleteWhenTrue: complete_when satisfied
-// terminates the drain even if the body still carries a fresh scroll id.
-// The predicate evaluates against the producer body via the same
-// {body: ...} scope mechanic async_job.poll uses.
-func TestScrollIDPagination_AdvanceCompleteWhenTrue(t *testing.T) {
-	complete := schema.Predicate{Eq: &schema.PredicateEq{
-		Path:  mustPath("response.body.request_metadata.complete"),
-		Value: vStr("true"),
-	}}
-	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
-		CompleteWhen: &complete,
-	}}
-	s := newTestScope(t, nil, map[string]any{"scroll_id": "scroll-tok-1"})
-
-	// Body still carries a fresh id, but complete_when wins.
-	body := map[string]any{
-		"request_metadata": map[string]any{
-			"scroll":   "scroll-tok-2",
-			"complete": true,
-		},
-		"events": []any{},
-	}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if more {
-		t.Errorf("advance with complete_when=true: wantMore=true")
-	}
-	if _, ok := s.cursor["scroll_id"]; ok {
-		t.Errorf("cursor.scroll_id left set after complete_when termination")
-	}
-}
-
-// TestScrollIDPagination_AdvanceCompleteWhenFalse: complete_when not yet
-// satisfied → capture the fresh scroll id, signal wantMore=true. The fresh
-// id rides into the next iteration via cursor.scroll_id.
-func TestScrollIDPagination_AdvanceCompleteWhenFalse(t *testing.T) {
-	complete := schema.Predicate{Eq: &schema.PredicateEq{
-		Path:  mustPath("response.body.request_metadata.complete"),
-		Value: vStr("true"),
-	}}
-	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
-		CompleteWhen: &complete,
-	}}
-	s := newTestScope(t, nil, map[string]any{"scroll_id": "scroll-tok-1"})
-
-	body := map[string]any{
-		"request_metadata": map[string]any{
-			"scroll":   "scroll-tok-2",
-			"complete": false,
-		},
-		"events": []any{},
-	}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if !more {
-		t.Errorf("advance with complete_when=false: wantMore=false")
-	}
-	if got := s.cursor["scroll_id"]; got != "scroll-tok-2" {
-		t.Errorf("cursor.scroll_id = %v, want scroll-tok-2", got)
-	}
-}
-
-// TestScrollIDPagination_AdvanceBodyScopeIsolation pins that evaluating
-// complete_when doesn't leak s.body to subsequent eval calls. The scope's
-// body should always be restored to whatever it was before advance ran.
-func TestScrollIDPagination_AdvanceBodyScopeIsolation(t *testing.T) {
-	falseVal := false
-	complete := schema.Predicate{LiteralBool: &falseVal}
-	p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-		ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
-		CompleteWhen: &complete,
-	}}
-	s := newTestScope(t, nil, nil)
-	prevBody := map[string]any{"sentinel": "outer"}
-	s.body = prevBody
-
-	body := map[string]any{
-		"request_metadata": map[string]any{"scroll": "scroll-tok-2"},
-	}
-	if _, err := p.advance(s, body, nil, nil); err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	got, ok := s.body.(map[string]any)
-	if !ok || got["sentinel"] != "outer" {
-		t.Errorf("s.body after advance = %#v, want outer sentinel preserved", s.body)
-	}
-}
-
-// TestGraphQLRelayPagination_SeedFirstIteration: cursor.<cursor_var> absent ⇒
-// {ref: cursor.<cursor_var>} resolves to nil so the GraphQL variable
-// rides as null on the bootstrap request. seed is a no-op for graphql_relay
-// after slice 4.
-func TestGraphQLRelayPagination_SeedFirstIteration(t *testing.T) {
-	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-		HasNextPageAt: mustPath("response.body.data.issues.pageInfo.hasNextPage"),
-		EndCursorAt:   mustPath("response.body.data.issues.pageInfo.endCursor"),
-		CursorVar:     "after",
-	}}
-	s := newTestScope(t, nil, nil)
-	p.seed(s)
-	if _, ok := s.cursor["after"]; ok {
-		t.Errorf("first-iteration seed wrote cursor.after; expected absent")
-	}
-}
-
-// TestGraphQLRelayPagination_AdvanceNext: has_next_page=true + a non-empty
-// endCursor → cursor.<cursor_var> captured, wantMore=true. The next
-// iteration's {ref: cursor.<cursor_var>} reads the same map.
-func TestGraphQLRelayPagination_AdvanceNext(t *testing.T) {
-	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-		HasNextPageAt: mustPath("response.body.data.issues.pageInfo.hasNextPage"),
-		EndCursorAt:   mustPath("response.body.data.issues.pageInfo.endCursor"),
-		CursorVar:     "after",
-	}}
-	s := newTestScope(t, nil, nil)
-
-	body := map[string]any{
-		"data": map[string]any{
-			"issues": map[string]any{
-				"nodes": []any{},
-				"pageInfo": map[string]any{
-					"hasNextPage": true,
-					"endCursor":   "Y3Vyc29yOjI=",
-				},
-			},
-		},
-	}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if !more {
-		t.Errorf("advance with hasNextPage=true: wantMore=false")
-	}
-	if got := s.cursor["after"]; got != "Y3Vyc29yOjI=" {
-		t.Errorf("cursor.after = %v, want Y3Vyc29yOjI=", got)
-	}
-
-	p.seed(s)
-	if got := s.cursor["after"]; got != "Y3Vyc29yOjI=" {
-		t.Errorf("cursor.after after re-seed = %v, want Y3Vyc29yOjI= (seed must not clobber advance writes)", got)
-	}
-}
-
-// TestGraphQLRelayPagination_AdvanceTerminateOnHasNextFalse: has_next_page=false
-// ends the drain and clears the cursor — even if endCursor still carries a
-// value, the Relay contract says no more pages exist.
-func TestGraphQLRelayPagination_AdvanceTerminateOnHasNextFalse(t *testing.T) {
-	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-		HasNextPageAt: mustPath("response.body.data.issues.pageInfo.hasNextPage"),
-		EndCursorAt:   mustPath("response.body.data.issues.pageInfo.endCursor"),
-		CursorVar:     "after",
-	}}
-	s := newTestScope(t, nil, map[string]any{"after": "Y3Vyc29yOjE="})
-
-	body := map[string]any{
-		"data": map[string]any{
-			"issues": map[string]any{
-				"nodes": []any{},
-				"pageInfo": map[string]any{
-					"hasNextPage": false,
-					"endCursor":   "Y3Vyc29yOjk5",
-				},
-			},
-		},
-	}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if more {
-		t.Errorf("advance with hasNextPage=false: wantMore=true")
-	}
-	if _, ok := s.cursor["after"]; ok {
-		t.Errorf("cursor.after left set after termination")
-	}
-}
-
-// TestGraphQLRelayPagination_AdvanceMissingHasNext: a body that doesn't
-// carry the has_next_page_at path at all → terminate and reset. Mirrors
-// the spec's "missing field is a zero Value" rule.
-func TestGraphQLRelayPagination_AdvanceMissingHasNext(t *testing.T) {
-	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-		HasNextPageAt: mustPath("response.body.data.issues.pageInfo.hasNextPage"),
-		EndCursorAt:   mustPath("response.body.data.issues.pageInfo.endCursor"),
-		CursorVar:     "after",
-	}}
-	s := newTestScope(t, nil, map[string]any{"after": "Y3Vyc29yOjE="})
-
-	body := map[string]any{"data": map[string]any{"issues": map[string]any{}}}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if more {
-		t.Errorf("advance with missing pageInfo: wantMore=true")
-	}
-	if _, ok := s.cursor["after"]; ok {
-		t.Errorf("cursor.after left set after termination")
-	}
-}
-
-// TestGraphQLRelayPagination_AdvanceMissingEndCursorWhenMore: has_next_page=true
-// but end_cursor_at resolves to a zero value → terminate defensively. A
-// well-behaved Relay server never produces this combination, but the
-// runner refuses to re-fire the same request without a fresh cursor.
-func TestGraphQLRelayPagination_AdvanceMissingEndCursorWhenMore(t *testing.T) {
-	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-		HasNextPageAt: mustPath("response.body.data.issues.pageInfo.hasNextPage"),
-		EndCursorAt:   mustPath("response.body.data.issues.pageInfo.endCursor"),
-		CursorVar:     "after",
-	}}
-	s := newTestScope(t, nil, map[string]any{"after": "Y3Vyc29yOjE="})
-
-	body := map[string]any{
-		"data": map[string]any{
-			"issues": map[string]any{
-				"pageInfo": map[string]any{
-					"hasNextPage": true,
-					"endCursor":   "",
-				},
-			},
-		},
-	}
-	more, err := p.advance(s, body, nil, nil)
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if more {
-		t.Errorf("advance with empty endCursor + hasNextPage=true: wantMore=true")
-	}
-	if _, ok := s.cursor["after"]; ok {
-		t.Errorf("cursor.after left set after termination")
-	}
-}
-
-// TestGraphQLRelayPagination_AdvanceHonoursCustomCursorVar pins that the
-// cursor key the driver writes to is the author-declared cursor_var, not a
-// hard-coded "after". Use a non-default name to make the assertion
-// load-bearing.
-func TestGraphQLRelayPagination_AdvanceHonoursCustomCursorVar(t *testing.T) {
-	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-		HasNextPageAt: mustPath("response.body.data.users.pageInfo.hasNextPage"),
-		EndCursorAt:   mustPath("response.body.data.users.pageInfo.endCursor"),
-		CursorVar:     "userCursor",
-	}}
-	s := newTestScope(t, nil, nil)
-
-	body := map[string]any{
-		"data": map[string]any{
-			"users": map[string]any{
-				"pageInfo": map[string]any{
-					"hasNextPage": true,
-					"endCursor":   "u-2",
-				},
-			},
-		},
-	}
-	if _, err := p.advance(s, body, nil, nil); err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if _, ok := s.cursor["after"]; ok {
-		t.Errorf("cursor.after written under default key; want author-declared cursor_var")
-	}
-	if got := s.cursor["userCursor"]; got != "u-2" {
-		t.Errorf("cursor.userCursor = %v, want u-2", got)
-	}
-
-	p.seed(s)
-	if got := s.cursor["userCursor"]; got != "u-2" {
-		t.Errorf("cursor.userCursor after re-seed = %v, want u-2 (seed must not clobber advance writes)", got)
-	}
-}
-
-// ---- termination-edge tests ----
-
-// TestPageNumberPagination_AdvanceMissingHasMorePath: HasMoreAt is
-// declared but the body lacks the path entirely. Per the §15
-// zero-Value rule the runner conservatively terminates and resets the
-// cursor to 1.
-func TestPageNumberPagination_AdvanceMissingHasMorePath(t *testing.T) {
-	p := &pageNumberPagination{cfg: &schema.PageNumberPagination{
-		HasMoreAt: mustPath("response.body.meta.has_next"),
-	}}
-	s := newTestScope(t, nil, map[string]any{"page": int64(2)})
-
-	body := map[string]any{"meta": map[string]any{}}
-	more, err := p.advance(s, body, nil, []any{1, 2, 3})
-	if err != nil {
-		t.Fatalf("advance: %v", err)
-	}
-	if more {
-		t.Errorf("missing has_more path: wantMore=true, want false (conservative terminate)")
-	}
-	// Note: the conservative-terminate branch at advance() returns
-	// before resetting cursor.page. The cursor is reset by the
-	// has_more=false / empty-page / short-page branches; the missing-
-	// path branch leaves cursor.page untouched. Pin both the
-	// terminate signal and the leave-cursor-as-is contract here.
-	if got := s.cursor["page"]; got != int64(2) {
-		t.Errorf("missing has_more path: cursor.page = %v, want 2 (untouched)", got)
-	}
-}
-
-// TestPageNumberPagination_AdvanceNonBoolHasMore: HasMoreAt resolves
-// to a string the toBool helper rejects. The runner must surface the
-// wrapped error rather than silently coercing or terminating.
-func TestPageNumberPagination_AdvanceNonBoolHasMore(t *testing.T) {
-	p := &pageNumberPagination{cfg: &schema.PageNumberPagination{
-		HasMoreAt: mustPath("response.body.meta.has_next"),
-	}}
-	s := newTestScope(t, nil, nil)
-
-	body := map[string]any{"meta": map[string]any{"has_next": "yes"}}
-	_, err := p.advance(s, body, nil, []any{1})
-	if err == nil {
-		t.Fatal("advance: nil error, want non-bool wrap")
-	}
-	if !strings.Contains(err.Error(), "pagination.page_number.has_more_at") {
-		t.Errorf("err = %v, want substring pagination.page_number.has_more_at", err)
-	}
-}
-
-// TestGraphQLRelayPagination_AdvanceNonBoolHasNext: same shape as the
-// page_number non-bool case, for graphql_relay's has_next_page_at.
-func TestGraphQLRelayPagination_AdvanceNonBoolHasNext(t *testing.T) {
-	p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-		HasNextPageAt: mustPath("response.body.data.pageInfo.hasNextPage"),
-		EndCursorAt:   mustPath("response.body.data.pageInfo.endCursor"),
-		CursorVar:     "after",
-	}}
-	s := newTestScope(t, nil, nil)
-
-	body := map[string]any{"data": map[string]any{"pageInfo": map[string]any{
-		"hasNextPage": "yes",
-		"endCursor":   "cur-1",
-	}}}
-	_, err := p.advance(s, body, nil, nil)
-	if err == nil {
-		t.Fatal("advance: nil error, want non-bool wrap")
-	}
-	if !strings.Contains(err.Error(), "pagination.graphql_relay.has_next_page_at") {
-		t.Errorf("err = %v, want substring pagination.graphql_relay.has_next_page_at", err)
-	}
-}
-
-// TestOffsetPagination_SeedLogsBatchSizeEvalFailure pins the
-// operator breadcrumb added for P2-rule2-02. When seed's batch_size
-// eval fails we still drop offset_end silently from this iteration —
-// but a log line MUST surface so an operator notices the misshapen
-// bootstrap request rather than chasing a phantom pagination bug
-// later.
-func TestOffsetPagination_SeedLogsBatchSizeEvalFailure(t *testing.T) {
-	// Reference an absent state field with no default — evalValue
-	// returns nil, then toInt fails on nil.
-	bs := vRef("state.size_limit")
-	p := &offsetPagination{cfg: &schema.OffsetPagination{BatchSize: &bs}}
-
-	s := newTestScope(t, nil, nil)
-	var buf bytes.Buffer
-	s.logger = log.New(&buf, "", 0)
-
-	p.seed(s)
-	if _, ok := s.cursor["offset_end"]; ok {
-		t.Errorf("seed left cursor.offset_end set after eval failure; expected dropped")
-	}
-	if !strings.Contains(buf.String(), "pagination.offset.batch_size eval failed") {
-		t.Errorf("logger missing breadcrumb; got %q", buf.String())
-	}
-}
-
-// TestPaginationErrorLabels asserts every reachable error wrap inside
-// pagination's advance() / seed() carries the canonical
-// `pagination.<variant>.<field>` prefix. A regression that misses one
-// variant in a label rename surfaces here.
-//
-// Reachability note: lookupBodyPath in bodypath.go does NOT return a
-// non-nil error in any code path today — a path that walks past a
-// scalar returns (nil, false, nil), which the variant treats as a
-// graceful terminate. The lookupBodyPath wraps in cursor_token /
-// next_url_in_body / scroll_id / graphql_relay.end_cursor_at are
-// therefore defensive guards against a future change to lookupBodyPath;
-// we cannot exercise them from a test today. The reachable labels are
-// the coercion / predicate / batch-size eval branches, which is what
-// this table covers.
-func TestPaginationErrorLabels(t *testing.T) {
-	cases := []struct {
-		name      string
-		setup     func(t *testing.T) (paginationPlan, *scope, any, []any)
-		wantLabel string
-	}{
-		{
-			// Reachable via toBool failure on a string that ParseBool rejects.
-			name:      "page_number.has_more_at non-bool",
-			wantLabel: "pagination.page_number.has_more_at",
-			setup: func(t *testing.T) (paginationPlan, *scope, any, []any) {
-				p := &pageNumberPagination{cfg: &schema.PageNumberPagination{
-					HasMoreAt: mustPath("response.body.meta.has_next"),
-				}}
-				s := newTestScope(t, nil, nil)
-				body := map[string]any{"meta": map[string]any{"has_next": "yes"}}
-				return p, s, body, []any{1}
-			},
-		},
-		{
-			// Reachable via toInt failure on a non-numeric string.
-			name:      "page_number.batch_size non-int",
-			wantLabel: "pagination.page_number.batch_size",
-			setup: func(t *testing.T) (paginationPlan, *scope, any, []any) {
-				bs := vStr("not-a-number")
-				p := &pageNumberPagination{cfg: &schema.PageNumberPagination{
-					BatchSize: &bs,
-				}}
-				s := newTestScope(t, nil, nil)
-				body := map[string]any{}
-				return p, s, body, []any{1, 2}
-			},
-		},
-		{
-			// Reachable via the same toInt failure inside offset.advance.
-			name:      "offset.batch_size non-int",
-			wantLabel: "pagination.offset.batch_size",
-			setup: func(t *testing.T) (paginationPlan, *scope, any, []any) {
-				bs := vStr("not-a-number")
-				p := &offsetPagination{cfg: &schema.OffsetPagination{
-					BatchSize: &bs,
-				}}
-				s := newTestScope(t, nil, nil)
-				body := map[string]any{}
-				return p, s, body, []any{1, 2}
-			},
-		},
-		{
-			// Reachable via evalPredicate of an empty Predicate.
-			name:      "scroll_id.complete_when invalid",
-			wantLabel: "pagination.scroll_id.complete_when",
-			setup: func(t *testing.T) (paginationPlan, *scope, any, []any) {
-				badPred := schema.Predicate{}
-				p := &scrollIDPagination{cfg: &schema.ScrollIDPagination{
-					ScrollIDAt:   mustPath("response.body.scroll_id"),
-					CompleteWhen: &badPred,
-				}}
-				s := newTestScope(t, nil, nil)
-				body := map[string]any{"scroll_id": "s-1"}
-				return p, s, body, nil
-			},
-		},
-		{
-			// Reachable via toBool failure on graphql_relay's hasNextPage.
-			name:      "graphql_relay.has_next_page_at non-bool",
-			wantLabel: "pagination.graphql_relay.has_next_page_at",
-			setup: func(t *testing.T) (paginationPlan, *scope, any, []any) {
-				p := &graphQLRelayPagination{cfg: &schema.GraphQLRelayPagination{
-					HasNextPageAt: mustPath("response.body.data.pageInfo.hasNextPage"),
-					EndCursorAt:   mustPath("response.body.data.pageInfo.endCursor"),
-					CursorVar:     "after",
-				}}
-				s := newTestScope(t, nil, nil)
-				body := map[string]any{"data": map[string]any{"pageInfo": map[string]any{
-					"hasNextPage": "yes",
-					"endCursor":   "c-1",
-				}}}
-				return p, s, body, nil
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			plan, s, body, events := tc.setup(t)
-			_, err := plan.advance(s, body, nil, events)
-			if err == nil {
-				t.Fatalf("advance: nil error, want wrap %q", tc.wantLabel)
-			}
-			if !strings.Contains(err.Error(), tc.wantLabel) {
-				t.Errorf("err = %v, want substring %q", err, tc.wantLabel)
-			}
-		})
-	}
-}
-
-// ---- explicit cursor wiring end-to-end ----
-//
-// Slice 5 deleted the implicit `send_as` auto-injector. Every paginating
-// template now wires the cursor explicitly into the producer step's request
-// — `query: {cursor: {ref: cursor.token, default: ""}}` for cursor_token,
-// `query: {scroll: {ref: cursor.scroll_id}}` for scroll_id, etc. The
-// end-to-end tests below pin the wire-shape regression guard for both
-// strategies against a live httptest server.
-
-// TestEndToEnd_CursorToken_Explicit drives cursor_token across three pages
-// with the template wiring {ref: cursor.token, default: ""} at the query
-// slot. Page 0 sends `cursor=` (empty); pages 1-2 echo the token returned
-// by the previous response; the empty next_cursor on page 2 terminates and
-// clears cursor.token.
-func TestEndToEnd_CursorToken_Explicit(t *testing.T) {
-	pages := []map[string]any{
-		{
-			"findings":    []map[string]any{{"id": "f1", "created_at": "2026-05-12T08:00:00Z"}},
-			"next_cursor": "tok-2",
-		},
-		{
-			"findings":    []map[string]any{{"id": "f2", "created_at": "2026-05-12T08:05:00Z"}},
-			"next_cursor": "tok-3",
-		},
-		{
-			"findings":    []map[string]any{{"id": "f3", "created_at": "2026-05-12T08:10:00Z"}},
-			"next_cursor": "",
-		},
-	}
-	var pageCount atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		idx := int(pageCount.Add(1)) - 1
-		// The bootstrap iteration sends cursor= (empty string from the
-		// {default: ""} branch); subsequent iterations send the captured
-		// token from the previous response.
-		if _, present := r.URL.Query()["cursor"]; !present {
-			t.Errorf("page %d cursor query param missing; expected the template-wired ref to fire", idx)
-		}
-		cur := r.URL.Query().Get("cursor")
-		switch idx {
-		case 0:
-			if cur != "" {
-				t.Errorf("page 0 cursor = %q, want empty (bootstrap)", cur)
-			}
-		case 1:
-			if cur != "tok-2" {
-				t.Errorf("page 1 cursor = %q, want tok-2", cur)
-			}
-		case 2:
-			if cur != "tok-3" {
-				t.Errorf("page 2 cursor = %q, want tok-3", cur)
-			}
-		default:
-			t.Errorf("unexpected extra page request %d", idx)
-		}
-		writeJSON(w, http.StatusOK, pages[idx])
+// TestPagination_NoneSinglePage pins the none variant: exactly one page
+// per drain.
+func TestPagination_NoneSinglePage(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{
+			map[string]any{"id": "e1"},
+		}})
 	}))
 	defer server.Close()
 
-	store := &MemoryStore{}
-	r := &Runner{
-		Doc:    cursorTokenExplicitDoc(server.URL, "test-token"),
-		Sink:   &captureSink{},
-		Store:  store,
-		Now:    fixedNow(),
-		Client: server.Client(),
-	}
+	sink := &captureSink{}
+	r := &Runner{Doc: minimalDoc(server.URL), Sink: sink, Now: fixedNow(), Client: server.Client()}
 	if err := r.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-	if got := pageCount.Load(); got != 3 {
-		t.Fatalf("server saw %d requests, want 3", got)
-	}
-	snap, _ := store.Load()
-	if _, ok := snap.Cursor["token"]; ok {
-		t.Errorf("cursor.token should be cleared after terminating page")
+	if calls.Load() != 1 {
+		t.Errorf("server calls = %d, want 1 (none variant)", calls.Load())
 	}
 }
 
-// cursorTokenExplicitDoc wires query.cursor to {ref: cursor.token,
-// default: ""} so the bootstrap iteration sends `cursor=` and subsequent
-// iterations carry the token captured from the previous response.
-func cursorTokenExplicitDoc(baseURL, token string) *schema.Doc {
-	return &schema.Doc{
-		IRVersion: "1",
-		State: &schema.State{Fields: map[string]schema.FieldDecl{
-			"url":     {Type: "url", Default: baseURL},
-			"api_key": {Type: "secret", Default: token},
-		}},
-		Defaults: &schema.Defaults{BaseURL: vRef("state.url")},
-		Auth:     schema.Auth{Bearer: &schema.BearerAuth{Token: vRef("state.api_key")}},
-		Requests: []schema.Request{{
-			Method: "GET",
-			Path:   ptrValue(vStr("/api/v1/findings")),
-			Query: map[string]schema.Value{
-				"cursor": vRefDefault("cursor.token", vStr("")),
-			},
-		}},
-		Response: schema.Response{Decode: "json", EventsAt: mustPath("response.body.findings")},
-		Pagination: schema.Pagination{CursorToken: &schema.CursorTokenPagination{
-			TokenAt: mustPath("response.body.next_cursor"),
-		}},
-		Progress: schema.Progress{
-			LatestEventTimestamp: &schema.TimestampProgress{
-				EventTime: schema.EventTime{Path: mustPath("created_at")},
-			},
-		},
+// TestPagination_CursorTokenAdvancesAndStops walks two pages with a
+// cursor_token plan, then a third page with no next_cursor terminates
+// the loop.
+func TestPagination_CursorTokenAdvancesAndStops(t *testing.T) {
+	pages := []map[string]any{
+		{"events": []any{map[string]any{"id": "e1"}}, "next_cursor": "page-2"},
+		{"events": []any{map[string]any{"id": "e2"}}, "next_cursor": "page-3"},
+		{"events": []any{map[string]any{"id": "e3"}}}, // no next_cursor → terminate
 	}
-}
-
-// TestEndToEnd_ScrollID_Explicit_Header drives scroll_id with the template
-// wiring {ref: cursor.scroll_id} into the X-Scroll-ID request header.
-// Asserts the header is absent on page 0 (bootstrap — cursor.scroll_id
-// resolves to nil so the slot is skipped) and echoed on pages 1-2 from the
-// captured scroll id. Pins the header-slot path through the cursor-ref
-// resolver.
-func TestEndToEnd_ScrollID_Explicit_Header(t *testing.T) {
-	type page struct {
-		events     []map[string]any
-		scrollID   string
-		isComplete bool
-	}
-	pages := []page{
-		{
-			events:     []map[string]any{{"id": "a", "created_at": "2026-05-12T08:00:00Z"}},
-			scrollID:   "scroll-p2",
-			isComplete: false,
-		},
-		{
-			events:     []map[string]any{{"id": "b", "created_at": "2026-05-12T08:01:00Z"}},
-			scrollID:   "scroll-p3",
-			isComplete: false,
-		},
-		{
-			events:     []map[string]any{{"id": "c", "created_at": "2026-05-12T08:02:00Z"}},
-			scrollID:   "scroll-p3",
-			isComplete: true,
-		},
-	}
-	expectedHeader := []string{"", "scroll-p2", "scroll-p3"}
-	var hits int32
+	var idx atomic.Int32
+	var seenCursors []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		i := int(atomic.AddInt32(&hits, 1)) - 1
-		if i >= len(pages) {
-			t.Errorf("unexpected extra request %d", i)
+		seenCursors = append(seenCursors, r.URL.Query().Get("cursor"))
+		i := idx.Add(1) - 1
+		writeJSON(w, http.StatusOK, pages[i])
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["next_token"] = schema.FieldDecl{Type: "string"}
+	doc.Requests[0].URL = mustInterp("${state.url}/events")
+	doc.Requests[0].Query = map[string]schema.Value{
+		"cursor": vRefDefault("state.next_token", vStr("")),
+	}
+	doc.Pagination = schema.Pagination{CursorToken: &schema.CursorTokenPagination{
+		From: mustPath("response.body.next_cursor"),
+		To:   mustPath("state.next_token"),
+	}}
+
+	sink := &captureSink{}
+	r := &Runner{Doc: doc, Sink: sink, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if len(sink.events) != 3 {
+		t.Errorf("events = %d, want 3", len(sink.events))
+	}
+	if len(seenCursors) != 3 {
+		t.Fatalf("cursor query observed %d times, want 3", len(seenCursors))
+	}
+	if got := seenCursors[0]; got != "" {
+		t.Errorf("page 1 cursor = %q, want empty (bootstrap default)", got)
+	}
+	if got := seenCursors[1]; got != "page-2" {
+		t.Errorf("page 2 cursor = %q, want page-2", got)
+	}
+}
+
+// TestPagination_NextURLLinkHeader pins the Link-header shape: the
+// regex extracts the URL between < and >; rel="next" picks the right
+// header value when multiple links exist.
+func TestPagination_NextURLLinkHeader(t *testing.T) {
+	var idx atomic.Int32
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		i := idx.Add(1) - 1
+		if i == 0 {
+			w.Header().Set("Link", `<`+server.URL+`/events?p=2>; rel="next", <`+server.URL+`/events?p=1>; rel="self"`)
+			writeJSON(w, http.StatusOK, map[string]any{"events": []any{
+				map[string]any{"id": "e1"},
+			}})
 			return
 		}
-		got := r.Header.Get("X-Scroll-ID")
-		if got != expectedHeader[i] {
-			t.Errorf("page %d X-Scroll-ID = %q, want %q", i, got, expectedHeader[i])
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"events": pages[i].events,
-			"request_metadata": map[string]any{
-				"scroll":   pages[i].scrollID,
-				"complete": pages[i].isComplete,
-			},
-		})
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{
+			map[string]any{"id": "e2"},
+		}})
 	}))
 	defer server.Close()
 
-	r := &Runner{
-		Doc:    scrollIDExplicitHeaderDoc(server.URL, "test-token"),
-		Sink:   &captureSink{},
-		Store:  &MemoryStore{},
-		Now:    fixedNow(),
-		Client: server.Client(),
-	}
+	doc := minimalDoc(server.URL)
+	doc.State["next_url"] = schema.FieldDecl{Type: "url"}
+	doc.Requests[0].URL = vRefDefault("state.next_url", mustInterp("${state.url}/events"))
+	doc.Pagination = schema.Pagination{NextURL: &schema.NextURLPagination{
+		From:    mustPath("response.header.Link"),
+		To:      mustPath("state.next_url"),
+		Regex:   `<([^>]+)>;\s*rel="next"`,
+		Capture: 1,
+	}}
+
+	sink := &captureSink{}
+	r := &Runner{Doc: doc, Sink: sink, Now: fixedNow(), Client: server.Client()}
 	if err := r.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-	if got := atomic.LoadInt32(&hits); got != 3 {
-		t.Fatalf("server saw %d requests, want 3", got)
+	if len(sink.events) != 2 {
+		t.Errorf("events = %d, want 2", len(sink.events))
 	}
 }
 
-// scrollIDExplicitHeaderDoc wires {ref: cursor.scroll_id} into the
-// X-Scroll-ID request header. The bootstrap iteration's nil cursor causes
-// the slot to be skipped (http.go drops nil header values); subsequent
-// iterations carry the captured id.
-func scrollIDExplicitHeaderDoc(baseURL, token string) *schema.Doc {
-	complete := schema.Predicate{Eq: &schema.PredicateEq{
-		Path:  mustPath("response.body.request_metadata.complete"),
-		Value: vStr("true"),
+// TestPagination_CounterShortPageTerminates pins the counter variant's
+// default terminate_when (events.count < step). Page-number style with
+// start: 1, step: 1.
+func TestPagination_CounterShortPageTerminates(t *testing.T) {
+	var idx atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		i := idx.Add(1)
+		_ = i
+		// step:1 — terminate fires on the first short page (zero
+		// events), so the page-1 response carries one event and page-2
+		// (zero events) ends the loop.
+		var events []any
+		if page == 1 {
+			events = []any{map[string]any{"id": "e1"}}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"events": events})
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["page"] = schema.FieldDecl{Type: "int"}
+	doc.Requests[0].URL = mustInterp("${state.url}/events")
+	doc.Requests[0].Query = map[string]schema.Value{
+		"page": vRefDefault("state.page", vInt(1)),
+	}
+	doc.Pagination = schema.Pagination{Counter: &schema.CounterPagination{
+		To: mustPath("state.page"),
 	}}
-	return &schema.Doc{
-		IRVersion: "1",
-		State: &schema.State{Fields: map[string]schema.FieldDecl{
-			"url":     {Type: "url", Default: baseURL},
-			"api_key": {Type: "secret", Default: token},
+
+	sink := &captureSink{}
+	r := &Runner{Doc: doc, Sink: sink, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if len(sink.events) != 1 {
+		t.Errorf("events = %d, want 1 (page 1 returns one event, page 2 empty → terminate)", len(sink.events))
+	}
+	if idx.Load() != 2 {
+		t.Errorf("server calls = %d, want 2", idx.Load())
+	}
+}
+
+// TestPagination_CounterWithExplicitTerminate pins overriding the
+// default short-page predicate with an explicit has_next signal.
+func TestPagination_CounterWithExplicitTerminate(t *testing.T) {
+	var idx atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		idx.Add(1)
+		body := map[string]any{
+			"events": []any{map[string]any{"id": fmt.Sprintf("e-page-%d", page)}},
+			"meta":   map[string]any{"has_next": page < 3},
+		}
+		writeJSON(w, http.StatusOK, body)
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["page"] = schema.FieldDecl{Type: "int"}
+	doc.Requests[0].Query = map[string]schema.Value{
+		"page": vRefDefault("state.page", vInt(1)),
+	}
+	hasNextPath := mustPath("response.body.meta.has_next")
+	doc.Pagination = schema.Pagination{Counter: &schema.CounterPagination{
+		To: mustPath("state.page"),
+		TerminateWhen: &schema.Predicate{Not: &schema.Predicate{
+			Eq: &schema.PredicateEq{Path: hasNextPath, Value: vBool(true)},
 		}},
-		Defaults: &schema.Defaults{BaseURL: vRef("state.url")},
-		Auth:     schema.Auth{Bearer: &schema.BearerAuth{Token: vRef("state.api_key")}},
-		Requests: []schema.Request{{
-			Method: "GET",
-			Path:   ptrValue(vStr("/api/v1/scroll")),
-			Headers: map[string]schema.Value{
-				"X-Scroll-ID": vRef("cursor.scroll_id"),
-			},
-		}},
-		Response: schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
-		Pagination: schema.Pagination{ScrollID: &schema.ScrollIDPagination{
-			ScrollIDAt:   mustPath("response.body.request_metadata.scroll"),
-			CompleteWhen: &complete,
-		}},
-		Progress: schema.Progress{
-			LatestEventTimestamp: &schema.TimestampProgress{
-				EventTime: schema.EventTime{Path: mustPath("created_at")},
-				Initial:   &schema.Initial{Lookback: vStr("24h")},
-			},
+	}}
+
+	sink := &captureSink{}
+	r := &Runner{Doc: doc, Sink: sink, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if idx.Load() != 3 {
+		t.Errorf("server calls = %d, want 3 (pages 1-3 all return events, has_next:false on 3)", idx.Load())
+	}
+	if len(sink.events) != 3 {
+		t.Errorf("events = %d, want 3", len(sink.events))
+	}
+}
+
+// TestPagination_CustomAdvancesAndTerminates pins the author-controlled
+// custom variant: explicit advance writes, explicit terminate_when.
+func TestPagination_CustomAdvancesAndTerminates(t *testing.T) {
+	pages := []map[string]any{
+		{"events": []any{map[string]any{"id": "e1"}}, "next": "n2"},
+		{"events": []any{map[string]any{"id": "e2"}}, "next": "n3"},
+		{"events": []any{map[string]any{"id": "e3"}}}, // no next
+	}
+	var idx atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		i := idx.Add(1) - 1
+		writeJSON(w, http.StatusOK, pages[i])
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["cursor"] = schema.FieldDecl{Type: "string"}
+	nextPath := mustPath("response.body.next")
+	doc.Pagination = schema.Pagination{Custom: &schema.CustomPagination{
+		Advance: []schema.AdvanceWrite{
+			{To: mustPath("state.cursor"), From: vRef("response.body.next")},
 		},
+		TerminateWhen: schema.Predicate{Not: &schema.Predicate{Present: &nextPath}},
+	}}
+
+	sink := &captureSink{}
+	r := &Runner{Doc: doc, Sink: sink, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if len(sink.events) != 3 {
+		t.Errorf("events = %d, want 3", len(sink.events))
+	}
+}
+
+// TestPagination_PerDrainWipeResetsScratch pins the per-drain wipe: a
+// drain that ended mid-page does not re-use last drain's pagination
+// cursor.
+func TestPagination_PerDrainWipeResetsScratch(t *testing.T) {
+	var seenCursors []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenCursors = append(seenCursors, r.URL.Query().Get("cursor"))
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["next_token"] = schema.FieldDecl{Type: "string"}
+	doc.Requests[0].Query = map[string]schema.Value{
+		"cursor": vRefDefault("state.next_token", vStr("")),
+	}
+	doc.Pagination = schema.Pagination{CursorToken: &schema.CursorTokenPagination{
+		From: mustPath("response.body.next_cursor"),
+		To:   mustPath("state.next_token"),
+	}}
+
+	store := &MemoryStore{}
+	// Pre-seed the store with a stale next_token; the per-drain wipe
+	// should reset it back to its declared default (unset → bootstrap
+	// default kicks in).
+	_ = store.Save(Snapshot{State: map[string]any{"next_token": "stale-tok"}})
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if len(seenCursors) != 1 {
+		t.Fatalf("server calls = %d, want 1", len(seenCursors))
+	}
+	if seenCursors[0] != "" {
+		t.Errorf("first-iteration cursor = %q, want empty (per-drain wipe should have reset state.next_token)", seenCursors[0])
 	}
 }

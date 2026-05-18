@@ -12,10 +12,31 @@ import (
 	"testing"
 )
 
+// minimalDocYAML returns a self-contained skopos spec that points at the
+// given server URL. Used by every cmd_run_test that needs a runnable
+// spec.
+func minimalDocYAML(serverURL string) string {
+	return fmt.Sprintf(`ir_version: "1"
+state:
+  url:
+    type: url
+    default: %q
+auth:
+  none: {}
+requests:
+  - method: GET
+    url: "${state.url}/events"
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+`, serverURL)
+}
+
 // TestRun_TraceFlag_AppendsAcrossRuns confirms the trace file is opened
 // in append mode, so a second run does not truncate the first run's
-// records. This is the property an operator relies on when re-running a
-// drain after fixing a transient error.
+// records.
 func TestRun_TraceFlag_AppendsAcrossRuns(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -28,36 +49,7 @@ func TestRun_TraceFlag_AppendsAcrossRuns(t *testing.T) {
 	tracePath := filepath.Join(dir, "trace.jsonl")
 	outPath := filepath.Join(dir, "events.jsonl")
 
-	docYAML := fmt.Sprintf(`ir_version: "1"
-state:
-  fields:
-    url:
-      type: url
-      default: %q
-    api_key:
-      type: secret
-      default: "tok"
-defaults:
-  base_url: {ref: state.url}
-auth:
-  bearer:
-    token: {ref: state.api_key}
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  latest_event_timestamp:
-    event_time:
-      path: timestamp
-    initial:
-      lookback: "24h"
-`, server.URL)
-	if err := os.WriteFile(docPath, []byte(docYAML), 0o644); err != nil {
+	if err := os.WriteFile(docPath, []byte(minimalDocYAML(server.URL)), 0o644); err != nil {
 		t.Fatalf("write doc: %v", err)
 	}
 
@@ -82,41 +74,8 @@ progress:
 	}
 }
 
-// minimalDocYAML builds a minimal valid spec that points at the given server URL.
-func minimalDocYAML(serverURL string) string {
-	return fmt.Sprintf(`ir_version: "1"
-state:
-  fields:
-    url:
-      type: url
-      default: %q
-    api_key:
-      type: secret
-      default: "test-token"
-defaults:
-  base_url: {ref: state.url}
-auth:
-  bearer:
-    token: {ref: state.api_key}
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  latest_event_timestamp:
-    event_time:
-      path: timestamp
-    initial:
-      lookback: "24h"
-`, serverURL)
-}
-
-// TestRun_ConfigFile verifies that settings in a -c config file are applied
-// when the corresponding CLI flag is not explicitly set.
+// TestRun_ConfigFile verifies that settings in a -c config file are
+// applied when the corresponding CLI flag is not explicitly set.
 func TestRun_ConfigFile(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -134,7 +93,6 @@ func TestRun_ConfigFile(t *testing.T) {
 		t.Fatalf("write doc: %v", err)
 	}
 
-	// Config sets out + trace; CLI will supply -i and --once.
 	cfgContent := fmt.Sprintf("out: %s\ntrace: %s\n", outPath, tracePath)
 	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -156,8 +114,8 @@ func TestRun_ConfigFile(t *testing.T) {
 	}
 }
 
-// TestRun_ConfigFileInputOverriddenByFlag verifies that an explicit -i flag
-// wins over config.input when both are set.
+// TestRun_ConfigFileInputOverriddenByFlag verifies that an explicit -i
+// flag wins over config.input when both are set.
 func TestRun_ConfigFileInputOverriddenByFlag(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -173,7 +131,6 @@ func TestRun_ConfigFileInputOverriddenByFlag(t *testing.T) {
 		t.Fatalf("write doc: %v", err)
 	}
 
-	// Config points at a nonexistent file; the explicit -i should override it.
 	cfgContent := "input: /nonexistent/should-not-be-read.yml\n"
 	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -181,14 +138,15 @@ func TestRun_ConfigFileInputOverriddenByFlag(t *testing.T) {
 
 	if err := runRun([]string{
 		"-c", cfgPath,
-		"-i", docPath, // explicit flag wins
+		"-i", docPath,
 		"--once",
 	}); err != nil {
 		t.Fatalf("runRun: %v", err)
 	}
 }
 
-// TestRun_HTTPTimeout verifies that --http-timeout is accepted without error.
+// TestRun_HTTPTimeout verifies that --http-timeout is accepted without
+// error.
 func TestRun_HTTPTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -234,9 +192,9 @@ func TestRun_MaxPages(t *testing.T) {
 	}
 }
 
-// TestRun_ConfigFileHTTPTimeout verifies that http_timeout from a config file
-// is applied by checking that the runner accepts and honours the value
-// (we set a generous 60s so the test server doesn't time out).
+// TestRun_ConfigFileHTTPTimeout verifies that http_timeout from a config
+// file is applied (60s is generous enough that the local httptest
+// server doesn't time out).
 func TestRun_ConfigFileHTTPTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -264,7 +222,8 @@ func TestRun_ConfigFileHTTPTimeout(t *testing.T) {
 	}
 }
 
-// TestRun_MissingInputError verifies that omitting -i and config.input returns an error.
+// TestRun_MissingInputError verifies that omitting -i and config.input
+// returns an error.
 func TestRun_MissingInputError(t *testing.T) {
 	err := runRun([]string{"--once"})
 	if err == nil {
@@ -275,7 +234,8 @@ func TestRun_MissingInputError(t *testing.T) {
 	}
 }
 
-// TestRun_InputFromConfig verifies that config.input is used when -i is absent.
+// TestRun_InputFromConfig verifies that config.input is used when -i is
+// absent.
 func TestRun_InputFromConfig(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -295,18 +255,15 @@ func TestRun_InputFromConfig(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	// No -i flag — input comes entirely from the config file.
 	if err := runRun([]string{"-c", cfgPath}); err != nil {
 		t.Fatalf("runRun via config input: %v", err)
 	}
 }
 
-// TestRun_OnceAndIntervalBothSet verifies the incompatibility check still
-// works after the config-merge refactor.
+// TestRun_OnceAndIntervalBothSet verifies the incompatibility check.
 func TestRun_OnceAndIntervalBothSet(t *testing.T) {
 	dir := t.TempDir()
 	docPath := filepath.Join(dir, "spec.yml")
-	// A placeholder file; runRun will error before trying to load it.
 	if err := os.WriteFile(docPath, []byte("placeholder"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -320,11 +277,10 @@ func TestRun_OnceAndIntervalBothSet(t *testing.T) {
 	}
 }
 
-// TestRun_ConfigOnceOverriddenByInterval verifies that an explicit --interval
-// flag wins over config.once = true.
+// TestRun_ConfigOnceOverriddenByInterval verifies that an explicit
+// --interval flag wins over config.once = true (which then trips the
+// incompatibility check).
 func TestRun_ConfigOnceOverriddenByInterval(t *testing.T) {
-	// We just want to confirm the incompatibility check fires after merge.
-	// Config says once:true; CLI says --interval; the check should reject.
 	dir := t.TempDir()
 	docPath := filepath.Join(dir, "spec.yml")
 	cfgPath := filepath.Join(dir, "config.yml")

@@ -3,283 +3,324 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"log"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/p1llus/skopos/schema"
 )
 
-// requestDoc builds a minimal Doc with the supplied request slice. Auth is
-// always none and pagination is none — these tests exercise request-level
-// behaviour, not the auth/pagination subsystems.
-func requestDoc(baseURL string, reqs []schema.Request) *schema.Doc {
-	return &schema.Doc{
-		IRVersion: "1",
-		State: &schema.State{Fields: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: baseURL},
-		}},
-		Defaults:   &schema.Defaults{BaseURL: vRef("state.url")},
-		Auth:       schema.Auth{None: &struct{}{}},
-		Requests:   reqs,
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
-		Pagination: schema.Pagination{None: &struct{}{}},
-		Progress:   schema.Progress{Stateless: &struct{}{}},
-	}
-}
-
-// TestRequest_If_PredicateGating asserts that a request whose `if`
-// predicate evaluates false is skipped — the server does not see the
-// request, and the iteration continues with the remaining requests.
-func TestRequest_If_PredicateGating(t *testing.T) {
-	var hits atomic.Int32
-	var sawPath2 atomic.Bool
+// TestRequest_QueryParams pins query.<k> evaluation: each value Value
+// resolves through evalValue and the result is written to the URL
+// query. nil values are skipped.
+func TestRequest_QueryParams(t *testing.T) {
+	var seenQuery url.Values
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		if r.URL.Path == "/two" {
-			sawPath2.Store(true)
-		}
+		seenQuery = r.URL.Query()
 		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
 	}))
 	defer server.Close()
 
-	falseLit := false
-	doc := requestDoc(server.URL, []schema.Request{
-		{
-			Method: "GET",
-			Path:   ptrValue(vStr("/one")),
-		},
-		{
-			Method: "GET",
-			Path:   ptrValue(vStr("/two")),
-			If:     &schema.Predicate{LiteralBool: &falseLit},
-		},
-	})
+	doc := minimalDoc(server.URL)
+	doc.State["since"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("2026-01-01"))}
+	doc.Requests[0].Query = map[string]schema.Value{
+		"since":  vRef("state.since"),
+		"limit":  vInt(50),
+		"absent": vRef("state.never_set"), // resolves to nil → skip
+	}
+
 	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
 	if err := r.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-	if got := hits.Load(); got != 1 {
-		t.Errorf("server saw %d requests, want 1 (gated request must be skipped)", got)
+	if seenQuery.Get("since") != "2026-01-01" {
+		t.Errorf("since = %q", seenQuery.Get("since"))
 	}
-	if sawPath2.Load() {
-		t.Errorf("server saw /two; if-gated request must not fire")
+	if seenQuery.Get("limit") != "50" {
+		t.Errorf("limit = %q", seenQuery.Get("limit"))
 	}
-}
-
-// onStatusServer is a tiny httptest.Server that always returns the chosen
-// status code with an empty body. Used by the on_status verb tests.
-func onStatusServer(t *testing.T, code int) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(code)
-	}))
-}
-
-// onStatusDoc builds a single-request Doc that expects 200 and dispatches
-// the supplied (code → verb) on_status table.
-func onStatusDoc(baseURL string, code int, verb string) *schema.Doc {
-	return requestDoc(baseURL, []schema.Request{{
-		Method:       "GET",
-		Path:         ptrValue(vStr("/api/v1/events")),
-		ExpectStatus: []int{200},
-		OnStatus:     map[int]string{code: verb},
-	}})
-}
-
-// TestOnStatus_Skip asserts the "skip" verb logs and continues without
-// returning an error, and no events are emitted.
-func TestOnStatus_Skip(t *testing.T) {
-	server := onStatusServer(t, 429)
-	defer server.Close()
-
-	var buf bytes.Buffer
-	logger := log.New(&buf, "", 0)
-	sink := &captureSink{}
-	r := &Runner{
-		Doc:    onStatusDoc(server.URL, 429, "skip"),
-		Sink:   sink,
-		Logger: logger,
-		Now:    fixedNow(),
-		Client: server.Client(),
-	}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if len(sink.events) != 0 {
-		t.Errorf("emitted %d events, want 0 (skip verb)", len(sink.events))
-	}
-	if !strings.Contains(buf.String(), "skip") {
-		t.Errorf("logger missing 'skip' substring: %q", buf.String())
+	if seenQuery.Has("absent") {
+		t.Errorf("absent query key should be omitted; got %q", seenQuery.Get("absent"))
 	}
 }
 
-// TestOnStatus_Fail asserts the "fail" verb aborts the drain with a
-// non-nil error.
-func TestOnStatus_Fail(t *testing.T) {
-	server := onStatusServer(t, 500)
-	defer server.Close()
-
-	r := &Runner{
-		Doc:    onStatusDoc(server.URL, 500, "fail"),
-		Sink:   &captureSink{},
-		Now:    fixedNow(),
-		Client: server.Client(),
-	}
-	err := r.Drain(context.Background())
-	if err == nil {
-		t.Fatal("Drain: nil error, want fail-mode abort")
-	}
-	if !strings.Contains(err.Error(), "fail") {
-		t.Errorf("err = %v, want substring 'fail'", err)
-	}
-}
-
-// TestOnStatus_EmptyEvents asserts the "empty_events" verb treats the
-// page as empty (no events) and returns nil so the cursor still advances.
-func TestOnStatus_EmptyEvents(t *testing.T) {
-	server := onStatusServer(t, 401)
-	defer server.Close()
-
-	var buf bytes.Buffer
-	logger := log.New(&buf, "", 0)
-	sink := &captureSink{}
-	r := &Runner{
-		Doc:    onStatusDoc(server.URL, 401, "empty_events"),
-		Sink:   sink,
-		Logger: logger,
-		Now:    fixedNow(),
-		Client: server.Client(),
-	}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if len(sink.events) != 0 {
-		t.Errorf("emitted %d events, want 0", len(sink.events))
-	}
-	if !strings.Contains(buf.String(), "empty_events") {
-		t.Errorf("logger missing 'empty_events' substring: %q", buf.String())
-	}
-}
-
-// TestOnStatus_InvalidateCache asserts the "invalidate_cache" verb logs
-// and advances as empty_events when the active auth has no cache.
-func TestOnStatus_InvalidateCache(t *testing.T) {
-	server := onStatusServer(t, 401)
-	defer server.Close()
-
-	var buf bytes.Buffer
-	logger := log.New(&buf, "", 0)
-	sink := &captureSink{}
-	r := &Runner{
-		Doc:    onStatusDoc(server.URL, 401, "invalidate_cache"),
-		Sink:   sink,
-		Logger: logger,
-		Now:    fixedNow(),
-		Client: server.Client(),
-	}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if len(sink.events) != 0 {
-		t.Errorf("emitted %d events, want 0", len(sink.events))
-	}
-	if !strings.Contains(buf.String(), "invalidate_cache") {
-		t.Errorf("logger missing 'invalidate_cache' substring: %q", buf.String())
-	}
-}
-
-// TestExtract_BodyAndHeader_AndTargets exercises the four extract shapes
-// in one drain: body source / header source × target=extract / target=cursor.
-//
-// The first request returns a body-cursor token at body.next + a header
-// X-Trace-Id, and uses extract[] to lift them into scope.cursor.next and
-// scope.extract.trace. The second request reads cursor.next as a query
-// param and returns events. After Drain, snapshot.Cursor must carry next
-// (cursor target) and the request must have been built with the extracted
-// trace id (extract target survived to the second request via headers).
-func TestExtract_BodyAndHeader_AndTargets(t *testing.T) {
-	var gotCursorParam string
-	var gotTraceHeader string
-	var hits atomic.Int32
-
+// TestRequest_BodyJSON pins the body.json variant: a map<string, Value>
+// renders as JSON with the Value-typed values resolved.
+func TestRequest_BodyJSON(t *testing.T) {
+	var seenBody string
+	var seenContentType string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hit := int(hits.Add(1))
-		switch hit {
-		case 1:
-			w.Header().Set("X-Trace-Id", "trc-99")
-			writeJSON(w, http.StatusOK, map[string]any{
-				"next":   "tok-second",
-				"events": []any{},
-			})
-		case 2:
-			gotCursorParam = r.URL.Query().Get("cursor")
-			gotTraceHeader = r.Header.Get("X-Trace-Id")
-			writeJSON(w, http.StatusOK, map[string]any{
-				"events": []map[string]any{{"id": "e-1"}},
-			})
-		default:
-			t.Errorf("unexpected extra request %d", hit)
-		}
+		bs, _ := io.ReadAll(r.Body)
+		seenBody = string(bs)
+		seenContentType = r.Header.Get("Content-Type")
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
 	}))
 	defer server.Close()
 
-	doc := requestDoc(server.URL, []schema.Request{
-		{
-			ID:     "first",
-			Method: "GET",
-			Path:   ptrValue(vStr("/one")),
-			Extract: []schema.ExtractVar{
-				{
-					// header source, default target=extract.
-					Name: "trace",
-					From: mustPath("response.header.X-Trace-Id"),
-				},
-				{
-					// body source, target=cursor.
-					Name:   "next",
-					From:   mustPath("response.body.next"),
-					Target: "cursor",
-				},
-			},
-		},
-		{
-			Method: "GET",
-			Path:   ptrValue(vStr("/two")),
-			Query: map[string]schema.Value{
-				"cursor": vRef("cursor.next"),
-			},
-			Headers: map[string]schema.Value{
-				"X-Trace-Id": vRef("extract.trace"),
-			},
-		},
-	})
+	doc := minimalDoc(server.URL)
+	doc.State["since"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("2026-01-01"))}
+	doc.Requests[0].Method = "POST"
+	doc.Requests[0].Body = &schema.Body{JSON: map[string]schema.Value{
+		"since":  vRef("state.since"),
+		"limit":  vInt(50),
+		"active": vBool(true),
+	}}
 
-	store := &MemoryStore{}
-	sink := &captureSink{}
-	r := &Runner{Doc: doc, Sink: sink, Store: store, Now: fixedNow(), Client: server.Client()}
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
 	if err := r.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-	if got := hits.Load(); got != 2 {
-		t.Fatalf("server saw %d requests, want 2", got)
+	if !strings.Contains(seenContentType, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", seenContentType)
 	}
-	if gotCursorParam != "tok-second" {
-		t.Errorf("second request cursor= %q, want tok-second (target=cursor body extract)", gotCursorParam)
+	if !strings.Contains(seenBody, `"since":"2026-01-01"`) {
+		t.Errorf("body missing since: %s", seenBody)
 	}
-	if gotTraceHeader != "trc-99" {
-		t.Errorf("second request X-Trace-Id = %q, want trc-99 (header source extract)", gotTraceHeader)
+	if !strings.Contains(seenBody, `"limit":50`) {
+		t.Errorf("body missing limit: %s", seenBody)
 	}
-	snap, _ := store.Load()
-	if got := snap.Cursor["next"]; got != "tok-second" {
-		t.Errorf("snapshot.Cursor[next] = %v, want tok-second (target=cursor persists)", got)
+	if !strings.Contains(seenBody, `"active":true`) {
+		t.Errorf("body missing active: %s", seenBody)
 	}
-	if len(sink.events) != 1 {
-		t.Errorf("emitted %d events, want 1", len(sink.events))
+}
+
+// TestRequest_BodyForm pins the body.form variant: form-urlencoded,
+// content-type application/x-www-form-urlencoded.
+func TestRequest_BodyForm(t *testing.T) {
+	var seenBody string
+	var seenContentType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bs, _ := io.ReadAll(r.Body)
+		seenBody = string(bs)
+		seenContentType = r.Header.Get("Content-Type")
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.Requests[0].Method = "POST"
+	doc.Requests[0].Body = &schema.Body{Form: map[string]schema.Value{
+		"key":   vStr("value"),
+		"limit": vInt(10),
+	}}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if !strings.Contains(seenContentType, "application/x-www-form-urlencoded") {
+		t.Errorf("Content-Type = %q, want application/x-www-form-urlencoded", seenContentType)
+	}
+	form, _ := url.ParseQuery(seenBody)
+	if form.Get("key") != "value" || form.Get("limit") != "10" {
+		t.Errorf("form body = %v", form)
+	}
+}
+
+// TestRequest_BodyRaw pins the body.raw variant: a single Value resolves
+// to a string and is sent verbatim. No content-type is set by default.
+func TestRequest_BodyRaw(t *testing.T) {
+	var seenBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bs, _ := io.ReadAll(r.Body)
+		seenBody = string(bs)
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.Requests[0].Method = "POST"
+	raw := vStr(`{"hello":"world"}`)
+	doc.Requests[0].Body = &schema.Body{Raw: &raw}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if seenBody != `{"hello":"world"}` {
+		t.Errorf("body = %q, want raw payload", seenBody)
+	}
+}
+
+// TestRequest_BodyRawInterpolation pins string-interpolation inside raw
+// bodies: a ${state.x} segment is desugared at parse time and resolved
+// at request time.
+func TestRequest_BodyRawInterpolation(t *testing.T) {
+	var seenBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bs, _ := io.ReadAll(r.Body)
+		seenBody = string(bs)
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["tenant"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("acme"))}
+	doc.Requests[0].Method = "POST"
+	raw := mustInterp(`'{"tenant":"${state.tenant}","event":"hello"}'`)
+	doc.Requests[0].Body = &schema.Body{Raw: &raw}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if !strings.Contains(seenBody, `"tenant":"acme"`) {
+		t.Errorf("body missing interpolated tenant: %s", seenBody)
+	}
+}
+
+// TestRequest_Headers pins the request headers map.
+func TestRequest_Headers(t *testing.T) {
+	var seen http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["etag"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr(`"v42"`))}
+	doc.Requests[0].Headers = map[string]schema.Value{
+		"X-Custom":       vStr("hi"),
+		"If-None-Match":  vRef("state.etag"),
+	}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if seen.Get("X-Custom") != "hi" {
+		t.Errorf("X-Custom = %q", seen.Get("X-Custom"))
+	}
+	if seen.Get("If-None-Match") != `"v42"` {
+		t.Errorf("If-None-Match = %q", seen.Get("If-None-Match"))
+	}
+}
+
+// TestRequest_IfPredicateGates pins requests[].if: a false predicate
+// skips the step entirely.
+func TestRequest_IfPredicateGates(t *testing.T) {
+	var aHits, bHits int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/a", func(w http.ResponseWriter, _ *http.Request) {
+		aHits++
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	})
+	mux.HandleFunc("/b", func(w http.ResponseWriter, _ *http.Request) {
+		bHits++
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["mode"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("b"))}
+	doc.Requests = []schema.Request{
+		{
+			ID:     "a",
+			Method: "GET",
+			URL:    mustInterp("${state.url}/a"),
+			If: &schema.Predicate{Eq: &schema.PredicateEq{
+				Path: mustPath("state.mode"), Value: vStr("a"),
+			}},
+		},
+		{
+			ID:     "b",
+			Method: "GET",
+			URL:    mustInterp("${state.url}/b"),
+			If: &schema.Predicate{Eq: &schema.PredicateEq{
+				Path: mustPath("state.mode"), Value: vStr("b"),
+			}},
+			ProducesEvents: true,
+		},
+	}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if aHits != 0 {
+		t.Errorf("a hits = %d, want 0 (if: false)", aHits)
+	}
+	if bHits != 1 {
+		t.Errorf("b hits = %d, want 1", bHits)
+	}
+}
+
+// TestRequest_ExpectStatusAllowList pins expect_status: any code in the
+// list is treated as success; anything else trips the on_status /
+// error.mode dispatcher.
+func TestRequest_ExpectStatusAllowList(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Return 202 — needs to be in expect_status to count as success.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"events":[]}`))
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.Requests[0].ExpectStatus = []int{200, 202}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Errorf("Drain: %v (202 should be accepted via expect_status)", err)
+	}
+}
+
+// TestRequest_ExtractToExtractNamespace pins the per-iteration scratch
+// path: extract.<name> writes do not survive into the next iteration.
+func TestRequest_ExtractToExtractNamespace(t *testing.T) {
+	var lastSeenScratch string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"session": "abc"})
+	})
+	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+		lastSeenScratch = r.Header.Get("X-Scratch")
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	doc := &schema.Doc{
+		IRVersion: "1",
+		State: map[string]schema.FieldDecl{
+			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+		},
+		Auth: schema.Auth{None: &struct{}{}},
+		Requests: []schema.Request{
+			{
+				ID:     "login",
+				Method: "POST",
+				URL:    mustInterp("${state.url}/login"),
+				Extract: []schema.ExtractVar{
+					{To: mustPath("extract.scratch_session"), From: mustPath("response.body.session")},
+				},
+			},
+			{
+				ID:     "events",
+				Method: "GET",
+				URL:    mustInterp("${state.url}/events"),
+				Headers: map[string]schema.Value{
+					"X-Scratch": vRef("extract.scratch_session"),
+				},
+				ProducesEvents: true,
+			},
+		},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
+		Pagination: schema.Pagination{None: &struct{}{}},
+	}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if lastSeenScratch != "abc" {
+		t.Errorf("X-Scratch = %q, want abc", lastSeenScratch)
 	}
 }

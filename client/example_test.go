@@ -14,9 +14,9 @@ import (
 	"github.com/p1llus/skopos/schema"
 )
 
-// A Runner executes one *schema.Doc against the live HTTP world, emitting each
-// drained event into a Sink. The Drain call paginates until the document's
-// strategy reports no more data and then returns.
+// A Runner executes one *schema.Doc against the live HTTP world, emitting
+// each drained event into a Sink. The Drain call paginates until the
+// document's strategy reports no more data and then returns.
 func ExampleRunner_Drain() {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -24,32 +24,27 @@ func ExampleRunner_Drain() {
 	}))
 	defer server.Close()
 
-	const yaml = `
-ir_version: "1"
+	src := `ir_version: "1"
 state:
-  fields:
-    url: {type: url}
-defaults:
-  base_url: {ref: state.url}
+  url: {type: url}
 auth:
   none: {}
 requests:
   - method: GET
-    path: /events
+    url: "${state.url}/events"
 response:
   decode: json
   events_at: response.body.events
 pagination:
   none: {}
-progress:
-  stateless: {}
 `
-	doc, err := schema.Load(strings.NewReader(yaml))
+	doc, err := schema.Load(strings.NewReader(src))
 	if err != nil {
 		fmt.Println("load:", err)
 		return
 	}
-	doc.State.Fields["url"] = schema.FieldDecl{Type: "url", Default: server.URL}
+	def := schema.Value{LiteralString: &server.URL}
+	doc.State["url"] = schema.FieldDecl{Type: "url", Default: &def}
 
 	var out bytes.Buffer
 	r := &client.Runner{

@@ -12,23 +12,6 @@ import (
 	"github.com/p1llus/skopos/schema"
 )
 
-// ndjsonDoc returns a single-request Doc whose response is decoded as
-// ndjson and whose events_at applies per-line.
-func ndjsonDoc(baseURL string, eventsAt string) *schema.Doc {
-	return &schema.Doc{
-		IRVersion: "1",
-		State: &schema.State{Fields: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: baseURL},
-		}},
-		Defaults:   &schema.Defaults{BaseURL: vRef("state.url")},
-		Auth:       schema.Auth{None: &struct{}{}},
-		Requests:   []schema.Request{{Method: "GET", Path: ptrValue(vStr("/api/v1/events"))}},
-		Response:   schema.Response{Decode: "ndjson", EventsAt: mustPath(eventsAt)},
-		Pagination: schema.Pagination{None: &struct{}{}},
-		Progress:   schema.Progress{Stateless: &struct{}{}},
-	}
-}
-
 // TestEndToEnd_NDJSON_DecodeErrorContext asserts the runner surfaces a
 // "ndjson decode at line N" wrapper for a malformed line.
 func TestEndToEnd_NDJSON_DecodeErrorContext(t *testing.T) {
@@ -43,8 +26,20 @@ func TestEndToEnd_NDJSON_DecodeErrorContext(t *testing.T) {
 	}))
 	defer server.Close()
 
-	doc := ndjsonDoc(server.URL, "events")
-	doc.Error = &schema.ErrorBlock{Mode: "fail"}
+	doc := &schema.Doc{
+		IRVersion: "1",
+		State: map[string]schema.FieldDecl{
+			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+		},
+		Auth: schema.Auth{None: &struct{}{}},
+		Requests: []schema.Request{{
+			Method: "GET",
+			URL:    mustInterp("${state.url}/events"),
+		}},
+		Response:   schema.Response{Decode: "ndjson", EventsAt: mustPath("")},
+		Pagination: schema.Pagination{None: &struct{}{}},
+		Error:      &schema.ErrorBlock{Mode: "fail"},
+	}
 
 	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
 	err := r.Drain(context.Background())

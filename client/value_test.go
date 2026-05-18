@@ -11,38 +11,19 @@ import (
 	"github.com/p1llus/skopos/schema"
 )
 
-// fixedNow returns a deterministic clock at 2026-05-12T12:00:00Z so tests
-// asserting on {now} / lookback math are stable.
-func fixedNow() func() time.Time {
-	t, _ := time.Parse(time.RFC3339, "2026-05-12T12:00:00Z")
-	return func() time.Time { return t }
-}
-
-// newTestScope builds a *scope wired with a minimal *schema.Doc, the supplied
-// state/cursor seed values, and a fixed clock. Useful as the foundation of
-// the value/predicate/extract tables.
-func newTestScope(t *testing.T, state, cursor map[string]any) *scope {
+// newTestScope builds a *scope wired with a minimal *schema.Doc, the
+// supplied state seed values, and a fixed clock.
+func newTestScope(t *testing.T, state map[string]any) *scope {
 	t.Helper()
 	doc := &schema.Doc{IRVersion: "1"}
-	s, err := newScope(doc, Snapshot{State: state, Cursor: cursor}, fixedNow())
+	s, err := newScope(doc, Snapshot{State: state}, fixedNow())
 	if err != nil {
 		t.Fatalf("newScope: %v", err)
 	}
 	return s
 }
 
-// helpers for building schema.Value pointers tersely.
-func vStr(s string) schema.Value { return schema.Value{LiteralString: &s} }
-func vInt(i int64) schema.Value  { return schema.Value{LiteralInt: &i} }
-func vBool(b bool) schema.Value  { return schema.Value{LiteralBool: &b} }
-func vRef(p string) schema.Value { return schema.Value{Ref: &schema.RefValue{Path: mustPath(p)}} }
-func vRefDefault(p string, d schema.Value) schema.Value {
-	return schema.Value{Ref: &schema.RefValue{Path: mustPath(p), Default: &d}}
-}
 func vConcat(parts ...schema.Value) schema.Value { return schema.Value{Concat: parts} }
-func vNow(offset *schema.Value) schema.Value {
-	return schema.Value{Now: &schema.NowValue{Offset: offset}}
-}
 func vFormat(verb string, inner schema.Value) schema.Value {
 	return schema.Value{Format: &schema.FormatValue{Verb: verb, Value: inner}}
 }
@@ -50,21 +31,21 @@ func vList(items ...schema.Value) schema.Value       { return schema.Value{List:
 func vObject(m map[string]schema.Value) schema.Value { return schema.Value{Object: m} }
 func vBase64(inner schema.Value) schema.Value        { return schema.Value{Base64: &inner} }
 
-func mustPath(s string) schema.Path {
-	p, err := schema.ParsePath(s)
+func mustTime(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {
 		panic(err)
 	}
-	return p
+	return t
 }
 
-// TestEvalValue table covers each discriminator in schema.Value plus the
-// secret-relevant Ref defaults and the explicit raw-rejection contract.
+// TestEvalValue covers each Value discriminator and the secret-relevant
+// Ref defaults.
 func TestEvalValue(t *testing.T) {
 	tests := []struct {
 		name    string
 		state   map[string]any
-		cursor  map[string]any
+		cache   map[string]any
 		setup   func(s *scope)
 		val     schema.Value
 		want    any
@@ -99,21 +80,16 @@ func TestEvalValue(t *testing.T) {
 			want:  "fallback",
 		},
 		{
-			name:   "ref_cursor_nested",
-			cursor: map[string]any{"meta": map[string]any{"phase": "poll"}},
-			val:    vRef("cursor.meta.phase"),
-			want:   "poll",
+			name:  "ref_cache_slot",
+			cache: map[string]any{"access_token": "tok-1"},
+			val:   vRef("cache.access_token"),
+			want:  "tok-1",
 		},
 
 		{
 			name: "now",
-			val:  vNow(nil),
-			want: mustTime("2026-05-12T12:00:00Z"),
-		},
-		{
-			name: "now_with_offset_string",
-			val:  vNow(ptrValue(vStr("-1h"))),
-			want: mustTime("2026-05-12T11:00:00Z"),
+			val:  vNow(),
+			want: mustTime("2026-01-01T00:00:00Z"),
 		},
 
 		{
@@ -127,24 +103,6 @@ func TestEvalValue(t *testing.T) {
 			state: map[string]any{"a": "x"},
 			val:   vConcat(vStr("p="), vRef("state.a"), vRef("state.absent"), vStr("?")),
 			want:  "p=x?",
-		},
-
-		{
-			name:   "ref_cursor_pagination_signal",
-			cursor: map[string]any{"token": "tok-1"},
-			val:    vRef("cursor.token"),
-			want:   "tok-1",
-		},
-		{
-			name: "ref_cursor_pagination_unset_returns_nil",
-			val:  vRef("cursor.token"),
-			want: nil,
-		},
-		{
-			name:   "ref_cursor_progress_signal",
-			cursor: map[string]any{"last_timestamp": "2026-05-12T00:00:00Z"},
-			val:    vRef("cursor.last_timestamp"),
-			want:   "2026-05-12T00:00:00Z",
 		},
 
 		{
@@ -172,7 +130,6 @@ func TestEvalValue(t *testing.T) {
 			val:     vFormat("bogus", vStr("x")),
 			wantErr: true,
 		},
-
 		{
 			name: "format_bool_from_string",
 			val:  vFormat("bool", vStr("true")),
@@ -185,8 +142,6 @@ func TestEvalValue(t *testing.T) {
 		},
 		{
 			name: "format_duration_stringifies",
-			// toDuration parses "1h30m" → 90m, then duration verb
-			// returns the canonical Go duration string.
 			val:  vFormat("duration", vStr("1h30m")),
 			want: "1h30m0s",
 		},
@@ -223,7 +178,10 @@ func TestEvalValue(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			s := newTestScope(t, tc.state, tc.cursor)
+			s := newTestScope(t, tc.state)
+			for k, v := range tc.cache {
+				s.cache[k] = v
+			}
 			if tc.setup != nil {
 				tc.setup(s)
 			}
@@ -241,10 +199,10 @@ func TestEvalValue(t *testing.T) {
 	}
 }
 
-// TestEvalValueSelect covers the {select} discriminator separately because
-// its predicate shape is awkward in the same table as the simpler verbs.
+// TestEvalValueSelect pins the {select} branch evaluation: the first
+// branch whose predicate evaluates true wins; otherwise the default.
 func TestEvalValueSelect(t *testing.T) {
-	s := newTestScope(t, map[string]any{"mode": "bearer"}, nil)
+	s := newTestScope(t, map[string]any{"mode": "bearer"})
 
 	bearerBranch := schema.SelectBranch{
 		When: schema.Predicate{Eq: &schema.PredicateEq{
@@ -273,7 +231,6 @@ func TestEvalValueSelect(t *testing.T) {
 		t.Errorf("select picked %v, want bearer-path", got)
 	}
 
-	// Switch state.mode → default branch wins.
 	s.state["mode"] = "other"
 	got, err = s.evalValue(sel)
 	if err != nil {
@@ -284,7 +241,127 @@ func TestEvalValueSelect(t *testing.T) {
 	}
 }
 
-// TestToString pins the stringification used by Concat and equal().
+// TestEvalValueArithmetic covers the {add, subtract} forms over each
+// supported type pair.
+func TestEvalValueArithmetic(t *testing.T) {
+	s := newTestScope(t, nil)
+
+	cases := []struct {
+		name string
+		v    schema.Value
+		want any
+	}{
+		{
+			name: "add_time_duration",
+			v: schema.Value{Add: &schema.ArithExpr{Operands: []schema.Value{
+				vNow(), vStr("1h"),
+			}}},
+			want: mustTime("2026-01-01T01:00:00Z"),
+		},
+		{
+			name: "subtract_time_duration",
+			v: schema.Value{Subtract: &schema.ArithExpr{Operands: []schema.Value{
+				vNow(), vStr("24h"),
+			}}},
+			want: mustTime("2025-12-31T00:00:00Z"),
+		},
+		{
+			name: "add_int_int",
+			v: schema.Value{Add: &schema.ArithExpr{Operands: []schema.Value{
+				vInt(5), vInt(7),
+			}}},
+			want: int64(12),
+		},
+		{
+			name: "subtract_duration_duration",
+			v: schema.Value{Subtract: &schema.ArithExpr{Operands: []schema.Value{
+				vStr("2h"), vStr("30m"),
+			}}},
+			want: 90 * time.Minute,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := s.evalValue(tc.v)
+			if err != nil {
+				t.Fatalf("evalValue: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEvalValueReducers covers the {max, min, first, last, count} forms
+// over both literal {list: [...]} operands and list-shaped Ref
+// projections (e.g. {ref: events.*.timestamp}).
+func TestEvalValueReducers(t *testing.T) {
+	s := newTestScope(t, nil)
+	s.events = []any{
+		map[string]any{"ts": "2026-01-01T00:00:01Z"},
+		map[string]any{"ts": "2026-01-01T00:00:03Z"},
+		map[string]any{"ts": "2026-01-01T00:00:02Z"},
+	}
+
+	cases := []struct {
+		name string
+		v    schema.Value
+		want any
+	}{
+		{
+			name: "max_literal_list",
+			v:    schema.Value{Max: ptrValue(vList(vInt(3), vInt(7), vInt(5)))},
+			want: int64(7),
+		},
+		{
+			name: "min_literal_list",
+			v:    schema.Value{Min: ptrValue(vList(vInt(3), vInt(7), vInt(5)))},
+			want: int64(3),
+		},
+		{
+			name: "count_literal_list",
+			v:    schema.Value{Count: ptrValue(vList(vInt(3), vInt(7), vInt(5)))},
+			want: int64(3),
+		},
+		{
+			name: "first_literal_list",
+			v:    schema.Value{First: ptrValue(vList(vInt(3), vInt(7), vInt(5)))},
+			want: int64(3),
+		},
+		{
+			name: "last_literal_list",
+			v:    schema.Value{Last: ptrValue(vList(vInt(3), vInt(7), vInt(5)))},
+			want: int64(5),
+		},
+		{
+			name: "max_over_events_projection",
+			v:    schema.Value{Max: ptrValue(vRef("events.*.ts"))},
+			want: "2026-01-01T00:00:03Z",
+		},
+		{
+			name: "count_over_events_projection",
+			v:    schema.Value{Count: ptrValue(vRef("events.*.ts"))},
+			want: int64(3),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := s.evalValue(tc.v)
+			if err != nil {
+				t.Fatalf("evalValue: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestToString pins the stringification used by Concat and equality
+// helpers.
 func TestToString(t *testing.T) {
 	tests := []struct {
 		in   any
@@ -307,32 +384,18 @@ func TestToString(t *testing.T) {
 	}
 }
 
-func ptrValue(v schema.Value) *schema.Value { return &v }
-
-func mustTime(s string) time.Time {
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		panic(err)
-	}
-	return t
-}
-
-// TestSliceOneResponseAndStepHeaderRefs covers runtime resolution of the
-// namespace-rooted body/header roots: response.body.<path>,
-// response.header.<name>, and steps.<id>.header.<name>.
-//
-// Slice 2 retired the legacy body.<path> root, so the interchangeability
-// subtest from slice 1 was reframed to assert the response.body.<path>
-// resolver returns the expected scalar/list/missing values directly.
-func TestSliceOneResponseAndStepHeaderRefs(t *testing.T) {
-	t.Run("response_body_resolves_expected_values", func(t *testing.T) {
-		s := newTestScope(t, nil, nil)
-		body := map[string]any{
+// TestResolveNamespaceRef walks the resolver across each closed root and
+// the fan_out alias path. The closed-root set is the post-redesign one:
+// state / cache / events / extract / steps / response (no body, no
+// cursor, no item).
+func TestResolveNamespaceRef(t *testing.T) {
+	t.Run("response_body_resolves_paths", func(t *testing.T) {
+		s := newTestScope(t, nil)
+		s.body = map[string]any{
 			"status": "complete",
 			"meta":   map[string]any{"page": int64(7)},
 			"items":  []any{map[string]any{"id": "a"}, map[string]any{"id": "b"}},
 		}
-		s.body = body
 
 		cases := []struct {
 			label    string
@@ -362,7 +425,7 @@ func TestSliceOneResponseAndStepHeaderRefs(t *testing.T) {
 	})
 
 	t.Run("response_header_case_insensitive", func(t *testing.T) {
-		s := newTestScope(t, nil, nil)
+		s := newTestScope(t, nil)
 		s.responseHeaders = http.Header{}
 		s.responseHeaders.Set("ETag", "abc-1")
 		s.responseHeaders.Set("X-Total-Count", "42")
@@ -386,8 +449,6 @@ func TestSliceOneResponseAndStepHeaderRefs(t *testing.T) {
 			}
 		}
 
-		// Absent header resolves as nil/!ok (the {default: ...} path on Ref
-		// handles first-iteration absence at the Value layer).
 		got, ok, err := s.resolveNamespaceRef(mustPath("response.header.X-Missing"))
 		if err != nil {
 			t.Fatalf("absent resolve: %v", err)
@@ -397,51 +458,95 @@ func TestSliceOneResponseAndStepHeaderRefs(t *testing.T) {
 		}
 	})
 
-	t.Run("steps_id_header_resolves_from_stepHeaders", func(t *testing.T) {
-		s := newTestScope(t, nil, nil)
+	t.Run("steps_id_body_and_header", func(t *testing.T) {
+		s := newTestScope(t, nil)
+		s.steps["login"] = map[string]any{"session_id": "xyz"}
 		h := http.Header{}
 		h.Set("Set-Cookie", "session=xyz")
-		h.Set("ETag", "v1")
 		s.stepHeaders["login"] = h
 
-		got, ok, err := s.resolveNamespaceRef(mustPath("steps.login.header.Set-Cookie"))
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		if !ok || got != "session=xyz" {
-			t.Errorf("steps.login.header.Set-Cookie = (%v, %v); want (\"session=xyz\", true)", got, ok)
+		got, ok, err := s.resolveNamespaceRef(mustPath("steps.login.body.session_id"))
+		if err != nil || !ok || got != "xyz" {
+			t.Errorf("steps.login.body.session_id = (%v, %v, %v); want (\"xyz\", true, nil)", got, ok, err)
 		}
 
-		// Case-insensitive match.
-		got, ok, err = s.resolveNamespaceRef(mustPath("steps.login.header.etag"))
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		if !ok || got != "v1" {
-			t.Errorf("steps.login.header.etag = (%v, %v); want (\"v1\", true)", got, ok)
+		got, ok, err = s.resolveNamespaceRef(mustPath("steps.login.header.Set-Cookie"))
+		if err != nil || !ok || got != "session=xyz" {
+			t.Errorf("steps.login.header.Set-Cookie = (%v, %v, %v)", got, ok, err)
 		}
 
-		// Unknown step id resolves as (nil, false).
-		got, ok, err = s.resolveNamespaceRef(mustPath("steps.unknown.header.ETag"))
+		got, ok, err = s.resolveNamespaceRef(mustPath("steps.unknown.header.X"))
 		if err != nil {
-			t.Fatalf("resolve: %v", err)
+			t.Fatalf("unknown step: %v", err)
 		}
 		if ok || got != nil {
-			t.Errorf("unknown step header should resolve as (nil,false); got (%v,%v)", got, ok)
+			t.Errorf("unknown step should resolve as (nil,false); got (%v,%v)", got, ok)
 		}
 	})
 
-	t.Run("response_body_unset_resolves_as_nil", func(t *testing.T) {
-		s := newTestScope(t, nil, nil)
-		// Outside complete_when, s.body is nil — every response.body ref
-		// resolves as (nil, false). The validator already rejects such use
-		// at parse time; the runtime guard is the second line of defence.
-		got, ok, err := s.resolveNamespaceRef(mustPath("response.body.anything"))
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
+	t.Run("events_shortcuts", func(t *testing.T) {
+		s := newTestScope(t, nil)
+		s.events = []any{
+			map[string]any{"id": "a"},
+			map[string]any{"id": "b"},
+			map[string]any{"id": "c"},
 		}
-		if ok || got != nil {
-			t.Errorf("response.body with no body context should resolve as (nil,false); got (%v,%v)", got, ok)
+
+		cases := []struct {
+			ref  string
+			want any
+		}{
+			{"events.count", int64(3)},
+			{"events.first.id", "a"},
+			{"events.last.id", "c"},
+			{"events.1.id", "b"},
+		}
+		for _, c := range cases {
+			got, ok, err := s.resolveNamespaceRef(mustPath(c.ref))
+			if err != nil || !ok {
+				t.Errorf("resolve(%s): ok=%v err=%v", c.ref, ok, err)
+				continue
+			}
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("resolve(%s) = %#v, want %#v", c.ref, got, c.want)
+			}
+		}
+
+		// events.* projection.
+		got, _, err := s.resolveNamespaceRef(mustPath("events.*.id"))
+		if err != nil {
+			t.Fatalf("projection: %v", err)
+		}
+		want := []any{"a", "b", "c"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("events.*.id = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("events_count_returns_zero_when_unbound", func(t *testing.T) {
+		s := newTestScope(t, nil)
+		got, ok, err := s.resolveNamespaceRef(mustPath("events.count"))
+		if err != nil || !ok || got != int64(0) {
+			t.Errorf("events.count unbound = (%v,%v,%v); want (0, true, nil)", got, ok, err)
+		}
+	})
+
+	t.Run("fanout_alias_resolves_against_item", func(t *testing.T) {
+		s := newTestScope(t, nil)
+		s.itemBinding = "incident"
+		s.item = map[string]any{"id": "INC-42"}
+
+		got, ok, err := s.resolveNamespaceRef(mustPath("incident.id"))
+		if err != nil || !ok || got != "INC-42" {
+			t.Errorf("incident.id = (%v,%v,%v)", got, ok, err)
+		}
+	})
+
+	t.Run("unknown_root_errors", func(t *testing.T) {
+		s := newTestScope(t, nil)
+		_, _, err := s.resolveNamespaceRef(schema.Path{Parts: []string{"nope", "x"}})
+		if err == nil {
+			t.Error("expected error for unknown namespace root")
 		}
 	})
 }

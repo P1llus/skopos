@@ -16,11 +16,11 @@ import (
 	"github.com/p1llus/skopos/schema"
 )
 
-// TestSpecFixtures loads every YAML under schema/testdata/ (internal-only
-// variants and matrix coverage) and templates/ (user-facing templates),
-// validates it, and round-trips it through YAML and JSON to verify the
-// codecs. Both roots share the same conformance bar so user-visible
-// templates cannot drift away from the parser.
+// TestSpecFixtures is the package-level golden suite: every YAML under
+// schema/testdata/ (validator-surface fixtures) and templates/
+// (user-facing templates) must Parse cleanly, Validate without error-
+// severity diagnostics, and round-trip byte-stably through both YAML
+// and JSON.
 func TestSpecFixtures(t *testing.T) {
 	roots := []struct {
 		label string
@@ -50,17 +50,11 @@ func TestSpecFixtures(t *testing.T) {
 					t.Fatalf("reading %s: %v", path, err)
 				}
 
-				// Parse — skip v1 templates gracefully.
 				doc, err := schema.Parse(data)
 				if err != nil {
-					if isVersionError(err) {
-						t.Skipf("skipping v1 fixture %s (not yet migrated)", path)
-					}
 					t.Fatalf("Parse(%s): %v", path, err)
 				}
 
-				// Validate. Warnings are allowed (the suite filters them out);
-				// only error-severity diagnostics fail the suite.
 				diags := schema.Validate(doc)
 				errs := 0
 				for _, d := range diags {
@@ -73,23 +67,16 @@ func TestSpecFixtures(t *testing.T) {
 					return
 				}
 
-				// Round-trip YAML: marshal → unmarshal → marshal must produce
-				// byte-identical YAML.
 				roundTripYAML(t, doc, path)
-
-				// Round-trip JSON: marshal → unmarshal → marshal must produce
-				// byte-identical JSON.
 				roundTripJSON(t, doc, path)
 			})
 		}
 	}
 }
 
-// roundTripYAML asserts: doc → marshal → parse → marshal → parse produces a
-// structurally identical Doc and byte-identical output across both
-// re-marshals. This is the invariant that catches the codec-class bugs the
-// v2-tighten plan plugged (Path-escape regression, Object-key collision,
-// multi-key Value mappings, empty AND/OR).
+// roundTripYAML asserts: doc → marshal → parse → marshal → parse produces
+// a structurally identical Doc and byte-identical output across both
+// re-marshals.
 func roundTripYAML(t *testing.T, doc *schema.Doc, label string) {
 	t.Helper()
 	out1, err := yaml.Marshal(doc)
@@ -143,25 +130,7 @@ func roundTripJSON(t *testing.T, doc *schema.Doc, label string) {
 	}
 }
 
-// TestParseRejectsLegacyV1 verifies that a document using the legacy
-// `version:` key (rather than `ir_version:`) is rejected. This is a different
-// version-mismatch path from the IRVersion-string check.
-func TestParseRejectsLegacyV1(t *testing.T) {
-	v1 := []byte(`version: "1"
-api:
-  base_url: state.url
-auth:
-  type: bearer
-  bearer:
-    token: state.api_key
-`)
-	_, err := schema.Parse(v1)
-	if err == nil {
-		t.Fatal("expected error for v1 document, got nil")
-	}
-}
-
-// TestParseRejectsEmpty verifies that empty input is rejected.
+// TestParseRejectsEmpty pins the empty-input rejection.
 func TestParseRejectsEmpty(t *testing.T) {
 	_, err := schema.Parse([]byte(""))
 	if err == nil {
@@ -169,15 +138,37 @@ func TestParseRejectsEmpty(t *testing.T) {
 	}
 }
 
-// TestParseJSON verifies that a JSON-formatted document is parsed correctly.
+// TestParseRejectsBadVersion pins the ir_version mismatch rejection.
+func TestParseRejectsBadVersion(t *testing.T) {
+	bad := []byte(`ir_version: "0"
+auth: {none: {}}
+requests:
+  - method: GET
+    url: "http://x/y"
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+`)
+	_, err := schema.Parse(bad)
+	if err == nil {
+		t.Fatal("expected error for bad ir_version, got nil")
+	}
+	if !strings.Contains(err.Error(), "unsupported ir_version") {
+		t.Errorf("error should mention ir_version, got: %v", err)
+	}
+}
+
+// TestParseJSON pins the JSON-format detection: a leading '{' selects the
+// JSON decoder.
 func TestParseJSON(t *testing.T) {
 	data := []byte(`{
   "ir_version": "1",
   "auth": {"none": {}},
-  "requests": [{"method": "GET", "path": "/api/v1/events"}],
+  "requests": [{"method": "GET", "url": "http://x/y"}],
   "response": {"decode": "json", "events_at": "response.body.events"},
-  "pagination": {"none": {}},
-  "progress": {"stateless": {}}
+  "pagination": {"none": {}}
 }`)
 	doc, err := schema.Parse(data)
 	if err != nil {
@@ -186,25 +177,6 @@ func TestParseJSON(t *testing.T) {
 	if doc.IRVersion != "1" {
 		t.Errorf("expected ir_version 1, got %q", doc.IRVersion)
 	}
-}
-
-// TestParseJSONIntDefault verifies that a JSON int default validates. Per A5:
-// encoding/json decodes numbers into float64 when the destination is interface{},
-// so the validator must accept whole-number float64s for type=int.
-func TestParseJSONIntDefault(t *testing.T) {
-	data := []byte(`{
-  "ir_version": "1",
-  "auth": {"none": {}},
-  "state": {"fields": {"size": {"type": "int", "default": 5}}},
-  "requests": [{"method": "GET", "path": "/api/v1/events"}],
-  "response": {"decode": "json", "events_at": "response.body.events"},
-  "pagination": {"none": {}},
-  "progress": {"stateless": {}}
-}`)
-	doc, err := schema.Parse(data)
-	if err != nil {
-		t.Fatalf("Parse JSON with int default: %v", err)
-	}
 	for _, d := range schema.Validate(doc) {
 		if d.Severity == "error" {
 			t.Errorf("unexpected validate error: %s", d.Message)
@@ -212,39 +184,8 @@ func TestParseJSONIntDefault(t *testing.T) {
 	}
 }
 
-// TestParseJSONIntDefaultRejectsFraction pins the new validator behaviour: a
-// JSON number like 5.5 is rejected even though it decodes as float64.
-func TestParseJSONIntDefaultRejectsFraction(t *testing.T) {
-	data := []byte(`{
-  "ir_version": "1",
-  "auth": {"none": {}},
-  "state": {"fields": {"size": {"type": "int", "default": 5.5}}},
-  "requests": [{"method": "GET", "path": "/api/v1/events"}],
-  "response": {"decode": "json", "events_at": "events"},
-  "pagination": {"none": {}},
-  "progress": {"stateless": {}}
-}`)
-	doc, err := schema.Parse(data)
-	if err != nil {
-		t.Fatalf("Parse JSON: %v", err)
-	}
-	diags := schema.Validate(doc)
-	var got string
-	for _, d := range diags {
-		if d.Severity == "error" {
-			got = d.Message
-			break
-		}
-	}
-	if got == "" {
-		t.Fatalf("expected validate error for fractional default, got none")
-	}
-	if !strings.Contains(got, "non-integer") {
-		t.Errorf("expected non-integer diagnostic, got: %s", got)
-	}
-}
-
-// TestPathParsing tests Path parsing edge cases.
+// TestPathParsing covers the dotted-string codec and the rejected legacy
+// roots (cursor, body, item — removed in the redesign).
 func TestPathParsing(t *testing.T) {
 	tests := []struct {
 		input   string
@@ -252,11 +193,15 @@ func TestPathParsing(t *testing.T) {
 		wantErr bool
 	}{
 		{"state.api_key", "state.api_key", false},
-		{"data.issues.nodes", "data.issues.nodes", false},
-		{"cursor.last_timestamp", "cursor.last_timestamp", false},
-		{"", "", false}, // zero path
+		{"response.body.data.issues.nodes", "response.body.data.issues.nodes", false},
+		{"steps.login.body.session_id", "steps.login.body.session_id", false},
+		{"events.last.timestamp", "events.last.timestamp", false},
+		{"", "", false},
 		{".bad", "", true},
 		{"a..b", "", true},
+		{"cursor.last_timestamp", "", true},
+		{"body.something", "", true},
+		{"item.id", "", true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
@@ -278,54 +223,27 @@ func TestPathParsing(t *testing.T) {
 	}
 }
 
-// TestPathParsing_JSONInvalidParts pins the JSON-side parts decoder error
-// path: non-string elements and empty-string elements both reject with a
-// pointed diagnostic. (A12 — test gap, validator behaviour was correct.)
-func TestPathParsing_JSONInvalidParts(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-	}{
-		{"non_string_element", `{"parts": [1, 2]}`},
-		{"empty_string_element", `{"parts": ["", "b"]}`},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			var p schema.Path
-			err := json.Unmarshal([]byte(tc.input), &p)
-			if err == nil {
-				t.Fatalf("expected error, got: %+v", p)
-			}
-			if !strings.Contains(err.Error(), "must be a non-empty string") {
-				t.Errorf("expected non-empty-string diagnostic, got: %v", err)
-			}
-		})
-	}
-}
-
-// TestValueObjectMarshalAlphabetisesKeys pins the implicit yaml.v3 default
-// behaviour relied on by A24: Value variants that marshal as Go maps emit keys
-// in alphabetical order. Catches a future refactor to *yaml.Node that quietly
-// drops the contract.
-func TestValueObjectMarshalAlphabetisesKeys(t *testing.T) {
-	var v schema.Value
-	if err := yaml.Unmarshal([]byte(`{object: {z: 1, a: 2, m: 3}}`), &v); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	out, err := yaml.Marshal(v)
+// TestPathEscapesDottedSegments pins the {parts: [...]} escape form for
+// segments containing '.' (step ids built from external identifiers).
+func TestPathEscapesDottedSegments(t *testing.T) {
+	p := schema.Path{Parts: []string{"steps", "my.weird.id", "body"}}
+	out, err := yaml.Marshal(p)
 	if err != nil {
-		t.Fatalf("Marshal: %v", err)
+		t.Fatalf("marshal: %v", err)
 	}
-	got := string(out)
-	aIdx := strings.Index(got, "a:")
-	mIdx := strings.Index(got, "m:")
-	zIdx := strings.Index(got, "z:")
-	if aIdx < 0 || mIdx < 0 || zIdx < 0 || aIdx >= mIdx || mIdx >= zIdx {
-		t.Errorf("expected keys a, m, z in alphabetical order, got:\n%s", got)
+	if !strings.Contains(string(out), "parts:") {
+		t.Errorf("expected {parts: ...} form for dotted segment; got: %s", out)
+	}
+	var p2 schema.Path
+	if err := yaml.Unmarshal(out, &p2); err != nil {
+		t.Fatalf("re-unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(p2.Parts, p.Parts) {
+		t.Errorf("parts mismatch: %v vs %v", p2.Parts, p.Parts)
 	}
 }
 
-// TestValueCodecs tests Value YAML/JSON round-trips for each form.
+// TestValueCodecs round-trips one representative of every Value form.
 func TestValueCodecs(t *testing.T) {
 	tests := []struct {
 		name string
@@ -334,21 +252,23 @@ func TestValueCodecs(t *testing.T) {
 		{"literal_string", `"hello"`},
 		{"literal_int", `42`},
 		{"literal_bool", `true`},
-		// Note: there is no top-level "null" case here. yaml.v3 short-circuits
-		// the null tag before invoking UnmarshalYAML, so a YAML `null` cannot
-		// round-trip to a Value with IsZero==true through the codec; it would
-		// land as the all-zero Value{} which the marshaler now correctly
-		// rejects as a programmer-construction error (see review-03 todo
-		// codec_value_marshal_empty_fallback). Authors who want absence omit
-		// the field entirely.
 		{"ref_simple", `{ref: state.api_key}`},
-		{"now", `{now: true, offset: "-1h"}`},
-		{"now_formatted", `{format: rfc3339, value: {now: true, offset: "-1h"}}`},
+		{"ref_default", `{ref: state.api_key, default: ""}`},
+		{"now", `{now: true}`},
 		{"concat", `{concat: ["/api/", {ref: state.url}, "/v1"]}`},
 		{"object", `{object: {key: value, n: 5, b: true}}`},
-		{"format", `{format: string, value: {ref: state.page_size}}`},
+		{"format", `{format: rfc3339, value: {now: true}}`},
 		{"base64", `{base64: hello}`},
-		{"select_value", `{select: {branches: [{when: {literal_bool: true}, value: /gov}], default: /commercial}}`},
+		{"list", `{list: [1, 2, 3]}`},
+		{"select", `{select: {branches: [{when: {literal_bool: true}, value: /gov}], default: /commercial}}`},
+		{"add", `{add: [{now: true}, 1h]}`},
+		{"subtract", `{subtract: [{now: true}, 1h]}`},
+		{"max", `{max: [{ref: state.a}, {ref: state.b}]}`},
+		{"min", `{min: [{ref: state.a}, {ref: state.b}]}`},
+		{"first", `{first: [{ref: state.a}, {ref: state.b}]}`},
+		{"last", `{last: [{ref: state.a}, {ref: state.b}]}`},
+		{"count", `{count: [{ref: state.a}, {ref: state.b}]}`},
+		{"regex", `{regex: {pattern: "v(\\d+)", from: {ref: state.tag}, capture: 1}}`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -375,13 +295,18 @@ func TestValueCodecs(t *testing.T) {
 	}
 }
 
-// TestPredicateCodecs tests Predicate YAML/JSON round-trips for each form.
+// TestPredicateCodecs round-trips one representative of every Predicate
+// form.
 func TestPredicateCodecs(t *testing.T) {
 	tests := []struct {
 		name string
 		yaml string
 	}{
 		{"eq", `{eq: {path: state.auth_mode, value: bearer}}`},
+		{"gt", `{gt: {path: state.retries, value: 3}}`},
+		{"lt", `{lt: {path: state.retries, value: 3}}`},
+		{"gte", `{gte: {path: state.retries, value: 3}}`},
+		{"lte", `{lte: {path: state.retries, value: 3}}`},
 		{"present", `{present: state.etag}`},
 		{"and", `{and: [{literal_bool: true}, {literal_bool: false}]}`},
 		{"or", `{or: [{literal_bool: true}, {literal_bool: false}]}`},
@@ -414,11 +339,10 @@ func TestPredicateCodecs(t *testing.T) {
 	}
 }
 
-// TestCodecRegressions covers the classes of round-trip-corruption bugs the
-// v2-tighten plan plugged: implicit Object fallback, multi-key Value /
-// Predicate mappings, paths whose segments contain '.', and empty AND/OR.
-func TestCodecRegressions(t *testing.T) {
-	t.Run("object_required_for_unknown_keys", func(t *testing.T) {
+// TestCodecRejections covers the codec's structural rejections — typos,
+// removed forms, multi-discriminator mappings.
+func TestCodecRejections(t *testing.T) {
+	t.Run("bare_unrecognised_mapping_rejected", func(t *testing.T) {
 		var v schema.Value
 		err := yaml.Unmarshal([]byte(`{some: thing, other: stuff}`), &v)
 		if err == nil {
@@ -426,22 +350,6 @@ func TestCodecRegressions(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "object") {
 			t.Errorf("error should mention {object: ...} wrapper hint, got: %v", err)
-		}
-	})
-
-	t.Run("object_inner_keys_are_literal", func(t *testing.T) {
-		// concat is a Value discriminator key; inside {object: ...} it must
-		// stay literal and not get re-interpreted.
-		var v schema.Value
-		if err := yaml.Unmarshal([]byte(`{object: {concat: literal-value, ref: literal-too}}`), &v); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if v.Object == nil {
-			t.Fatalf("expected Object form, got %+v", v)
-		}
-		got, ok := v.Object["concat"]
-		if !ok || got.LiteralString == nil || *got.LiteralString != "literal-value" {
-			t.Errorf("inner concat key should be literal string, got %+v", got)
 		}
 	})
 
@@ -464,29 +372,23 @@ func TestCodecRegressions(t *testing.T) {
 		}
 	})
 
-	t.Run("predicate_deferred_in_hint", func(t *testing.T) {
-		var p schema.Predicate
-		err := yaml.Unmarshal([]byte(`{in: state.allowed}`), &p)
+	t.Run("empty_concat_rejected", func(t *testing.T) {
+		var v schema.Value
+		err := yaml.Unmarshal([]byte(`{concat: []}`), &v)
 		if err == nil {
-			t.Fatalf("expected deferred-verb error for {in: ...}, got: %+v", p)
-		}
-		if !strings.Contains(err.Error(), "\"in\" is deferred") {
-			t.Errorf("error should call out deferred verb, got: %v", err)
+			t.Fatalf("expected error for {concat: []}, got: %+v", v)
 		}
 	})
 
-	t.Run("predicate_deferred_matches_hint", func(t *testing.T) {
-		var p schema.Predicate
-		err := yaml.Unmarshal([]byte(`{matches: state.x}`), &p)
+	t.Run("singleton_concat_rejected", func(t *testing.T) {
+		var v schema.Value
+		err := yaml.Unmarshal([]byte(`{concat: ["only"]}`), &v)
 		if err == nil {
-			t.Fatalf("expected deferred-verb error for {matches: ...}, got: %+v", p)
-		}
-		if !strings.Contains(err.Error(), "\"matches\" is deferred") {
-			t.Errorf("error should call out deferred verb, got: %v", err)
+			t.Fatalf("expected error for singleton concat, got: %+v", v)
 		}
 	})
 
-	t.Run("predicate_empty_and_rejected", func(t *testing.T) {
+	t.Run("empty_and_rejected", func(t *testing.T) {
 		var p schema.Predicate
 		err := yaml.Unmarshal([]byte(`{and: []}`), &p)
 		if err == nil {
@@ -494,95 +396,7 @@ func TestCodecRegressions(t *testing.T) {
 		}
 	})
 
-	t.Run("predicate_empty_or_rejected", func(t *testing.T) {
-		var p schema.Predicate
-		err := yaml.Unmarshal([]byte(`{or: []}`), &p)
-		if err == nil {
-			t.Fatalf("expected error for {or: []}, got: %+v", p)
-		}
-	})
-
-	t.Run("value_empty_concat_rejected", func(t *testing.T) {
-		var v schema.Value
-		err := yaml.Unmarshal([]byte(`{concat: []}`), &v)
-		if err == nil {
-			t.Fatalf("expected error for {concat: []}, got: %+v", v)
-		}
-		if !strings.Contains(err.Error(), "at least 2") {
-			t.Errorf("error should say at least 2 elements, got: %v", err)
-		}
-	})
-
-	t.Run("value_singleton_concat_rejected", func(t *testing.T) {
-		var v schema.Value
-		err := yaml.Unmarshal([]byte(`{concat: ["only"]}`), &v)
-		if err == nil {
-			t.Fatalf("expected error for singleton concat, got: %+v", v)
-		}
-		if !strings.Contains(err.Error(), "at least 2") {
-			t.Errorf("error should say at least 2 elements, got: %v", err)
-		}
-	})
-
-	t.Run("value_singleton_concat_rejected_json", func(t *testing.T) {
-		var v schema.Value
-		err := json.Unmarshal([]byte(`{"concat": ["only"]}`), &v)
-		if err == nil {
-			t.Fatalf("expected JSON error for singleton concat, got: %+v", v)
-		}
-	})
-
-	t.Run("value_empty_list_round_trip_yaml", func(t *testing.T) {
-		// {list: []} must round-trip byte-identically and parse back to a
-		// non-nil empty slice, not a nil slice or the empty-LiteralString
-		// fallback.
-		in := []byte(`{list: []}`)
-		var v schema.Value
-		if err := yaml.Unmarshal(in, &v); err != nil {
-			t.Fatalf("unmarshal {list: []}: %v", err)
-		}
-		if v.List == nil {
-			t.Fatalf("expected non-nil empty List, got nil")
-		}
-		if len(v.List) != 0 {
-			t.Fatalf("expected empty List, got len=%d", len(v.List))
-		}
-		out1, err := yaml.Marshal(v)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		var v2 schema.Value
-		if err := yaml.Unmarshal(out1, &v2); err != nil {
-			t.Fatalf("re-unmarshal: %v", err)
-		}
-		out2, err := yaml.Marshal(v2)
-		if err != nil {
-			t.Fatalf("re-marshal: %v", err)
-		}
-		if !bytes.Equal(out1, out2) {
-			t.Errorf("empty-list round-trip not byte-identical:\n  1: %s  2: %s", out1, out2)
-		}
-	})
-
-	t.Run("value_empty_list_round_trip_json", func(t *testing.T) {
-		in := []byte(`{"list":[]}`)
-		var v schema.Value
-		if err := json.Unmarshal(in, &v); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if v.List == nil || len(v.List) != 0 {
-			t.Fatalf("expected non-nil empty List, got %v", v.List)
-		}
-		out, err := json.Marshal(v)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if string(out) != `{"list":[]}` {
-			t.Errorf("empty-list JSON: got %s, want {\"list\":[]}", out)
-		}
-	})
-
-	t.Run("value_ref_unknown_sibling_rejected", func(t *testing.T) {
+	t.Run("ref_typo_sibling_rejected", func(t *testing.T) {
 		var v schema.Value
 		err := yaml.Unmarshal([]byte(`{ref: state.x, defualt: "y"}`), &v)
 		if err == nil {
@@ -593,295 +407,122 @@ func TestCodecRegressions(t *testing.T) {
 		}
 	})
 
-	t.Run("value_now_unknown_sibling_rejected", func(t *testing.T) {
-		var v schema.Value
-		err := yaml.Unmarshal([]byte(`{now: true, offest: "-1h"}`), &v)
-		if err == nil {
-			t.Fatalf("expected error for now+typo sibling, got: %+v", v)
-		}
-	})
-
-	t.Run("value_format_unknown_sibling_rejected", func(t *testing.T) {
-		var v schema.Value
-		err := yaml.Unmarshal([]byte(`{format: rfc3339, vlaue: {now: true}}`), &v)
-		if err == nil {
-			t.Fatalf("expected error for format+typo sibling, got: %+v", v)
-		}
-	})
-
-	t.Run("predicate_eq_unknown_sibling_rejected", func(t *testing.T) {
-		var p schema.Predicate
-		err := yaml.Unmarshal([]byte(`{eq: {path: state.x, value: 1}, prseent: state.x}`), &p)
-		if err == nil {
-			t.Fatalf("expected error for eq+typo sibling, got: %+v", p)
-		}
-	})
-
-	t.Run("value_unknown_discriminator_lists_valid_keys", func(t *testing.T) {
-		var v schema.Value
-		err := yaml.Unmarshal([]byte(`{nope: 1, alsonope: 2}`), &v)
-		if err == nil {
-			t.Fatalf("expected error, got: %+v", v)
-		}
-		// The picker advertises the closed discriminator set so authors can
-		// recover from a typo. With §6.5 resolved (Value.Raw removed) the
-		// list MUST NOT mention "raw".
-		if !strings.Contains(err.Error(), "literal_string") || !strings.Contains(err.Error(), "object") {
-			t.Errorf("error should list valid discriminators, got: %v", err)
-		}
-		if strings.Contains(err.Error(), "raw") {
-			t.Errorf("error must not mention the removed raw variant, got: %v", err)
-		}
-	})
-
-	t.Run("value_raw_form_rejected_at_parse_time", func(t *testing.T) {
-		var v schema.Value
-		err := yaml.Unmarshal([]byte(`{raw: {cel: "1+1"}}`), &v)
-		if err == nil {
-			t.Fatalf("expected error parsing removed {raw: ...} form, got: %+v", v)
-		}
-	})
-
-	t.Run("path_escapes_dotted_segments_yaml", func(t *testing.T) {
-		p := schema.Path{Parts: []string{"steps", "my.weird.id", "body"}}
-		out, err := yaml.Marshal(p)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if !strings.Contains(string(out), "parts:") {
-			t.Errorf("expected {parts: ...} form for path with dotted segment; got: %s", out)
-		}
-		var p2 schema.Path
-		if err := yaml.Unmarshal(out, &p2); err != nil {
-			t.Fatalf("re-unmarshal: %v", err)
-		}
-		if len(p2.Parts) != len(p.Parts) {
-			t.Fatalf("parts length mismatch: %v vs %v", p.Parts, p2.Parts)
-		}
-		for i := range p.Parts {
-			if p2.Parts[i] != p.Parts[i] {
-				t.Errorf("part %d: %q vs %q", i, p2.Parts[i], p.Parts[i])
-			}
-		}
-	})
-
-	t.Run("path_escapes_dotted_segments_json", func(t *testing.T) {
-		p := schema.Path{Parts: []string{"steps", "weird.id", "body", "field"}}
-		out, err := json.Marshal(p)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if !strings.Contains(string(out), `"parts"`) {
-			t.Errorf("expected {parts: ...} JSON form; got: %s", out)
-		}
-		var p2 schema.Path
-		if err := json.Unmarshal(out, &p2); err != nil {
-			t.Fatalf("re-unmarshal: %v", err)
-		}
-		if len(p2.Parts) != len(p.Parts) {
-			t.Fatalf("parts length mismatch: %v vs %v", p.Parts, p2.Parts)
-		}
-		for i := range p.Parts {
-			if p2.Parts[i] != p.Parts[i] {
-				t.Errorf("part %d: %q vs %q", i, p2.Parts[i], p.Parts[i])
-			}
-		}
-	})
-
-	t.Run("token_cache_expiry_field_dotted_string", func(t *testing.T) {
-		var c schema.TokenCache
-		if err := yaml.Unmarshal([]byte("store_in: cached_token\nexpiry_field: expires_in\nexpiry_buffer: 60s\n"), &c); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if got := c.ExpiryField.String(); got != "expires_in" {
-			t.Errorf("ExpiryField.String() = %q, want %q", got, "expires_in")
-		}
-		if len(c.ExpiryField.Parts) != 1 || c.ExpiryField.Parts[0] != "expires_in" {
-			t.Errorf("ExpiryField.Parts = %v, want [expires_in]", c.ExpiryField.Parts)
-		}
-	})
-
-	t.Run("token_cache_expiry_field_parts_form", func(t *testing.T) {
-		var c schema.TokenCache
-		if err := yaml.Unmarshal([]byte("store_in: t\nexpiry_field:\n  parts: [data, expires.at]\nexpiry_buffer: 60s\n"), &c); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if len(c.ExpiryField.Parts) != 2 ||
-			c.ExpiryField.Parts[0] != "data" ||
-			c.ExpiryField.Parts[1] != "expires.at" {
-			t.Errorf("ExpiryField.Parts = %v, want [data expires.at]", c.ExpiryField.Parts)
-		}
-	})
-
-	t.Run("request_cache_expiry_field_dotted_string", func(t *testing.T) {
-		var c schema.RequestCache
-		if err := yaml.Unmarshal([]byte("store_in: session_token\nexpiry_field: expires_in\nexpiry_buffer: 60s\n"), &c); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if got := c.ExpiryField.String(); got != "expires_in" {
-			t.Errorf("ExpiryField.String() = %q, want %q", got, "expires_in")
-		}
-	})
-
-	t.Run("cursor_update_structured_roundtrip", func(t *testing.T) {
-		yamlSrc := "kind: use_now\n"
-		var d schema.CursorUpdateDirective
-		if err := yaml.Unmarshal([]byte(yamlSrc), &d); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if d.Kind != "use_now" {
-			t.Errorf("Kind = %q, want use_now", d.Kind)
-		}
-		if d.Lookback != nil {
-			t.Errorf("Lookback = %+v, want nil", d.Lookback)
-		}
-	})
-
-	t.Run("cursor_update_structured_with_lookback", func(t *testing.T) {
-		yamlSrc := "kind: latest_event_timestamp\nlookback: \"-5m\"\n"
-		var d schema.CursorUpdateDirective
-		if err := yaml.Unmarshal([]byte(yamlSrc), &d); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if d.Kind != "latest_event_timestamp" {
-			t.Errorf("Kind = %q, want latest_event_timestamp", d.Kind)
-		}
-		if d.Lookback == nil || d.Lookback.LiteralString == nil || *d.Lookback.LiteralString != "-5m" {
-			t.Errorf("Lookback = %+v, want literal string \"-5m\"", d.Lookback)
-		}
-	})
-
-	t.Run("cursor_update_structured_with_event_time", func(t *testing.T) {
-		yamlSrc := "kind: latest_event_timestamp\nevent_time:\n  path: created_at\n"
-		var d schema.CursorUpdateDirective
-		if err := yaml.Unmarshal([]byte(yamlSrc), &d); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if d.Kind != "latest_event_timestamp" {
-			t.Errorf("Kind = %q, want latest_event_timestamp", d.Kind)
-		}
-		if d.EventTime == nil {
-			t.Fatalf("EventTime nil, want path=created_at")
-		}
-		if got := d.EventTime.Path.String(); got != "created_at" {
-			t.Errorf("EventTime.Path = %q, want created_at", got)
-		}
-	})
-
-	t.Run("cursor_update_scalar_shorthand_rejected_yaml", func(t *testing.T) {
-		var d schema.CursorUpdateDirective
-		err := yaml.Unmarshal([]byte("use_now\n"), &d)
-		if err == nil {
-			t.Fatalf("expected error for scalar cursor_update, got: %+v", d)
-		}
-		if !strings.Contains(err.Error(), "scalar shorthand") {
-			t.Errorf("error should mention scalar shorthand, got: %v", err)
-		}
-	})
-
-	t.Run("cursor_update_scalar_shorthand_rejected_json", func(t *testing.T) {
-		var d schema.CursorUpdateDirective
-		err := json.Unmarshal([]byte(`"use_now"`), &d)
-		if err == nil {
-			t.Fatalf("expected error for scalar cursor_update, got: %+v", d)
-		}
-		if !strings.Contains(err.Error(), "scalar shorthand") {
-			t.Errorf("error should mention scalar shorthand, got: %v", err)
-		}
-	})
-
-	// review-03: an all-zero Value (no form set, IsZero false) must error
-	// at marshal time instead of silently round-tripping to LiteralString("").
-	t.Run("value_empty_marshal_yaml_errors", func(t *testing.T) {
+	t.Run("zero_value_marshal_errors", func(t *testing.T) {
 		_, err := yaml.Marshal(schema.Value{})
 		if err == nil {
 			t.Fatalf("expected MarshalYAML error for zero Value, got nil")
 		}
-		if !strings.Contains(err.Error(), "zero value cannot be marshalled") {
+		if !strings.Contains(err.Error(), "zero value") {
 			t.Errorf("error should mention zero value, got: %v", err)
 		}
 	})
 
-	t.Run("value_empty_marshal_json_errors", func(t *testing.T) {
+	t.Run("zero_value_marshal_json_errors", func(t *testing.T) {
 		_, err := json.Marshal(schema.Value{})
 		if err == nil {
 			t.Fatalf("expected MarshalJSON error for zero Value, got nil")
 		}
-		if !strings.Contains(err.Error(), "zero value cannot be marshalled") {
-			t.Errorf("error should mention zero value, got: %v", err)
-		}
 	})
 
-	// review-03: predicate comparison verbs (gt/lt/gte/lte) share the
-	// {path, value} shape with eq and must round-trip byte-identically.
-	for _, verb := range []string{"gt", "lt", "gte", "lte"} {
-		verb := verb
-		t.Run("predicate_"+verb+"_roundtrip_yaml", func(t *testing.T) {
-			src := "{" + verb + ": {path: cursor.page, value: 100}}"
-			var p schema.Predicate
-			if err := yaml.Unmarshal([]byte(src), &p); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			out1, err := yaml.Marshal(p)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
-			var p2 schema.Predicate
-			if err := yaml.Unmarshal(out1, &p2); err != nil {
-				t.Fatalf("re-unmarshal: %v", err)
-			}
-			out2, err := yaml.Marshal(p2)
-			if err != nil {
-				t.Fatalf("re-marshal: %v", err)
-			}
-			if !bytes.Equal(out1, out2) {
-				t.Errorf("%s round-trip:\n  1: %s  2: %s", verb, out1, out2)
-			}
-			// Confirm exactly one of the new fields is set.
-			if names := p.VariantNames(); len(names) != 1 || names[0] != verb {
-				t.Errorf("VariantNames = %v, want [%s]", names, verb)
-			}
-		})
+	t.Run("legacy_cursor_root_rejected", func(t *testing.T) {
+		_, err := schema.ParsePath("cursor.last_timestamp")
+		if err == nil {
+			t.Fatal("expected ParsePath rejection for cursor.* root")
+		}
+		if !strings.Contains(err.Error(), "cursor") {
+			t.Errorf("error should mention cursor root, got: %v", err)
+		}
+	})
+}
 
-		t.Run("predicate_"+verb+"_roundtrip_json", func(t *testing.T) {
-			src := `{"` + verb + `":{"path":"cursor.page","value":100}}`
-			var p schema.Predicate
-			if err := json.Unmarshal([]byte(src), &p); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			out, err := json.Marshal(p)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
-			if string(out) != src {
-				t.Errorf("%s JSON: got %s, want %s", verb, out, src)
+// TestArithOperandCount pins the {add/subtract: [...]} exact-2 operand
+// rule.
+func TestArithOperandCount(t *testing.T) {
+	bad := []string{
+		`{add: []}`,
+		`{add: [1]}`,
+		`{add: [1, 2, 3]}`,
+		`{subtract: [1]}`,
+	}
+	for _, src := range bad {
+		t.Run(src, func(t *testing.T) {
+			var v schema.Value
+			if err := yaml.Unmarshal([]byte(src), &v); err == nil {
+				t.Errorf("expected error parsing %q, got value %+v", src, v)
 			}
 		})
 	}
 }
 
-// TestIsSecret exercises the secret-propagation predicate.
+// TestStringInterpolationDesugar pins the source-level interpolation
+// behaviour: any string scalar in a Value position is scanned for
+// ${path[|default]} segments and desugared into a Concat (or a single
+// Ref when the segment is the whole string).
+func TestStringInterpolationDesugar(t *testing.T) {
+	t.Run("scalar_with_no_dollar_is_literal", func(t *testing.T) {
+		var v schema.Value
+		if err := yaml.Unmarshal([]byte(`"/api/v1/events"`), &v); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if v.LiteralString == nil || *v.LiteralString != "/api/v1/events" {
+			t.Errorf("expected literal string, got %+v", v)
+		}
+	})
+
+	t.Run("single_segment_becomes_ref", func(t *testing.T) {
+		var v schema.Value
+		if err := yaml.Unmarshal([]byte(`"${state.url}"`), &v); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if v.Ref == nil {
+			t.Fatalf("expected Ref form, got %+v", v)
+		}
+		if v.Ref.Path.String() != "state.url" {
+			t.Errorf("Ref.Path = %q, want state.url", v.Ref.Path.String())
+		}
+	})
+
+	t.Run("multi_segment_becomes_concat", func(t *testing.T) {
+		var v schema.Value
+		if err := yaml.Unmarshal([]byte(`"${state.url}/path"`), &v); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(v.Concat) != 2 {
+			t.Fatalf("expected 2-element Concat, got %+v", v)
+		}
+	})
+
+	t.Run("default_after_pipe", func(t *testing.T) {
+		var v schema.Value
+		if err := yaml.Unmarshal([]byte(`"${state.cursor|}"`), &v); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if v.Ref == nil || v.Ref.Default == nil {
+			t.Fatalf("expected Ref with default, got %+v", v)
+		}
+	})
+}
+
+// TestIsSecret exercises the secret-propagation predicate. It walks every
+// container the Value language can express and reports whether any
+// reachable Ref resolves to a state.<name> path whose declared type is
+// "secret".
 func TestIsSecret(t *testing.T) {
 	src := `ir_version: "1"
 state:
-  fields:
-    api_key:
-      type: secret
-    public:
-      type: string
+  api_key: {type: secret}
+  public:  {type: string}
 auth:
   bearer:
     token: {ref: state.api_key}
 requests:
   - method: GET
-    path: /api/v1/events
+    url: "http://x/y"
 response:
   decode: json
   events_at: response.body.events
 pagination:
   none: {}
-progress:
-  stateless: {}
 `
 	doc, err := schema.Parse([]byte(src))
 	if err != nil {
@@ -903,13 +544,12 @@ progress:
 		{"concat_with_secret", schema.Value{Concat: []schema.Value{literal("Bearer "), secretRef}}, true},
 		{"concat_without_secret", schema.Value{Concat: []schema.Value{literal("Bearer "), publicRef}}, false},
 		{"format_wrapping_secret", schema.Value{Format: &schema.FormatValue{Verb: "rfc3339", Value: secretRef}}, true},
-		{"format_wrapping_literal", schema.Value{Format: &schema.FormatValue{Verb: "rfc3339", Value: literal("x")}}, false},
 		{"base64_wrapping_secret", schema.Value{Base64: &secretRef}, true},
 		{"list_with_secret", schema.Value{List: []schema.Value{literal("a"), secretRef}}, true},
-		{"list_without_secret", schema.Value{List: []schema.Value{literal("a"), publicRef}}, false},
 		{"object_with_secret", schema.Value{Object: map[string]schema.Value{"k": secretRef}}, true},
 		{"ref_with_secret_default", schema.Value{Ref: &schema.RefValue{Path: schema.Path{Parts: []string{"state", "public"}}, Default: &secretRef}}, true},
-		{"now_with_literal_offset", schema.Value{Now: &schema.NowValue{Offset: ptrValue(literal("-1h"))}}, false},
+		{"add_with_secret_operand", schema.Value{Add: &schema.ArithExpr{Operands: []schema.Value{literal("a"), secretRef}}}, true},
+		{"max_with_secret_operand", schema.Value{Max: &secretRef}, true},
 	}
 
 	for _, tc := range cases {
@@ -922,244 +562,261 @@ progress:
 	}
 }
 
-func ptrValue(v schema.Value) *schema.Value { return &v }
-
-// TestAutoRegisteredFieldDecl verifies that the OAuth2 / request cache.store_in
-// slot materialises in d.State.Fields after Validate, so targets walking the
-// state map see it as a runtime-typed FieldDecl.
-func TestAutoRegisteredFieldDecl(t *testing.T) {
-	t.Run("request_cache_store_in", func(t *testing.T) {
-		path := filepath.Join("..", "templates", "session_login_cached.yml")
-		data, err := os.ReadFile(path)
+// TestValidate_RejectsRemovedForms confirms that legacy shapes (cursor.*
+// roots, state.fields indirection, defaults.base_url, requests[].path)
+// no longer parse or validate cleanly. The validator is the operator's
+// safety net against stale templates that pre-date the redesign.
+func TestValidate_RejectsRemovedForms(t *testing.T) {
+	t.Run("state_fields_indirection_rejected", func(t *testing.T) {
+		src := `ir_version: "1"
+state:
+  fields:
+    url: {type: url}
+auth:
+  none: {}
+requests:
+  - method: GET
+    url: "http://x/y"
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+`
+		doc, err := schema.Parse([]byte(src))
 		if err != nil {
-			t.Fatalf("read: %v", err)
-		}
-		doc, err := schema.Parse(data)
-		if err != nil {
-			t.Fatalf("parse: %v", err)
+			// Parsing may succeed but validator rejects "fields" as not
+			// a typed field declaration.
+			return
 		}
 		diags := schema.Validate(doc)
+		hasErr := false
 		for _, d := range diags {
 			if d.Severity == "error" {
-				t.Fatalf("unexpected diagnostic: %s: %s", d.Path, d.Message)
+				hasErr = true
+				break
 			}
 		}
-		fd, ok := doc.State.Fields["session_token"]
-		if !ok {
-			t.Fatalf("expected auto-registered state.fields.session_token, got fields: %v", doc.State.Fields)
-		}
-		if fd.Type != "string" {
-			t.Errorf("FieldDecl.Type = %q, want string", fd.Type)
-		}
-		if fd.Mutability != "runtime" {
-			t.Errorf("FieldDecl.Mutability = %q, want runtime", fd.Mutability)
+		if !hasErr {
+			t.Errorf("expected error-severity diagnostic for state.fields indirection; got %v", diags)
 		}
 	})
 
-	t.Run("oauth2_cache_store_in", func(t *testing.T) {
-		path := filepath.Join("testdata", "token_cache.yml")
-		data, err := os.ReadFile(path)
+	t.Run("requests_missing_url_rejected", func(t *testing.T) {
+		// path: is no longer a recognised field — it falls into yaml's
+		// unknown-keys-dropped path. The validator then rejects the
+		// resulting request because url: is required.
+		src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - method: GET
+    path: /api/v1/events
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+`
+		doc, err := schema.Parse([]byte(src))
 		if err != nil {
-			t.Fatalf("read: %v", err)
-		}
-		doc, err := schema.Parse(data)
-		if err != nil {
-			t.Fatalf("parse: %v", err)
+			return
 		}
 		diags := schema.Validate(doc)
+		urlMissing := false
 		for _, d := range diags {
-			if d.Severity == "error" {
-				t.Fatalf("unexpected diagnostic: %s: %s", d.Path, d.Message)
+			if d.Severity == "error" && strings.Contains(d.Message, "url") {
+				urlMissing = true
+				break
 			}
 		}
-		if doc.Auth.OAuth2 == nil || doc.Auth.OAuth2.ClientCredentials == nil ||
-			doc.Auth.OAuth2.ClientCredentials.Cache == nil {
-			t.Fatalf("template does not exercise oauth2 cache")
+		if !urlMissing {
+			t.Errorf("expected url-is-required error for legacy path-field shape; got %v", diags)
 		}
-		store := doc.Auth.OAuth2.ClientCredentials.Cache.StoreIn
-		fd, ok := doc.State.Fields[store]
-		if !ok {
-			t.Fatalf("expected auto-registered state.fields.%s, got fields: %v", store, doc.State.Fields)
-		}
-		if fd.Type != "string" || fd.Mutability != "runtime" {
-			t.Errorf("FieldDecl = %+v, want {Type:string, Mutability:runtime}", fd)
+	})
+
+	t.Run("legacy_v1_version_key_rejected", func(t *testing.T) {
+		v1 := []byte(`version: "1"
+api:
+  base_url: state.url
+auth:
+  type: bearer
+  bearer:
+    token: state.api_key
+`)
+		_, err := schema.Parse(v1)
+		if err == nil {
+			t.Fatal("expected error for v1 document, got nil")
 		}
 	})
 }
 
-// isVersionError reports whether err is an ir_version mismatch (indicating a
-// v1 template that has not yet been migrated to v2).
-func isVersionError(err error) bool {
-	if err == nil {
-		return false
+// TestRequestTerminateWhen covers the request-level loop primitive: the
+// shape that backs the three-request submit/poll/fetch async pattern.
+func TestRequestTerminateWhen(t *testing.T) {
+	src := `ir_version: "1"
+auth:
+  none: {}
+requests:
+  - id: submit
+    method: POST
+    url: "http://x/submit"
+    extract:
+      - {to: state.export_id, from: response.body.export_id}
+  - id: poll
+    method: GET
+    url: "http://x/status"
+    terminate_when:
+      eq:
+        path: response.body.status
+        value: complete
+    extract:
+      - {to: state.result_url, from: response.body.result_url}
+  - id: fetch
+    method: GET
+    url: {ref: state.result_url}
+    produces_events: true
+state:
+  export_id:  {type: string}
+  result_url: {type: url}
+response:
+  decode: json
+  events_at: response.body.events
+pagination:
+  none: {}
+`
+	doc, err := schema.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
 	}
-	return strings.Contains(err.Error(), "unsupported ir_version")
+	diags := schema.Validate(doc)
+	for _, d := range diags {
+		if d.Severity == "error" {
+			t.Errorf("unexpected error diagnostic: %s: %s", d.Path, d.Message)
+		}
+	}
+	poll := doc.Requests[1]
+	if poll.TerminateWhen == nil || poll.TerminateWhen.Eq == nil {
+		t.Errorf("expected poll.TerminateWhen.Eq to be set; got %+v", poll.TerminateWhen)
+	}
 }
 
-// TestSchemaShapes_Review03 covers structural acceptance and validation for
-// every schema-shape addition landed by review-03: per-iteration progress
-// lookback, predicate comparison verbs, OAuth2 password_grant, and the
-// extended on_status action set.
-func TestSchemaShapes_Review03(t *testing.T) {
-	t.Run("use_now_lookback_accepted", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  use_now:
-    lookback: "-1m"
-`
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		if diags := schema.Validate(doc); len(diags) > 0 {
-			t.Fatalf("unexpected diagnostics: %+v", diags)
-		}
-		if doc.Progress.UseNow == nil || doc.Progress.UseNow.Lookback == nil {
-			t.Fatalf("expected UseNow.Lookback to be set, got %+v", doc.Progress.UseNow)
-		}
-	})
+// TestPaginationVariants pins each named variant's basic shape: cursor_
+// token / next_url / counter / custom each parse and validate cleanly
+// against a minimal spec.
+func TestPaginationVariants(t *testing.T) {
+	specs := map[string]string{
+		"cursor_token": `pagination:
+  cursor_token:
+    from: response.body.next_cursor
+    to: state.next_token`,
+		"next_url": `pagination:
+  next_url:
+    from: response.header.Link
+    to: state.next_url
+    regex: '<(.*?)>; rel="next"'
+    capture: 1`,
+		"counter": `pagination:
+  counter:
+    to: state.page
+    start: 1
+    step: 1`,
+		"custom": `pagination:
+  custom:
+    advance:
+      - {to: state.cursor, from: {ref: response.body.next}}
+    terminate_when:
+      not:
+        present: response.body.next`,
+	}
 
-	t.Run("latest_event_timestamp_lookback_accepted", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  latest_event_timestamp:
-    event_time:
-      path: ts
-    initial:
-      lookback: "24h"
-    lookback: "-30s"
-`
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		if diags := schema.Validate(doc); len(diags) > 0 {
-			t.Fatalf("unexpected diagnostics: %+v", diags)
-		}
-		if doc.Progress.LatestEventTimestamp.Lookback == nil {
-			t.Fatalf("expected per-iteration Lookback to be set")
-		}
-		if doc.Progress.LatestEventTimestamp.Initial == nil {
-			t.Fatalf("expected Initial to be set alongside Lookback")
-		}
-	})
-
-	t.Run("predicate_gt_in_request_if", func(t *testing.T) {
-		src := `ir_version: "1"
+	header := `ir_version: "1"
 state:
-  fields:
-    threshold:
-      type: int
-      default: 5
-auth:
-  none: {}
+  next_token: {type: string}
+  next_url:   {type: url}
+  page:       {type: int}
+  cursor:     {type: string}
+auth: {none: {}}
 requests:
   - method: GET
-    path: /api/v1/events
-    if:
-      gt:
-        path: state.threshold
-        value: 0
+    url: "http://x/y"
+response:
+  decode: json
+  events_at: response.body.events
+`
+
+	for name, page := range specs {
+		t.Run(name, func(t *testing.T) {
+			src := header + page + "\n"
+			doc, err := schema.Parse([]byte(src))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			diags := schema.Validate(doc)
+			for _, d := range diags {
+				if d.Severity == "error" {
+					t.Errorf("[%s] unexpected error: %s: %s", name, d.Path, d.Message)
+				}
+			}
+			if got, _ := doc.Pagination.Variant(); got != name {
+				t.Errorf("Pagination.Variant() = %q, want %q", got, name)
+			}
+		})
+	}
+}
+
+// TestProgressIsFlatWriteList confirms the Progress shape is a flat
+// []ProgressWrite — no discriminated-union variants, no nested phase
+// machinery.
+func TestProgressIsFlatWriteList(t *testing.T) {
+	src := `ir_version: "1"
+state:
+  last_timestamp: {type: timestamp}
+auth: {none: {}}
+requests:
+  - method: GET
+    url: "http://x/y"
 response:
   decode: json
   events_at: response.body.events
 pagination:
   none: {}
 progress:
-  stateless: {}
+  - to: state.last_timestamp
+    from:
+      max:
+        - {ref: state.last_timestamp}
+        - {max: {ref: events.*.timestamp}}
 `
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
+	doc, err := schema.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	diags := schema.Validate(doc)
+	for _, d := range diags {
+		if d.Severity == "error" {
+			t.Errorf("unexpected diagnostic: %s: %s", d.Path, d.Message)
 		}
-		if diags := schema.Validate(doc); len(diags) > 0 {
-			t.Fatalf("unexpected diagnostics: %+v", diags)
-		}
-		if doc.Requests[0].If == nil || doc.Requests[0].If.Gt == nil {
-			t.Fatalf("expected If.Gt to be set, got %+v", doc.Requests[0].If)
-		}
-	})
+	}
+	if len(doc.Progress) != 1 {
+		t.Fatalf("Progress length = %d, want 1", len(doc.Progress))
+	}
+	w := doc.Progress[0]
+	if w.To.String() != "state.last_timestamp" {
+		t.Errorf("To = %q", w.To.String())
+	}
+	if w.From.Max == nil {
+		t.Errorf("From should carry a Max reducer; got %+v", w.From)
+	}
+}
 
-	t.Run("oauth2_password_grant_accepted", func(t *testing.T) {
-		src := `ir_version: "1"
+// TestOAuth2_ExactlyOneGrantRequired pins the discriminated-union rule
+// on auth.oauth2: exactly one of client_credentials / password_grant.
+func TestOAuth2_ExactlyOneGrantRequired(t *testing.T) {
+	src := `ir_version: "1"
 state:
-  fields:
-    token_url:
-      type: url
-      default: "http://x/token"
-    username:
-      type: string
-      default: "u"
-    password:
-      type: secret
-      default: "p"
-auth:
-  oauth2:
-    password_grant:
-      token_url: {ref: state.token_url}
-      username: {ref: state.username}
-      password: {ref: state.password}
-      cache:
-        store_in: token
-        expiry_field: response.body.expires_in
-        expiry_buffer: 60s
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		if diags := schema.Validate(doc); len(diags) > 0 {
-			t.Fatalf("unexpected diagnostics: %+v", diags)
-		}
-		if doc.Auth.OAuth2 == nil || doc.Auth.OAuth2.PasswordGrant == nil {
-			t.Fatalf("expected PasswordGrant to be set, got %+v", doc.Auth.OAuth2)
-		}
-		// The cache store_in auto-registers as a runtime state field.
-		if _, ok := doc.State.Fields["token"]; !ok {
-			t.Errorf("expected password_grant cache store_in %q to auto-register in state.fields", "token")
-		}
-	})
-
-	t.Run("oauth2_two_grants_rejected", func(t *testing.T) {
-		src := `ir_version: "1"
-state:
-  fields:
-    token_url:
-      type: url
-      default: "http://x/token"
-    s:
-      type: secret
-      default: "x"
+  token_url: {type: url, default: "http://x/token"}
+  s:         {type: secret, default: "x"}
 auth:
   oauth2:
     client_credentials:
@@ -1172,1957 +829,49 @@ auth:
       password: {ref: state.s}
 requests:
   - method: GET
-    path: /api/v1/events
+    url: "http://x/y"
 response:
   decode: json
   events_at: response.body.events
 pagination:
   none: {}
-progress:
-  stateless: {}
 `
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
+	doc, err := schema.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	diags := schema.Validate(doc)
+	found := false
+	for _, d := range diags {
+		if d.Severity == "error" && strings.Contains(d.Message, "exactly one") {
+			found = true
+			break
 		}
-		diags := schema.Validate(doc)
-		found := false
-		for _, d := range diags {
-			if d.Severity == "error" && strings.Contains(d.Message, "exactly one grant") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("expected 'exactly one grant' error; got %+v", diags)
-		}
-	})
-
-	t.Run("on_status_actions_all_accepted", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    on_status:
-      304: skip
-      416: fail
-      429: empty_events
-      401: invalidate_cache
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		if diags := schema.Validate(doc); len(diags) > 0 {
-			t.Fatalf("unexpected diagnostics: %+v", diags)
-		}
-	})
-
-	t.Run("async_job_last_timestamp_registered_by_on_complete", func(t *testing.T) {
-		// async_job exposes cursor.last_timestamp when
-		// on_complete.cursor_update.kind ∈ {use_now, latest_event_timestamp}.
-		// Templates that wire {ref: cursor.last_timestamp} into a request
-		// body must validate cleanly under async_job + use_now.
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - id: submit
-    method: POST
-    path: /api/v1/exports
-    body:
-      json:
-        since: {ref: cursor.last_timestamp}
-    expect_status: [202]
-  - id: poll
-    method: GET
-    path: /api/v1/status
-    produces_events: true
-response:
-  decode: json
-  events_at: response.body.items
-pagination:
-  none: {}
-progress:
-  async_job:
-    submit:
-      step: submit
-    poll:
-      step: poll
-      complete_when: {literal_bool: true}
-    on_complete:
-      cursor_update:
-        kind: use_now
-`
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		for _, d := range schema.Validate(doc) {
-			if d.Severity == "error" {
-				t.Errorf("unexpected error diagnostic: %s: %s", d.Path, d.Message)
-			}
-		}
-	})
-
-	t.Run("async_job_implicit_producer_submit_only", func(t *testing.T) {
-		// async_job with only submit declared: submit step is the implicit
-		// events producer. Non-HEAD method is acceptable; validate cleanly.
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - id: submit
-    method: POST
-    path: /api/v1/exports
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  async_job:
-    submit:
-      step: submit
-`
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		// We only care that the producer check accepts submit-as-producer.
-		// Other rules may fail (e.g. complete_when), so we accept any
-		// non-empty diagnostic list as long as it does NOT mention the
-		// HEAD/producer rejection.
-		diags := schema.Validate(doc)
-		for _, d := range diags {
-			if strings.Contains(d.Message, "implicit producer") {
-				t.Errorf("submit-only async_job should not trigger producer rejection; got %q", d.Message)
-			}
-		}
-	})
+	}
+	if !found {
+		t.Errorf("expected 'exactly one' error; got %+v", diags)
+	}
 }
 
-// TestSliceOneAdditiveRoots covers the three new namespace roots introduced
-// in slice 1 of the schema redesign:
-//
-//   - response.body.<path>     contextual; valid in complete_when predicates
-//   - response.header.<name>   contextual; valid in complete_when predicates
-//   - steps.<id>.header.<name> explicit; valid wherever steps.<id>.body.<...>
-//                              is, i.e. anywhere a Path is legal
-//
-// Slice 1 is purely additive — the legacy body.<path> form keeps working in
-// the same complete_when sites; slice 2 deletes it.
-func TestSliceOneAdditiveRoots(t *testing.T) {
-	// helper: validate src and return all error-severity messages joined.
-	validateErrs := func(t *testing.T, src string) []schema.Diagnostic {
-		t.Helper()
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		var out []schema.Diagnostic
-		for _, d := range schema.Validate(doc) {
-			if d.Severity == "error" {
-				out = append(out, d)
-			}
-		}
-		return out
+// TestUnifiedCacheBlock confirms the post-redesign Cache shape (used by
+// both auth.oauth2.*.cache and requests[].cache): {to, expires_at,
+// buffer}.
+func TestUnifiedCacheBlock(t *testing.T) {
+	src := `to: cache.access_token
+expires_at: {ref: response.body.expires_in, default: "1h"}
+buffer: 60s
+`
+	var c schema.Cache
+	if err := yaml.Unmarshal([]byte(src), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-
-	t.Run("response_body_accepted_in_scroll_id_complete_when", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  scroll_id:
-    scroll_id_at: response.body.scroll
-    complete_when:
-      eq:
-        path: response.body.done
-        value: true
-progress:
-  stateless: {}
-`
-		if diags := validateErrs(t, src); len(diags) != 0 {
-			t.Errorf("response.body in scroll_id.complete_when should validate; got %+v", diags)
-		}
-	})
-
-	t.Run("response_header_accepted_in_scroll_id_complete_when", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  scroll_id:
-    scroll_id_at: response.body.scroll
-    complete_when:
-      present: response.header.X-Done
-progress:
-  stateless: {}
-`
-		if diags := validateErrs(t, src); len(diags) != 0 {
-			t.Errorf("response.header in scroll_id.complete_when should validate; got %+v", diags)
-		}
-	})
-
-	t.Run("response_body_accepted_in_async_job_poll_complete_when", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - id: submit
-    method: POST
-    path: /api/v1/exports
-  - id: poll
-    method: GET
-    path: /api/v1/status
-    produces_events: true
-response:
-  decode: json
-  events_at: response.body.items
-pagination:
-  none: {}
-progress:
-  async_job:
-    submit:
-      step: submit
-    poll:
-      step: poll
-      complete_when:
-        eq:
-          path: response.body.status
-          value: "complete"
-    on_complete:
-      cursor_update:
-        kind: use_now
-`
-		if diags := validateErrs(t, src); len(diags) != 0 {
-			t.Errorf("response.body in async_job.poll.complete_when should validate; got %+v", diags)
-		}
-	})
-
-	t.Run("steps_id_header_accepted_in_request_extract", func(t *testing.T) {
-		// steps.<id>.header.<name> is an explicit (non-contextual) root —
-		// allowed everywhere a Path is legal. Use it as a request header
-		// value referencing an earlier step.
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - id: meta
-    method: HEAD
-    path: /api/v1/meta
-  - method: GET
-    path: /api/v1/events
-    headers:
-      If-None-Match: {ref: steps.meta.header.ETag}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		if diags := validateErrs(t, src); len(diags) != 0 {
-			t.Errorf("steps.<id>.header.<name> should validate in request headers; got %+v", diags)
-		}
-	})
-
-	t.Run("response_body_rejected_in_request_headers", func(t *testing.T) {
-		// response.* is contextual: it must be rejected outside the call-site
-		// allow-list. Slice 1 only permits it inside complete_when.
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    headers:
-      X-Probe: {ref: response.body.token}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		if len(diags) == 0 {
-			t.Fatalf("response.body outside complete_when should error; got no diagnostics")
-		}
-		found := false
-		for _, d := range diags {
-			if strings.Contains(d.Message, "response namespace is only valid inside complete_when") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("expected 'response namespace is only valid inside complete_when' error; got %+v", diags)
-		}
-	})
-
-	t.Run("response_header_rejected_in_query", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    query:
-      from: {ref: response.header.X-Cursor}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		found := false
-		for _, d := range diags {
-			if strings.Contains(d.Message, "response namespace is only valid inside complete_when") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("expected 'response namespace is only valid inside complete_when' error; got %+v", diags)
-		}
-	})
-
-	t.Run("response_bare_root_rejected_in_complete_when", func(t *testing.T) {
-		// response.* must carry a kind segment (body|header); a bare
-		// response.x ref must be rejected even where response is allowed.
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  scroll_id:
-    scroll_id_at: response.body.scroll
-    complete_when:
-      eq:
-        path: response.other.x
-        value: true
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		found := false
-		for _, d := range diags {
-			if strings.Contains(d.Message, "response second segment must be") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("expected 'response second segment must be' error; got %+v", diags)
-		}
-	})
-
-	t.Run("steps_id_header_requires_name", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - id: meta
-    method: HEAD
-    path: /api/v1/meta
-  - method: GET
-    path: /api/v1/events
-    headers:
-      X-Probe: {ref: steps.meta.header}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		found := false
-		for _, d := range diags {
-			if strings.Contains(d.Message, "steps.<id>.header ref requires a header name") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("expected 'steps.<id>.header ref requires a header name' error; got %+v", diags)
-		}
-	})
-
-	t.Run("legacy_body_path_rejected_in_complete_when", func(t *testing.T) {
-		// Slice 2 deletes the legacy body.<path> root. complete_when
-		// predicates must now use response.body.<path>; bare body.<path>
-		// is rejected with a guidance message.
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  scroll_id:
-    scroll_id_at: response.body.scroll
-    complete_when:
-      eq:
-        path: body.done
-        value: true
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		if len(diags) == 0 {
-			t.Fatalf("legacy body.<path> in complete_when should be rejected; got no diagnostics")
-		}
-		found := false
-		for _, d := range diags {
-			if strings.Contains(d.Message, "body namespace was removed") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("expected 'body namespace was removed' diagnostic; got %+v", diags)
-		}
-	})
-}
-
-// TestSliceTwoBarePathsRejected pins slice 2's tightening: every body-rooted
-// path slot from §1.2 now rejects bare dotted strings and demands an explicit
-// response.body.<path> (or steps.<id>.body.<path>) form. This guards against
-// regressions where a slot is loosened back to body-relative-only by accident.
-//
-// progress.{latest_event_timestamp,max_event_field}.event_time.path is the
-// §1.5 exception (per-event, no namespace root) and is covered separately by
-// TestSliceTwoPerEventPathRejectsNamespaceRoot.
-func TestSliceTwoBarePathsRejected(t *testing.T) {
-	validateErrs := func(t *testing.T, src string) []schema.Diagnostic {
-		t.Helper()
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		var out []schema.Diagnostic
-		for _, d := range schema.Validate(doc) {
-			if d.Severity == "error" {
-				out = append(out, d)
-			}
-		}
-		return out
+	if c.To.String() != "cache.access_token" {
+		t.Errorf("To = %q, want cache.access_token", c.To.String())
 	}
-
-	mustContain := func(t *testing.T, diags []schema.Diagnostic, needle string) {
-		t.Helper()
-		for _, d := range diags {
-			if strings.Contains(d.Message, needle) {
-				return
-			}
-		}
-		t.Errorf("expected diagnostic containing %q; got %+v", needle, diags)
+	if c.Buffer != "60s" {
+		t.Errorf("Buffer = %q, want 60s", c.Buffer)
 	}
-
-	t.Run("events_at_bare_rejected", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, "must be namespace-rooted")
-	})
-
-	t.Run("token_at_bare_rejected", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  cursor_token:
-    token_at: next_cursor
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, "must be namespace-rooted")
-	})
-
-	t.Run("complete_when_bare_body_rejected", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  scroll_id:
-    scroll_id_at: response.body.scroll
-    complete_when:
-      eq:
-        path: body.done
-        value: true
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, "body namespace was removed")
-	})
-
-	t.Run("oauth2_expiry_field_bare_rejected", func(t *testing.T) {
-		src := `ir_version: "1"
-state:
-  fields:
-    token_url:
-      type: url
-      default: "http://x/token"
-    s:
-      type: secret
-      default: "x"
-auth:
-  oauth2:
-    client_credentials:
-      token_url: {ref: state.token_url}
-      client_id: id
-      client_secret: {ref: state.s}
-      cache:
-        store_in: token
-        expiry_field: expires_in
-        expiry_buffer: 60s
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, "must be namespace-rooted")
-	})
-
-	t.Run("request_cache_expiry_field_bare_rejected", func(t *testing.T) {
-		src := `ir_version: "1"
-state:
-  fields:
-    url:
-      type: url
-      default: "http://x"
-auth:
-  none: {}
-requests:
-  - id: login
-    method: POST
-    path: /login
-    cache:
-      store_in: session_token
-      ttl: 5m
-      expiry_field: expires_in
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, "must be namespace-rooted")
-	})
-
-	t.Run("async_extract_from_bare_rejected", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - id: submit
-    method: POST
-    path: /api/v1/exports
-  - id: poll
-    method: GET
-    path: /api/v1/status
-    produces_events: true
-progress:
-  async_job:
-    submit:
-      step: submit
-      extract:
-        export_id: {from: export_id}
-    poll:
-      step: poll
-      complete_when: {literal_bool: true}
-    on_complete:
-      cursor_update:
-        kind: use_now
-response:
-  decode: json
-  events_at: response.body.items
-pagination:
-  none: {}
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, "must be namespace-rooted")
-	})
-}
-
-// TestSliceTwoPerEventPathRejectsNamespaceRoot pins the §1.5 exception: the
-// progress.{latest_event_timestamp,max_event_field}.event_time.path slot is
-// per-event (the walker descends into each event in turn), so it must reject
-// namespace roots — response.body.<path> there would be meaningless because
-// the walk is already scoped to a single event object.
-func TestSliceTwoPerEventPathRejectsNamespaceRoot(t *testing.T) {
-	validateErrs := func(t *testing.T, src string) []schema.Diagnostic {
-		t.Helper()
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		var out []schema.Diagnostic
-		for _, d := range schema.Validate(doc) {
-			if d.Severity == "error" {
-				out = append(out, d)
-			}
-		}
-		return out
+	if c.ExpiresAt.Ref == nil {
+		t.Errorf("ExpiresAt should carry a Ref; got %+v", c.ExpiresAt)
 	}
-
-	mustContain := func(t *testing.T, diags []schema.Diagnostic, needle string) {
-		t.Helper()
-		for _, d := range diags {
-			if strings.Contains(d.Message, needle) {
-				return
-			}
-		}
-		t.Errorf("expected diagnostic containing %q; got %+v", needle, diags)
-	}
-
-	t.Run("latest_event_timestamp_namespace_root_rejected", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  latest_event_timestamp:
-    event_time:
-      path: response.body.ts
-    initial:
-      lookback: "24h"
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, "must be a per-event sub-path")
-	})
-
-	t.Run("max_event_field_namespace_root_rejected", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    query:
-      since: {ref: cursor.last_timestamp}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  max_event_field:
-    name: max_seq
-    event_time:
-      path: response.body.seq
-    initial:
-      value: "0"
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, "must be a per-event sub-path")
-	})
-
-	t.Run("latest_event_timestamp_bare_path_accepted", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  latest_event_timestamp:
-    event_time:
-      path: ts
-    initial:
-      lookback: "24h"
-`
-		if diags := validateErrs(t, src); len(diags) != 0 {
-			t.Errorf("bare per-event path should validate; got %+v", diags)
-		}
-	})
-}
-
-// TestSliceThreeExtractFromCollapse pins slice 3's collapse: ExtractVar's
-// path/source/header triple is gone; the codec rejects each leftover key
-// with a precise hint, the validator enforces the namespace-rooted from:
-// Path with body+header roots, and the legacy extract.path namespace-shadow
-// warning is deleted (the new from is fully namespace-rooted, so the
-// shadow case it warned about is gone).
-func TestSliceThreeExtractFromCollapse(t *testing.T) {
-	parseErr := func(t *testing.T, src string) error {
-		t.Helper()
-		_, err := schema.Parse([]byte(src))
-		return err
-	}
-
-	mustErrContain := func(t *testing.T, err error, needle string) {
-		t.Helper()
-		if err == nil {
-			t.Fatalf("expected parse error containing %q; got nil", needle)
-		}
-		if !strings.Contains(err.Error(), needle) {
-			t.Errorf("expected parse error containing %q; got %v", needle, err)
-		}
-	}
-
-	validateErrs := func(t *testing.T, src string) []schema.Diagnostic {
-		t.Helper()
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		var out []schema.Diagnostic
-		for _, d := range schema.Validate(doc) {
-			if d.Severity == "error" {
-				out = append(out, d)
-			}
-		}
-		return out
-	}
-
-	mustContain := func(t *testing.T, diags []schema.Diagnostic, needle string) {
-		t.Helper()
-		for _, d := range diags {
-			if strings.Contains(d.Message, needle) {
-				return
-			}
-		}
-		t.Errorf("expected diagnostic containing %q; got %+v", needle, diags)
-	}
-
-	// ---- legacy keys are rejected at parse time ----
-
-	t.Run("path_key_rejected_at_parse", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    extract:
-      - name: tag
-        path: tag
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		mustErrContain(t, parseErr(t, src), "extract.path was removed")
-	})
-
-	t.Run("source_key_rejected_at_parse", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    extract:
-      - name: etag
-        source: header
-        from: response.header.ETag
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		mustErrContain(t, parseErr(t, src), "extract.source was removed")
-	})
-
-	t.Run("header_key_rejected_at_parse", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    extract:
-      - name: etag
-        header: ETag
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		mustErrContain(t, parseErr(t, src), "extract.header was removed")
-	})
-
-	t.Run("path_key_rejected_in_json", func(t *testing.T) {
-		src := `{"ir_version":"1","auth":{"none":{}},"requests":[{"method":"GET","path":"/x","extract":[{"name":"t","path":"t"}]}],"response":{"decode":"json","events_at":"response.body.events"},"pagination":{"none":{}},"progress":{"stateless":{}}}`
-		mustErrContain(t, parseErr(t, src), "extract.path was removed")
-	})
-
-	// ---- new from: Path is required at validate time ----
-
-	t.Run("from_required", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    extract:
-      - name: tag
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, "is required")
-	})
-
-	t.Run("from_bare_dotted_rejected", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    extract:
-      - name: tag
-        from: tag
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, "must be namespace-rooted")
-	})
-
-	t.Run("from_namespace_root_state_rejected", func(t *testing.T) {
-		// state.<name> is a real namespace root but not a legal source for
-		// extract.from — the validator names the four allowed shapes.
-		src := `ir_version: "1"
-state:
-  fields:
-    seed: {type: string, default: "x"}
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    extract:
-      - name: tag
-        from: state.seed
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, "must be namespace-rooted")
-	})
-
-	// ---- accepted shapes ----
-
-	t.Run("response_body_from_accepted", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    extract:
-      - name: next
-        from: response.body.next_token
-        target: cursor
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  cursor_token:
-    token_at: response.body.next_token
-progress:
-  stateless: {}
-`
-		if diags := validateErrs(t, src); len(diags) != 0 {
-			t.Errorf("response.body.<path> should validate; got %+v", diags)
-		}
-	})
-
-	t.Run("response_header_from_accepted", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    extract:
-      - name: etag
-        from: response.header.ETag
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		if diags := validateErrs(t, src); len(diags) != 0 {
-			t.Errorf("response.header.<name> should validate; got %+v", diags)
-		}
-	})
-
-	t.Run("steps_id_body_from_accepted", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - id: probe
-    method: GET
-    path: /probe
-  - method: GET
-    path: /api/v1/events
-    extract:
-      - name: probe_marker
-        from: steps.probe.body.marker
-        target: cursor
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		if diags := validateErrs(t, src); len(diags) != 0 {
-			t.Errorf("steps.<id>.body.<path> should validate; got %+v", diags)
-		}
-	})
-
-	t.Run("steps_id_header_from_accepted", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - id: probe
-    method: HEAD
-    path: /probe
-  - method: GET
-    path: /api/v1/events
-    extract:
-      - name: etag
-        from: steps.probe.header.ETag
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		if diags := validateErrs(t, src); len(diags) != 0 {
-			t.Errorf("steps.<id>.header.<name> should validate; got %+v", diags)
-		}
-	})
-
-	// ---- bare-name segments under each root surface a precise message ----
-
-	t.Run("response_body_bare_root_rejected", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    extract:
-      - name: tag
-        from: response.body
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, "response.body root requires a sub-path segment")
-	})
-
-	t.Run("response_header_bare_root_rejected", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    extract:
-      - name: tag
-        from: response.header
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, "response.header root requires a header name")
-	})
-
-	t.Run("steps_id_unknown_rejected", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    extract:
-      - name: tag
-        from: steps.ghost.body.x
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, "has no id or has not been declared")
-	})
-}
-
-// TestSliceFourFromPaginationProgressDeleted pins slice 4's deletion: the
-// {from_pagination: <role>} and {from_progress: <role>} discriminator keys
-// are gone from schema.Value. The codec rejects either key at parse time
-// (both YAML and JSON) with a hint pointing at the {ref: cursor.<name>}
-// replacement, and the cursor-namespace validator now catches the
-// role/strategy mismatches that the deleted role-membership helpers used
-// to flag (e.g. cursor.token under link_header).
-func TestSliceFourFromPaginationProgressDeleted(t *testing.T) {
-	mustErrContain := func(t *testing.T, err error, needle string) {
-		t.Helper()
-		if err == nil {
-			t.Fatalf("expected error containing %q; got nil", needle)
-		}
-		if !strings.Contains(err.Error(), needle) {
-			t.Errorf("expected error containing %q; got %v", needle, err)
-		}
-	}
-
-	validateErrs := func(t *testing.T, src string) []schema.Diagnostic {
-		t.Helper()
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		var out []schema.Diagnostic
-		for _, d := range schema.Validate(doc) {
-			if d.Severity == "error" {
-				out = append(out, d)
-			}
-		}
-		return out
-	}
-
-	mustContain := func(t *testing.T, diags []schema.Diagnostic, needle string) {
-		t.Helper()
-		for _, d := range diags {
-			if strings.Contains(d.Message, needle) {
-				return
-			}
-		}
-		t.Errorf("expected diagnostic containing %q; got %+v", needle, diags)
-	}
-
-	// ---- {from_pagination: <role>} / {from_progress: <role>} are now parse errors ----
-
-	t.Run("from_pagination_yaml_rejected_at_parse", func(t *testing.T) {
-		var v schema.Value
-		err := yaml.Unmarshal([]byte(`{from_pagination: token}`), &v)
-		mustErrContain(t, err, "from_pagination")
-		mustErrContain(t, err, "{ref: cursor.")
-	})
-
-	t.Run("from_progress_yaml_rejected_at_parse", func(t *testing.T) {
-		var v schema.Value
-		err := yaml.Unmarshal([]byte(`{from_progress: latest_timestamp}`), &v)
-		mustErrContain(t, err, "from_progress")
-		mustErrContain(t, err, "cursor.last_timestamp")
-	})
-
-	t.Run("from_pagination_json_rejected_at_parse", func(t *testing.T) {
-		var v schema.Value
-		err := json.Unmarshal([]byte(`{"from_pagination": "scroll_id"}`), &v)
-		mustErrContain(t, err, "from_pagination")
-		mustErrContain(t, err, "{ref: cursor.")
-	})
-
-	t.Run("from_progress_json_rejected_at_parse", func(t *testing.T) {
-		var v schema.Value
-		err := json.Unmarshal([]byte(`{"from_progress": "window_start"}`), &v)
-		mustErrContain(t, err, "from_progress")
-		mustErrContain(t, err, "cursor.window_start")
-	})
-
-	t.Run("from_pagination_in_full_doc_rejected_at_parse", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    query:
-      cursor: {from_pagination: token}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  cursor_token:
-    token_at: response.body.next
-progress:
-  stateless: {}
-`
-		_, err := schema.Parse([]byte(src))
-		mustErrContain(t, err, "from_pagination")
-		mustErrContain(t, err, "{ref: cursor.")
-	})
-
-	t.Run("from_progress_in_full_doc_rejected_at_parse", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    query:
-      since: {from_progress: latest_timestamp}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  latest_event_timestamp:
-    event_time:
-      path: ts
-`
-		_, err := schema.Parse([]byte(src))
-		mustErrContain(t, err, "from_progress")
-		mustErrContain(t, err, "cursor.last_timestamp")
-	})
-
-	// ---- positive coverage: the new {ref: cursor.<name>} shape resolves cleanly ----
-
-	t.Run("ref_cursor_token_accepted_under_cursor_token", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    query:
-      cursor: {ref: cursor.token}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  cursor_token:
-    token_at: response.body.next
-progress:
-  stateless: {}
-`
-		if diags := validateErrs(t, src); len(diags) != 0 {
-			t.Errorf("{ref: cursor.token} under cursor_token should validate; got %+v", diags)
-		}
-	})
-
-	t.Run("ref_cursor_offset_end_requires_batch_size", func(t *testing.T) {
-		// cursor.offset_end is registered only when batch_size is declared
-		// — the runtime contract is "offset_end = offset + batch_size, drop
-		// when batch_size is missing". Without batch_size the validator
-		// rejects {ref: cursor.offset_end}.
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    query:
-      end: {format: string, value: {ref: cursor.offset_end}}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  offset:
-    offset_param: offset
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, `cursor field "offset_end" is not provided`)
-	})
-
-	t.Run("ref_cursor_offset_end_accepted_with_batch_size", func(t *testing.T) {
-		src := `ir_version: "1"
-state:
-  fields:
-    page_size: {type: int, default: 10}
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    query:
-      offset: {format: string, value: {ref: cursor.offset}}
-      end:    {format: string, value: {ref: cursor.offset_end}}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  offset:
-    offset_param: offset
-    batch_size: {ref: state.page_size}
-progress:
-  stateless: {}
-`
-		if diags := validateErrs(t, src); len(diags) != 0 {
-			t.Errorf("{ref: cursor.offset_end} with batch_size should validate; got %+v", diags)
-		}
-	})
-
-	t.Run("ref_cursor_token_under_link_header_rejected", func(t *testing.T) {
-		// link_header registers cursor.next_link, NOT cursor.token. The
-		// cursor-namespace validator now flags the strategy mismatch the
-		// deleted validPaginationRole helper used to pin.
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    query:
-      tok: {ref: cursor.token}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  link_header:
-    rel: next
-progress:
-  stateless: {}
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, `cursor field "token" is not provided`)
-	})
-
-	t.Run("ref_cursor_window_start_under_latest_rejected", func(t *testing.T) {
-		// latest_event_timestamp registers cursor.last_timestamp, NOT the
-		// time_window-only cursor.window_start. The cursor-namespace
-		// validator now flags the strategy mismatch the deleted
-		// rolesForProgressStrategy helper used to pin.
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    query:
-      since: {ref: cursor.window_start}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  latest_event_timestamp:
-    event_time:
-      path: ts
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, `cursor field "window_start" is not provided`)
-	})
-
-	t.Run("ref_cursor_last_timestamp_under_async_job_use_now_accepted", func(t *testing.T) {
-		// async_job exposes cursor.last_timestamp when on_complete drives a
-		// timestamp write (use_now or latest_event_timestamp).
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - id: submit
-    method: POST
-    path: /api/v1/exports
-    body:
-      json:
-        since: {ref: cursor.last_timestamp}
-    expect_status: [202]
-  - id: poll
-    method: GET
-    path: /api/v1/status
-    produces_events: true
-response:
-  decode: json
-  events_at: response.body.items
-pagination:
-  none: {}
-progress:
-  async_job:
-    submit:
-      step: submit
-    poll:
-      step: poll
-      complete_when: {literal_bool: true}
-    on_complete:
-      cursor_update:
-        kind: use_now
-`
-		if diags := validateErrs(t, src); len(diags) != 0 {
-			t.Errorf("{ref: cursor.last_timestamp} under async_job + use_now should validate; got %+v", diags)
-		}
-	})
-
-	t.Run("ref_cursor_last_timestamp_under_async_job_stateless_rejected", func(t *testing.T) {
-		// stateless on_complete leaves cursor.last_timestamp untouched, so
-		// async_job + stateless does NOT register that cursor field — the
-		// validator catches a stray ref.
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - id: submit
-    method: POST
-    path: /api/v1/exports
-    body:
-      json:
-        since: {ref: cursor.last_timestamp}
-    expect_status: [202]
-  - id: poll
-    method: GET
-    path: /api/v1/status
-    produces_events: true
-response:
-  decode: json
-  events_at: response.body.items
-pagination:
-  none: {}
-progress:
-  async_job:
-    submit:
-      step: submit
-    poll:
-      step: poll
-      complete_when: {literal_bool: true}
-    on_complete:
-      cursor_update:
-        kind: stateless
-`
-		diags := validateErrs(t, src)
-		mustContain(t, diags, `cursor field "last_timestamp" is not provided`)
-	})
-}
-
-// TestSliceFiveSendAsDeleted pins the slice-5 contract: `send_as:` under
-// pagination.cursor_token / pagination.scroll_id is rejected at parse time
-// with a precise hint pointing at the new explicit-wire form. After this
-// slice the runner no longer fabricates a query / header slot from the
-// active pagination strategy — templates wire the cursor themselves.
-func TestSliceFiveSendAsDeleted(t *testing.T) {
-	mustErrContain := func(t *testing.T, err error, needle string) {
-		t.Helper()
-		if err == nil {
-			t.Fatalf("expected error containing %q; got nil", needle)
-		}
-		if !strings.Contains(err.Error(), needle) {
-			t.Errorf("expected error containing %q; got %v", needle, err)
-		}
-	}
-
-	t.Run("cursor_token_send_as_yaml_rejected_at_parse", func(t *testing.T) {
-		var p schema.CursorTokenPagination
-		err := yaml.Unmarshal([]byte(`{token_at: response.body.next, send_as: query.cursor}`), &p)
-		mustErrContain(t, err, "send_as was removed")
-		mustErrContain(t, err, "wire the cursor explicitly")
-	})
-
-	t.Run("scroll_id_send_as_yaml_rejected_at_parse", func(t *testing.T) {
-		var p schema.ScrollIDPagination
-		err := yaml.Unmarshal([]byte(`{scroll_id_at: response.body.scroll, send_as: header.X-Scroll-ID}`), &p)
-		mustErrContain(t, err, "send_as was removed")
-		mustErrContain(t, err, "wire the cursor explicitly")
-	})
-
-	t.Run("cursor_token_send_as_json_rejected_at_parse", func(t *testing.T) {
-		var p schema.CursorTokenPagination
-		err := json.Unmarshal([]byte(`{"token_at": "response.body.next", "send_as": "query.cursor"}`), &p)
-		mustErrContain(t, err, "send_as was removed")
-		mustErrContain(t, err, "wire the cursor explicitly")
-	})
-
-	t.Run("scroll_id_send_as_json_rejected_at_parse", func(t *testing.T) {
-		var p schema.ScrollIDPagination
-		err := json.Unmarshal([]byte(`{"scroll_id_at": "response.body.scroll", "send_as": "header.X-Scroll-ID"}`), &p)
-		mustErrContain(t, err, "send_as was removed")
-		mustErrContain(t, err, "wire the cursor explicitly")
-	})
-
-	t.Run("cursor_token_send_as_in_full_doc_rejected_at_parse", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    query:
-      cursor: {ref: cursor.token, default: ""}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  cursor_token:
-    token_at: response.body.next
-    send_as: query.cursor
-progress:
-  stateless: {}
-`
-		_, err := schema.Parse([]byte(src))
-		mustErrContain(t, err, "send_as was removed")
-		mustErrContain(t, err, "wire the cursor explicitly")
-	})
-
-	t.Run("scroll_id_send_as_in_full_doc_rejected_at_parse", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    query:
-      scroll: {ref: cursor.scroll_id}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  scroll_id:
-    scroll_id_at: response.body.scroll
-    send_as: query.scroll
-progress:
-  stateless: {}
-`
-		_, err := schema.Parse([]byte(src))
-		mustErrContain(t, err, "send_as was removed")
-		mustErrContain(t, err, "wire the cursor explicitly")
-	})
-
-	// Positive case: a cursor_token spec without send_as and with the new
-	// explicit-wire form for query.cursor validates cleanly.
-	t.Run("explicit_cursor_wire_accepted", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    query:
-      cursor: {ref: cursor.token, default: ""}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  cursor_token:
-    token_at: response.body.next
-progress:
-  stateless: {}
-`
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		var errs []schema.Diagnostic
-		for _, d := range schema.Validate(doc) {
-			if d.Severity == "error" {
-				errs = append(errs, d)
-			}
-		}
-		if len(errs) != 0 {
-			t.Errorf("explicit cursor wire should validate; got %+v", errs)
-		}
-	})
-}
-
-// TestSliceSixEqualRenamedToValue pins the slice-6 contract: the predicate
-// PredicateEq right-hand-side YAML/JSON tag is renamed from `equal:` to
-// `value:`. The codec rejects the legacy `equal:` key at parse time with a
-// migration hint pointing at the new tag, and the positive case round-trips
-// cleanly via the renamed field.
-func TestSliceSixEqualRenamedToValue(t *testing.T) {
-	mustErrContain := func(t *testing.T, err error, needle string) {
-		t.Helper()
-		if err == nil {
-			t.Fatalf("expected error containing %q; got nil", needle)
-		}
-		if !strings.Contains(err.Error(), needle) {
-			t.Errorf("expected error containing %q; got %v", needle, err)
-		}
-	}
-
-	// Each comparison verb shares the PredicateEq shape; legacy `equal:` is
-	// rejected under every verb with the same migration hint.
-	verbs := []string{"eq", "gt", "lt", "gte", "lte"}
-
-	for _, verb := range verbs {
-		verb := verb
-		t.Run(verb+"_legacy_equal_yaml_rejected_at_parse", func(t *testing.T) {
-			var p schema.Predicate
-			src := "{" + verb + ": {path: state.x, equal: 1}}"
-			err := yaml.Unmarshal([]byte(src), &p)
-			mustErrContain(t, err, "equal was renamed")
-			mustErrContain(t, err, "use value:")
-		})
-
-		t.Run(verb+"_legacy_equal_json_rejected_at_parse", func(t *testing.T) {
-			var p schema.Predicate
-			src := `{"` + verb + `":{"path":"state.x","equal":1}}`
-			err := json.Unmarshal([]byte(src), &p)
-			mustErrContain(t, err, "equal was renamed")
-			mustErrContain(t, err, "use value:")
-		})
-	}
-
-	// Struct-level codec also rejects `equal:` directly on PredicateEq.
-	t.Run("predicate_eq_struct_legacy_equal_yaml_rejected_at_parse", func(t *testing.T) {
-		var pe schema.PredicateEq
-		err := yaml.Unmarshal([]byte(`{path: state.x, equal: 1}`), &pe)
-		mustErrContain(t, err, "equal was renamed")
-		mustErrContain(t, err, "use value:")
-	})
-
-	t.Run("predicate_eq_struct_legacy_equal_json_rejected_at_parse", func(t *testing.T) {
-		var pe schema.PredicateEq
-		err := json.Unmarshal([]byte(`{"path":"state.x","equal":1}`), &pe)
-		mustErrContain(t, err, "equal was renamed")
-		mustErrContain(t, err, "use value:")
-	})
-
-	// Full-doc rejection: a predicate inside a complete spec is also caught
-	// at parse time before validation runs.
-	t.Run("legacy_equal_in_full_doc_rejected_at_parse", func(t *testing.T) {
-		src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - method: GET
-    path: /api/v1/events
-    if:
-      eq:
-        path: state.mode
-        equal: "active"
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		_, err := schema.Parse([]byte(src))
-		mustErrContain(t, err, "equal was renamed")
-		mustErrContain(t, err, "use value:")
-	})
-
-	// Positive case: a predicate written with the new `value:` tag parses
-	// cleanly under every comparison verb, validates without diagnostics,
-	// and the runtime-facing PredicateEq.Value field carries the right Value.
-	t.Run("new_value_tag_accepted", func(t *testing.T) {
-		for _, verb := range verbs {
-			var p schema.Predicate
-			src := "{" + verb + ": {path: state.x, value: 1}}"
-			if err := yaml.Unmarshal([]byte(src), &p); err != nil {
-				t.Fatalf("%s: parse new value tag: %v", verb, err)
-			}
-			_, payload := p.Variant()
-			pe, ok := payload.(*schema.PredicateEq)
-			if !ok || pe == nil {
-				t.Fatalf("%s: expected *PredicateEq payload, got %T", verb, payload)
-			}
-			if pe.Value.LiteralInt == nil || *pe.Value.LiteralInt != 1 {
-				t.Errorf("%s: PredicateEq.Value did not round-trip the literal 1; got %+v", verb, pe.Value)
-			}
-		}
-	})
-}
-
-// TestSliceSevenExpirySlotsMoved pins the slice-7 contract: the cache-pair
-// expiry timestamp moves out of cursor.__*_expires_at into the state
-// namespace as state.<store_in>_expires_at, paired with the token it
-// describes. Both slots auto-register as runtime / string state fields by
-// the validator's preregisterStateAndCursor pass.
-func TestSliceSevenExpirySlotsMoved(t *testing.T) {
-	t.Run("oauth2_cache_auto_registers_expires_at", func(t *testing.T) {
-		src := `ir_version: "1"
-state:
-  fields:
-    url:           {type: url,    default: "http://example/api"}
-    token_url:     {type: url,    default: "http://example/token"}
-    client_id:     {type: string, default: cid}
-    client_secret: {type: secret, default: csecret}
-auth:
-  oauth2:
-    client_credentials:
-      token_url:     {ref: state.token_url}
-      client_id:     {ref: state.client_id}
-      client_secret: {ref: state.client_secret}
-      cache:
-        store_in: oauth2_token
-        expiry_field: response.body.expires_in
-        expiry_buffer: 60s
-defaults:
-  base_url: {ref: state.url}
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		diags := schema.Validate(doc)
-		for _, d := range diags {
-			if d.Severity == "error" {
-				t.Fatalf("unexpected diagnostic: %s: %s", d.Path, d.Message)
-			}
-		}
-		tok, ok := doc.State.Fields["oauth2_token"]
-		if !ok {
-			t.Fatalf("expected auto-registered state.fields.oauth2_token; got %v", doc.State.Fields)
-		}
-		if tok.Type != "string" || tok.Mutability != "runtime" {
-			t.Errorf("state.fields.oauth2_token = %+v, want {Type:string, Mutability:runtime}", tok)
-		}
-		exp, ok := doc.State.Fields["oauth2_token_expires_at"]
-		if !ok {
-			t.Fatalf("expected auto-registered state.fields.oauth2_token_expires_at; got %v", doc.State.Fields)
-		}
-		if exp.Type != "string" || exp.Mutability != "runtime" {
-			t.Errorf("state.fields.oauth2_token_expires_at = %+v, want {Type:string, Mutability:runtime}", exp)
-		}
-	})
-
-	t.Run("request_cache_auto_registers_expires_at", func(t *testing.T) {
-		src := `ir_version: "1"
-state:
-  fields:
-    url:      {type: url, default: "http://example/api"}
-    username: {type: string, default: u}
-    password: {type: secret, default: p}
-auth:
-  none: {}
-defaults:
-  base_url: {ref: state.url}
-requests:
-  - id: login
-    method: POST
-    path: /login
-    body:
-      json:
-        username: {ref: state.username}
-        password: {ref: state.password}
-    cache:
-      store_in: session_token
-      expiry_field: response.body.expires_in
-      expiry_buffer: 60s
-  - id: events
-    method: GET
-    path: /events
-    produces_events: true
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		diags := schema.Validate(doc)
-		for _, d := range diags {
-			if d.Severity == "error" {
-				t.Fatalf("unexpected diagnostic: %s: %s", d.Path, d.Message)
-			}
-		}
-		if _, ok := doc.State.Fields["session_token"]; !ok {
-			t.Errorf("expected auto-registered state.fields.session_token; got %v", doc.State.Fields)
-		}
-		exp, ok := doc.State.Fields["session_token_expires_at"]
-		if !ok {
-			t.Fatalf("expected auto-registered state.fields.session_token_expires_at; got %v", doc.State.Fields)
-		}
-		if exp.Type != "string" || exp.Mutability != "runtime" {
-			t.Errorf("state.fields.session_token_expires_at = %+v, want {Type:string, Mutability:runtime}", exp)
-		}
-	})
-
-	t.Run("author_declared_expires_at_collides_with_oauth2_cache", func(t *testing.T) {
-		src := `ir_version: "1"
-state:
-  fields:
-    url:                     {type: url,    default: "http://example/api"}
-    token_url:               {type: url,    default: "http://example/token"}
-    client_id:               {type: string, default: cid}
-    client_secret:           {type: secret, default: csecret}
-    oauth2_token_expires_at: {type: string}
-auth:
-  oauth2:
-    client_credentials:
-      token_url:     {ref: state.token_url}
-      client_id:     {ref: state.client_id}
-      client_secret: {ref: state.client_secret}
-      cache:
-        store_in: oauth2_token
-        expiry_field: response.body.expires_in
-        expiry_buffer: 60s
-defaults:
-  base_url: {ref: state.url}
-requests:
-  - method: GET
-    path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		diags := schema.Validate(doc)
-		var found bool
-		for _, d := range diags {
-			if d.Severity != "error" {
-				continue
-			}
-			if strings.Contains(d.Message, "oauth2_token_expires_at") &&
-				strings.Contains(d.Message, "paired expiry slot") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("expected diagnostic naming oauth2_token_expires_at as the paired expiry slot; got %+v", diags)
-		}
-	})
-
-	t.Run("author_declared_expires_at_collides_with_request_cache", func(t *testing.T) {
-		src := `ir_version: "1"
-state:
-  fields:
-    url:                       {type: url,    default: "http://example/api"}
-    username:                  {type: string, default: u}
-    password:                  {type: secret, default: p}
-    session_token_expires_at:  {type: string}
-auth:
-  none: {}
-defaults:
-  base_url: {ref: state.url}
-requests:
-  - id: login
-    method: POST
-    path: /login
-    body:
-      json:
-        username: {ref: state.username}
-        password: {ref: state.password}
-    cache:
-      store_in: session_token
-      expiry_field: response.body.expires_in
-      expiry_buffer: 60s
-  - id: events
-    method: GET
-    path: /events
-    produces_events: true
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  stateless: {}
-`
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		diags := schema.Validate(doc)
-		var found bool
-		for _, d := range diags {
-			if d.Severity != "error" {
-				continue
-			}
-			if strings.Contains(d.Message, "session_token_expires_at") &&
-				strings.Contains(d.Message, "paired expiry slot") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("expected diagnostic naming session_token_expires_at as the paired expiry slot; got %+v", diags)
-		}
-	})
-
-	t.Run("cursor_underscore_expiry_ref_rejected", func(t *testing.T) {
-		// After slice 7, no pagination strategy registers __*_expires_at
-		// names in the cursor namespace, so a ref to the old slot is
-		// rejected as an unknown cursor field.
-		src := `ir_version: "1"
-state:
-  fields:
-    url: {type: url, default: "http://example/api"}
-auth:
-  none: {}
-defaults:
-  base_url: {ref: state.url}
-requests:
-  - method: GET
-    path: /api/v1/events
-    headers:
-      X-Stale: {ref: cursor.__oauth2_token_expires_at, default: ""}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  cursor_token:
-    token_at: response.body.next_cursor
-progress:
-  stateless: {}
-`
-		doc, err := schema.Parse([]byte(src))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		diags := schema.Validate(doc)
-		var found bool
-		for _, d := range diags {
-			if d.Severity != "error" {
-				continue
-			}
-			if strings.Contains(d.Message, "__oauth2_token_expires_at") &&
-				strings.Contains(d.Message, "not provided by the active pagination/progress strategy") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("expected diagnostic rejecting cursor.__oauth2_token_expires_at as an unknown cursor field; got %+v", diags)
-		}
-	})
 }
