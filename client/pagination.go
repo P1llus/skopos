@@ -4,626 +4,365 @@ package client
 
 import (
 	"fmt"
-	"net/http"
-	"regexp"
-	"strings"
 
 	"github.com/p1llus/skopos/schema"
 )
 
-// Note on pagination send-back: every paginating template wires its cursor
-// explicitly into the producer step's request — `query: {cursor: {ref:
-// cursor.token, default: ""}}` for cursor_token, `query: {scroll: {ref:
-// cursor.scroll_id}}` for scroll_id, and the equivalent {ref: cursor.<name>}
-// declaration for every other variant. Slice 5 deleted the implicit
-// `send_as` auto-injector; the runtime no longer fabricates a query / header
-// slot from the active pagination strategy. The paginationPlan interface
-// below carries seed / advance only.
+// Pagination drives the per-drain page loop. The active variant is chosen
+// by a discriminated union on the document's pagination: block — four
+// named variants plus the primitive custom: form:
+//
+//	none           Exactly one page per drain. No advance writes.
+//	cursor_token   Read a next-cursor token from a body or header field
+//	               and write it to state.<name>. Default termination:
+//	               the source field resolves to absent / empty.
+//	next_url       Read a fully-formed next-page URL from a body or
+//	               header field, optionally apply a regex / capture
+//	               group, and write to state.<name>. Default
+//	               termination: the (post-regex) value resolves to
+//	               absent / empty.
+//	counter        Maintain a client-incremented counter in state.<name>:
+//	               (current or start) + step per accepted page. Default
+//	               termination: events.count < step (short-page detection).
+//	custom         A list of {to, from, regex?, coerce?} writes plus an
+//	               author-supplied terminate_when predicate (required).
+//	               No default termination.
+//
+// # Per-page execution order
+//
+// One pagination iteration is one page. The runner binds scope.events,
+// scope.body, and scope.responseHeaders against the producer step's
+// response before calling advance. Each advance call follows the fixed
+// order documented in docs/runtime.md §3:
+//
+//  1. Evaluate terminate_when (author-supplied or variant default)
+//     against response.* and the pre-advance state.*. If true, return
+//     terminate=true — the runner stops the loop, no advance writes fire
+//     for this page.
+//  2. Otherwise, apply the variant's writes to state.<name>. The runner
+//     issues the next request and the cycle repeats.
+//
+// # Per-drain scratch state
+//
+// Every named variant's to: destination — and every custom.advance[].to —
+// is a per-drain state.<name> field. The runner wipes those fields at
+// drain start via (*scope).resetPerDrainScratch; pagination itself does
+// not seed. A drain that fails mid-page therefore re-bootstraps on the
+// next start.
+//
+// # MaxPages cap
+//
+// The runner enforces the document-level MaxPages ceiling. A pagination
+// plan that loops indefinitely (buggy server, mis-spelled termination
+// path) surfaces as an "iteration cap exceeded" diagnostic from the
+// runner; the plans here keep their error wraps prefixed by their
+// variant name so the eventual diagnostic identifies which plan was
+// active.
 
-// paginationPlan describes the active pagination strategy for one drain.
-// It has two responsibilities:
-//
-//  1. seed scope.cursor at the start of each iteration so
-//     {ref: cursor.<name>} Values resolve to the right value. Strategies
-//     that don't have anything to seed (their cursor names are written
-//     only by advance) implement seed as a no-op.
-//  2. advance(...) after the producer step completes, mutating cursor and
-//     returning want_more.
-//
-// # Strategy catalogue and cursor name contract
-//
-// The cursor names referenced by {ref: cursor.<name>} in a template are
-// resolved against scope.cursor, which each plan populates in seed +
-// advance. The cursor names are strategy-specific:
-//
-//	none              (no cursor names — pagination is a single GET.)
-//	cursor_token      "token"      (absent on first iteration; advance writes
-//	                               only after a non-zero token_at value.)
-//	page_number       "page"       (defaults to 1 on first iteration; advance
-//	                               increments.)
-//	offset            "offset"     (defaults to 0 on first iteration; advance
-//	                               bumps by batch_size or observed event count.)
-//	                  "offset_end" (offset + batch_size; only present when
-//	                               batch_size is declared and evaluates cleanly
-//	                               — seed writes it alongside cursor.offset.)
-//	link_header       "next_link"  (absent on first iteration. Templates read it
-//	                               via {ref: cursor.next_link, default: <initial_url>}
-//	                               in the request's url slot.)
-//	next_url_in_body  "next_url"   (same template shape as link_header but
-//	                               sourced from a body path rather than the
-//	                               Link header.)
-//	scroll_id         "scroll_id"  (absent on first iteration so the bootstrap
-//	                               request opens a new scroll session;
-//	                               subsequent pages reuse the server-supplied id.
-//	                               Termination: complete_when wins when set;
-//	                               otherwise scroll_id_at resolving to a zero
-//	                               Value ends the drain.)
-//	graphql_relay     <cursor_var> (cursor name is author-declared via
-//	                               cfg.CursorVar — typically "after"; absent on
-//	                               first iteration so the GraphQL variable rides
-//	                               as null. Termination: has_next_page_at drives
-//	                               the drain — false terminates, true captures
-//	                               end_cursor_at into cursor.<cursor_var>.)
-//
-// Authors of a new pagination variant should document the cursor names
-// their seed() / advance() write here AND in the variant's own comment so
-// template authors have a single place to look.
+// paginationPlan describes the active pagination variant for one drain.
+// advance is called once per page-response, after the runner has bound
+// the producer step's events, body, and headers into the scope. It
+// returns terminate=true when the loop should exit before the next page
+// request, or terminate=false after writing the variant's advance
+// writes to scope.state.
 type paginationPlan interface {
-	// seed performs any per-iteration cursor writes the strategy needs
-	// before the producer step's request bodies / queries are evaluated.
-	// Strategies whose cursor names are written only by advance
-	// (cursor_token, scroll_id, link_header, next_url_in_body,
-	// graphql_relay) implement this as a no-op.
-	seed(s *scope)
-	// advance updates scope.cursor from the producer-step result and
-	// returns whether the loop should fetch another page. Called once per
-	// iteration after the producer step's body is decoded.
-	//
-	// producerHeaders is the producer step's full response.Header — link_header
-	// reads the Link header from it; body-cursor variants ignore it. nil is
-	// allowed (an error-mode=warn iteration that decoded no body, for example).
-	advance(s *scope, producerBody any, producerHeaders http.Header, events []any) (bool, error)
+	advance(s *scope) (terminate bool, err error)
 }
 
-// makePaginationPlan returns the driver for the document's active strategy.
-// Unsupported variants are explicit errors so authors know the runner needs
-// an additive PR or a code-emitting backend.
+// makePaginationPlan returns the driver for the document's active
+// pagination variant. The validator guarantees exactly one variant key
+// is set; the defensive default arm here surfaces a clear error if a
+// future Pagination field is added without a matching plan.
 func makePaginationPlan(doc *schema.Doc) (paginationPlan, error) {
 	switch {
 	case doc.Pagination.None != nil:
 		return &nonePagination{}, nil
 	case doc.Pagination.CursorToken != nil:
 		return &cursorTokenPagination{cfg: doc.Pagination.CursorToken}, nil
-	case doc.Pagination.PageNumber != nil:
-		return &pageNumberPagination{cfg: doc.Pagination.PageNumber}, nil
-	case doc.Pagination.Offset != nil:
-		return &offsetPagination{cfg: doc.Pagination.Offset}, nil
-	case doc.Pagination.LinkHeader != nil:
-		return newLinkHeaderPagination(doc.Pagination.LinkHeader)
-	case doc.Pagination.NextURLInBody != nil:
-		return &nextURLInBodyPagination{cfg: doc.Pagination.NextURLInBody}, nil
-	case doc.Pagination.ScrollID != nil:
-		return &scrollIDPagination{cfg: doc.Pagination.ScrollID}, nil
-	case doc.Pagination.GraphQLRelay != nil:
-		return &graphQLRelayPagination{cfg: doc.Pagination.GraphQLRelay}, nil
+	case doc.Pagination.NextURL != nil:
+		return &nextURLPagination{cfg: doc.Pagination.NextURL}, nil
+	case doc.Pagination.Counter != nil:
+		return &counterPagination{cfg: doc.Pagination.Counter}, nil
+	case doc.Pagination.Custom != nil:
+		return &customPagination{cfg: doc.Pagination.Custom}, nil
 	}
 	return nil, fmt.Errorf("pagination: no variant set")
 }
 
 // ---- none ----
 
+// nonePagination yields exactly one page per drain. advance always
+// returns terminate=true so the runner stops after the first response.
+// No writes fire.
 type nonePagination struct{}
 
-func (p *nonePagination) seed(*scope) {}
-func (p *nonePagination) advance(*scope, any, http.Header, []any) (bool, error) {
-	return false, nil
+func (p *nonePagination) advance(_ *scope) (bool, error) {
+	return true, nil
 }
 
 // ---- cursor_token ----
+
+// cursorTokenPagination reads a next-cursor token from response.body,
+// response.header, or steps.<id>.{body|header} and writes it to
+// state.<name>. The default termination predicate fires when the source
+// path resolves to absent / empty; authors override with terminate_when
+// when the server signals end-of-stream by other means.
 //
-// The template wires {ref: cursor.token} at the request slot of its choice
-// (typically a query parameter). cursor.token is written by advance() after
-// the first response; the first iteration sees an absent cursor.token, so
-// {ref: cursor.token} resolves to nil and the slot is skipped — unless the
-// template adds {default: ""} for servers that require an explicit empty
-// cursor on the bootstrap request.
+// On every accepted page the loop reads state.<name> back via a
+// {ref: state.<name>, default: ...} Value at the request's slot of
+// choice — the first iteration falls through to the ref's default
+// because the per-drain wipe leaves state.<name> unset at drain start.
 type cursorTokenPagination struct {
 	cfg *schema.CursorTokenPagination
 }
 
-func (p *cursorTokenPagination) seed(*scope) {
-	// cursor.token is written by advance() after the first response — there
-	// is nothing to seed. First iteration: cursor.token is absent, so
-	// {ref: cursor.token} resolves to nil and the slot is skipped (or
-	// resolves to the template's {default: ...} branch).
-}
-
-func (p *cursorTokenPagination) advance(s *scope, body any, _ http.Header, _ []any) (bool, error) {
-	got, ok, err := s.resolveBodyPath(body, p.cfg.TokenAt)
+func (p *cursorTokenPagination) advance(s *scope) (bool, error) {
+	got, ok, err := s.resolveNamespaceRef(p.cfg.From)
 	if err != nil {
-		return false, fmt.Errorf("pagination.cursor_token.token_at: %w", err)
-	}
-	if !ok || isZeroRuntime(got) {
-		// cursor_token terminates when token_at resolves to a zero Value.
-		// Clear the cursor so the next drain starts fresh.
-		delete(s.cursor, "token")
-		return false, nil
-	}
-	s.cursor["token"] = got
-	return true, nil
-}
-
-// ---- page_number ----
-
-type pageNumberPagination struct {
-	cfg *schema.PageNumberPagination
-}
-
-func (p *pageNumberPagination) seed(s *scope) {
-	// First iteration: cursor.page absent → seed 1 by convention so
-	// {ref: cursor.page} resolves to the bootstrap page number.
-	// Subsequent iterations use whatever advance() last wrote.
-	if _, ok := s.cursor["page"]; !ok {
-		s.cursor["page"] = int64(1)
-	}
-}
-
-func (p *pageNumberPagination) advance(s *scope, body any, _ http.Header, events []any) (bool, error) {
-	cur, _ := asInt64(s.cursor["page"])
-	if cur == 0 {
-		cur = 1
+		return false, fmt.Errorf("pagination.cursor_token.from: %w", err)
 	}
 
-	// has_more_at takes precedence when set: false → stop, true → advance.
-	if !p.cfg.HasMoreAt.IsEmpty() {
-		got, ok, err := s.resolveBodyPath(body, p.cfg.HasMoreAt)
-		if err != nil {
-			return false, fmt.Errorf("pagination.page_number.has_more_at: %w", err)
-		}
-		if !ok {
-			// No signal → assume stop. Conservative; aligns with the spec's
-			// "missing field is a zero Value" rule.
-			return false, nil
-		}
-		more, err := toBool(got)
-		if err != nil {
-			return false, fmt.Errorf("pagination.page_number.has_more_at: %w", err)
-		}
-		if !more {
-			// Reset for next drain.
-			s.cursor["page"] = int64(1)
-			return false, nil
-		}
-		s.cursor["page"] = cur + 1
+	done, err := p.terminate(s, got, ok)
+	if err != nil {
+		return false, err
+	}
+	if done {
 		return true, nil
 	}
 
-	// No has_more_at signal: stop when the page came back empty, or when
-	// batch_size is set and we got fewer events than that. Otherwise
-	// advance optimistically.
-	if len(events) == 0 {
-		s.cursor["page"] = int64(1)
-		return false, nil
-	}
-	if p.cfg.BatchSize != nil {
-		got, err := s.evalValue(*p.cfg.BatchSize)
-		if err != nil {
-			return false, fmt.Errorf("pagination.page_number.batch_size: %w", err)
-		}
-		bs, err := toInt(got)
-		if err != nil {
-			return false, fmt.Errorf("pagination.page_number.batch_size: %w", err)
-		}
-		if int64(len(events)) < bs {
-			s.cursor["page"] = int64(1)
-			return false, nil
-		}
-	}
-	s.cursor["page"] = cur + 1
-	return true, nil
-}
-
-// ---- offset ----
-
-type offsetPagination struct {
-	cfg *schema.OffsetPagination
-}
-
-func (p *offsetPagination) seed(s *scope) {
-	// First iteration: cursor.offset absent → seed 0 by convention so
-	// {ref: cursor.offset} resolves to the bootstrap offset. Subsequent
-	// iterations use whatever advance() last wrote.
-	cur, ok := s.cursor["offset"]
-	if !ok {
-		cur = int64(0)
-		s.cursor["offset"] = cur
-	}
-
-	// cursor.offset_end = offset + batch_size; written for APIs that take
-	// an exclusive end index. Only resolvable when batch_size is declared
-	// AND evaluates cleanly. Templates that don't declare batch_size never
-	// reference cursor.offset_end (cursorSchema rejects the ref at validate
-	// time when batch_size is unset).
-	//
-	// On an eval failure here we drop cursor.offset_end and continue. The
-	// same error re-surfaces from advance() and becomes the iteration's
-	// canonical failure point — UNLESS the page comes back empty, in which
-	// case advance()'s empty-page short-circuit terminates before
-	// re-evaluating batch_size. The log breadcrumb here is the operator's
-	// only signal that the misshapen offset_end on the bootstrap request
-	// was deliberate-but-broken rather than just absent.
-	if p.cfg.BatchSize == nil {
-		delete(s.cursor, "offset_end")
-		return
-	}
-	bs, err := evalOffsetBatchSize(s, *p.cfg.BatchSize)
+	name, err := paginationStateField(p.cfg.To)
 	if err != nil {
-		delete(s.cursor, "offset_end")
-		if s.logger != nil {
-			s.logger.Printf("client: pagination.offset.batch_size eval failed in seed (cursor.offset_end dropped from this iteration): %v", err)
-		}
-		return
+		return false, fmt.Errorf("pagination.cursor_token.to: %w", err)
 	}
-	curInt, _ := asInt64(cur)
-	s.cursor["offset_end"] = curInt + bs
+	s.state[name] = got
+	return false, nil
 }
 
-func (p *offsetPagination) advance(s *scope, _ any, _ http.Header, events []any) (bool, error) {
-	cur, _ := asInt64(s.cursor["offset"])
+func (p *cursorTokenPagination) terminate(s *scope, from any, fromOK bool) (bool, error) {
+	if p.cfg.TerminateWhen != nil {
+		done, err := s.evalPredicate(*p.cfg.TerminateWhen)
+		if err != nil {
+			return false, fmt.Errorf("pagination.cursor_token.terminate_when: %w", err)
+		}
+		return done, nil
+	}
+	return !fromOK || from == nil || isZeroRuntime(from), nil
+}
 
-	// Empty page ends the stream. Reset to 0 so the next drain starts
-	// fresh from the top (mirrors page_number's terminate-and-reset).
-	if len(events) == 0 {
-		s.cursor["offset"] = int64(0)
-		return false, nil
+// ---- next_url ----
+
+// nextURLPagination reads a fully-formed next-page URL from a body or
+// header field. When regex: is set, the resolved string is reduced to
+// the named capture group before writing — the canonical use is the
+// `<url>; rel="next"` Link-header shape, where capture: 1 picks the URL.
+//
+// The default termination predicate fires when the post-regex value
+// resolves to absent / empty: an unmatched regex therefore terminates
+// the loop the same way a missing field does. Authors who want to
+// distinguish "header missing" from "regex didn't match" override with
+// terminate_when.
+type nextURLPagination struct {
+	cfg *schema.NextURLPagination
+}
+
+func (p *nextURLPagination) advance(s *scope) (bool, error) {
+	got, ok, err := s.resolveNamespaceRef(p.cfg.From)
+	if err != nil {
+		return false, fmt.Errorf("pagination.next_url.from: %w", err)
 	}
 
-	if p.cfg.BatchSize != nil {
-		bs, err := evalOffsetBatchSize(s, *p.cfg.BatchSize)
+	if p.cfg.Regex != "" && got != nil {
+		matched, err := s.applyRegex(p.cfg.Regex, toString(got), p.cfg.Capture, nil)
 		if err != nil {
-			return false, fmt.Errorf("pagination.offset.batch_size: %w", err)
+			return false, fmt.Errorf("pagination.next_url.regex: %w", err)
 		}
-		// Short page = end of stream. Same shape as page_number's
-		// batch_size short-page termination.
-		if int64(len(events)) < bs {
-			s.cursor["offset"] = int64(0)
-			return false, nil
-		}
-		s.cursor["offset"] = cur + bs
+		got = matched
+		ok = got != nil
+	}
+
+	done, err := p.terminate(s, got, ok)
+	if err != nil {
+		return false, err
+	}
+	if done {
 		return true, nil
 	}
 
-	// No batch_size declared: advance by the observed event count. That's
-	// the only authoritative "where the next page starts" signal available
-	// when the IR doesn't carry the requested page size.
-	s.cursor["offset"] = cur + int64(len(events))
-	return true, nil
-}
-
-// evalOffsetBatchSize centralises the batch_size eval + int coerce so seed()
-// and advance() can't drift on coercion rules.
-func evalOffsetBatchSize(s *scope, v schema.Value) (int64, error) {
-	got, err := s.evalValue(v)
+	name, err := paginationStateField(p.cfg.To)
 	if err != nil {
-		return 0, err
+		return false, fmt.Errorf("pagination.next_url.to: %w", err)
 	}
-	return toInt(got)
+	s.state[name] = got
+	return false, nil
 }
 
-// ---- link_header ----
-//
-// link_header follows RFC 5988 Link headers: every response carries a
-// comma-delimited list of <URI>; rel="<rel>"[; ...] entries, and the next
-// page sits behind rel="next". The runner parses the producer step's
-// response.Header["Link"] for that entry and stashes the URL in
-// cursor.next_link. Templates read it back via the standard Value forms —
-// the natural shape is the request's url slot set to {ref: cursor.next_link,
-// default: <initial_url>}, so the first iteration uses the bootstrap URL
-// and every subsequent iteration follows the server's link.
-//
-// Termination: the loop stops when the producer response carries no Link
-// header at all, no rel="next" entry, or an entry whose URI is empty. On
-// any of those, cursor.next_link is cleared so the next drain starts from
-// the bootstrap URL again.
-//
-// The optional pattern field is a Go-flavoured regex applied to the joined
-// Link header value; its first capture group is taken as the next URL.
-// Empty pattern means "RFC 5988 default": split on commas, find the
-// <URI>; rel="next" entry, return the URI. Pattern is compiled once at
-// plan construction so a bad regex surfaces before any HTTP traffic.
-type linkHeaderPagination struct {
-	cfg     *schema.LinkHeaderPagination
-	pattern *regexp.Regexp
-}
-
-func newLinkHeaderPagination(cfg *schema.LinkHeaderPagination) (*linkHeaderPagination, error) {
-	p := &linkHeaderPagination{cfg: cfg}
-	if cfg.Pattern != "" {
-		re, err := regexp.Compile(cfg.Pattern)
+func (p *nextURLPagination) terminate(s *scope, from any, fromOK bool) (bool, error) {
+	if p.cfg.TerminateWhen != nil {
+		done, err := s.evalPredicate(*p.cfg.TerminateWhen)
 		if err != nil {
-			return nil, fmt.Errorf("pagination.link_header.pattern: %w", err)
+			return false, fmt.Errorf("pagination.next_url.terminate_when: %w", err)
 		}
-		p.pattern = re
+		return done, nil
 	}
-	return p, nil
+	return !fromOK || from == nil || isZeroRuntime(from), nil
 }
 
-func (p *linkHeaderPagination) seed(*scope) {
-	// cursor.next_link is written by advance() after the first response —
-	// nothing to seed. First iteration: cursor.next_link is absent, so the
-	// template's {ref: cursor.next_link, default: <bootstrap_url>} branch
-	// wins.
-}
+// ---- counter ----
 
-func (p *linkHeaderPagination) advance(s *scope, _ any, headers http.Header, _ []any) (bool, error) {
-	next := parseNextLink(headers.Values("Link"), p.pattern)
-	if next == "" {
-		// No rel="next" → end of stream. Clear cursor.next_link so the
-		// NEXT drain starts from the bootstrap URL again (mirrors the
-		// reset behaviour of cursor_token / offset / page_number).
-		delete(s.cursor, "next_link")
-		return false, nil
-	}
-	s.cursor["next_link"] = next
-	return true, nil
-}
-
-// parseNextLink scans a multi-value Link header for a rel="next" entry and
-// returns the URL (without surrounding angle brackets). Returns "" if no
-// rel="next" entry is present or the header is empty.
+// counterPagination maintains a client-incremented counter at
+// state.<name>. Each accepted page writes (current or start) + step;
+// the first iteration treats an unset state field as start, so authors
+// can choose between declaring state.<name>.default: <start> (wipe
+// seeds the field) or reading it back with {ref: state.<name>,
+// default: <start>} at the request slot. Both shapes converge on the
+// same iteration sequence.
 //
-// When re is non-nil, it overrides RFC 5988 detection: the first capture
-// group of the first match against the joined header value is returned.
-// Templates that need to handle non-standard Link-like headers (e.g.
-// X-Next-Page from APIs that misuse Link's shape) get this escape hatch.
-func parseNextLink(values []string, re *regexp.Regexp) string {
-	if len(values) == 0 {
-		return ""
-	}
-	// Combine multi-line headers into one comma-delimited string. RFC 7230
-	// allows the same header to appear on multiple lines with identical
-	// semantics — joining is the standard normalisation.
-	joined := strings.Join(values, ", ")
-	if strings.TrimSpace(joined) == "" {
-		return ""
-	}
-	if re != nil {
-		m := re.FindStringSubmatch(joined)
-		if len(m) >= 2 {
-			return strings.TrimSpace(m[1])
-		}
-		return ""
-	}
-	// RFC 5988 default: entries separated by commas, each "<URI>; rel=...".
-	// Splitting on commas is naïve in the general case (a quoted comma in
-	// a param value would split incorrectly) but real Link headers don't
-	// embed commas inside quoted params — the URL is inside <> and the
-	// rel value is a simple identifier.
-	for _, entry := range strings.Split(joined, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		lt := strings.Index(entry, "<")
-		gt := strings.Index(entry, ">")
-		if lt < 0 || gt <= lt {
-			continue
-		}
-		uri := strings.TrimSpace(entry[lt+1 : gt])
-		if uri == "" {
-			continue
-		}
-		params := entry[gt+1:]
-		for _, raw := range strings.Split(params, ";") {
-			pair := strings.TrimSpace(raw)
-			if !strings.HasPrefix(pair, "rel") {
-				continue
-			}
-			// Accept rel=next, rel="next", and the multi-rel form
-			// rel="next first" — split on whitespace and look for "next".
-			eq := strings.IndexByte(pair, '=')
-			if eq < 0 {
-				continue
-			}
-			val := strings.Trim(strings.TrimSpace(pair[eq+1:]), "\"")
-			for _, r := range strings.Fields(val) {
-				if r == "next" {
-					return uri
-				}
-			}
-		}
-	}
-	return ""
+// The default termination predicate is short-page detection:
+// events.count < step. The events.count arm in resolveNamespaceRef
+// returns int64(0) when no page is bound yet, so the predicate is
+// safe to evaluate before the first response if a future caller
+// rewires the order.
+type counterPagination struct {
+	cfg *schema.CounterPagination
 }
 
-// ---- next_url_in_body ----
-//
-// next_url_in_body is the body-cursor twin of link_header: every response
-// carries a fully-formed next-page URL at the configured body path, and the
-// runner stashes it in cursor.next_url. Templates read it back the same way
-// they read cursor.next_link — the natural shape is the request's url slot
-// set to {ref: cursor.next_url, default: <initial_url>}, so the first
-// iteration uses the bootstrap URL and every subsequent iteration follows
-// whatever the previous page named.
-//
-// Termination: the loop stops when next_url_at resolves to a missing path,
-// to nil, or to a non-string / empty-string Value. On any of those,
-// cursor.next_url is cleared so the next drain restarts from the bootstrap
-// URL again (mirrors the reset behaviour of cursor_token / offset /
-// page_number / link_header).
-type nextURLInBodyPagination struct {
-	cfg *schema.NextURLInBodyPagination
-}
-
-func (p *nextURLInBodyPagination) seed(*scope) {
-	// cursor.next_url is written by advance() after the first response —
-	// nothing to seed. First iteration: cursor.next_url is absent, so the
-	// template's {ref: cursor.next_url, default: <bootstrap_url>} branch
-	// wins. Same shape as link_header's seed().
-}
-
-func (p *nextURLInBodyPagination) advance(s *scope, body any, _ http.Header, _ []any) (bool, error) {
-	got, ok, err := s.resolveBodyPath(body, p.cfg.NextURLAt)
+func (p *counterPagination) advance(s *scope) (bool, error) {
+	step, err := p.resolveInt(s, p.cfg.Step, "step", 1)
 	if err != nil {
-		return false, fmt.Errorf("pagination.next_url_in_body.next_url_at: %w", err)
+		return false, err
 	}
-	if !ok || got == nil {
-		delete(s.cursor, "next_url")
-		return false, nil
+
+	done, err := p.terminate(s, step)
+	if err != nil {
+		return false, err
 	}
-	// Coerce to string and treat empty / non-string as terminal. Mirrors
-	// cursor_token's isZeroRuntime stance: a missing / empty next-URL means
-	// "end of stream", clear the cursor so the next drain bootstraps again.
-	next, isStr := got.(string)
-	if !isStr || next == "" {
-		delete(s.cursor, "next_url")
-		return false, nil
+	if done {
+		return true, nil
 	}
-	s.cursor["next_url"] = next
-	return true, nil
-}
 
-// ---- scroll_id ----
-//
-// scroll_id maintains a server-side scroll session: the first request opens
-// the session (the scroll_id slot is empty), and every response echoes a
-// scroll id at scroll_id_at that subsequent requests must replay verbatim.
-// Templates expose the id via {ref: cursor.scroll_id} at the request slot
-// of their choice (query or header). The first iteration's
-// {ref: cursor.scroll_id} resolves to nil; the runner skips nil values in
-// query / header encoding (http.go), so the bootstrap request goes out
-// without the param and the server opens a new session.
-//
-// Termination:
-//
-//   - When complete_when is declared, it is evaluated against the producer
-//     body (response.body.<path> refs resolve against the just-decoded
-//     response). A true result ends the drain and clears cursor.scroll_id.
-//     This shape mirrors async_job.poll.complete_when — same predicate
-//     plumbing, same response-scope mechanic.
-//   - When complete_when is absent, the loop terminates as soon as
-//     scroll_id_at resolves to a zero Value (missing path, nil, or empty
-//     string). This matches the scroll-session contract: the server signals
-//     session-drained by omitting the next id.
-//
-// On termination cursor.scroll_id is cleared so the next drain opens a
-// fresh session (mirrors the reset behaviour of cursor_token / offset /
-// page_number / link_header / next_url_in_body).
-type scrollIDPagination struct {
-	cfg *schema.ScrollIDPagination
-}
+	start, err := p.resolveInt(s, p.cfg.Start, "start", 1)
+	if err != nil {
+		return false, err
+	}
 
-func (p *scrollIDPagination) seed(*scope) {
-	// cursor.scroll_id is written by advance() after the first response —
-	// nothing to seed. First iteration: cursor.scroll_id is absent, so
-	// {ref: cursor.scroll_id} resolves to nil and the request's slot
-	// encodes no value (http.go skips nil query / header values).
-}
+	name, err := paginationStateField(p.cfg.To)
+	if err != nil {
+		return false, fmt.Errorf("pagination.counter.to: %w", err)
+	}
 
-func (p *scrollIDPagination) advance(s *scope, body any, headers http.Header, _ []any) (bool, error) {
-	// complete_when (if declared) wins over the zero-id default rule. We
-	// evaluate it against the producer body via the same {body: ...} scope
-	// mechanic async_job.poll uses for its complete_when. After slice 2 the
-	// predicate's response.body.<path> / response.header.<name> refs
-	// resolve against the just-decoded producer response; bare body.<path>
-	// is no longer accepted.
-	if p.cfg.CompleteWhen != nil {
-		prevBody := s.body
-		prevHeaders := s.responseHeaders
-		s.body = body
-		s.responseHeaders = headers
-		done, err := s.evalPredicate(*p.cfg.CompleteWhen)
-		s.body = prevBody
-		s.responseHeaders = prevHeaders
+	cur, ok := s.state[name]
+	var n int64
+	if !ok || cur == nil {
+		n = start
+	} else {
+		coerced, err := toInt(cur)
 		if err != nil {
-			return false, fmt.Errorf("pagination.scroll_id.complete_when: %w", err)
+			return false, fmt.Errorf("pagination.counter: state.%s: %w", name, err)
 		}
-		if done {
-			delete(s.cursor, "scroll_id")
-			return false, nil
+		n = coerced
+	}
+	s.state[name] = n + step
+	return false, nil
+}
+
+func (p *counterPagination) terminate(s *scope, step int64) (bool, error) {
+	if p.cfg.TerminateWhen != nil {
+		done, err := s.evalPredicate(*p.cfg.TerminateWhen)
+		if err != nil {
+			return false, fmt.Errorf("pagination.counter.terminate_when: %w", err)
 		}
+		return done, nil
 	}
-
-	// Read the next scroll id from the body. When complete_when is set and
-	// returned false, we still need the freshest id for the next request.
-	// When complete_when is absent, a zero id IS the termination signal.
-	got, ok, err := s.resolveBodyPath(body, p.cfg.ScrollIDAt)
+	got, _, err := s.resolveNamespaceRef(schema.Path{Parts: []string{"events", "count"}})
 	if err != nil {
-		return false, fmt.Errorf("pagination.scroll_id.scroll_id_at: %w", err)
+		return false, fmt.Errorf("pagination.counter.terminate_when: events.count: %w", err)
 	}
-	if !ok || isZeroRuntime(got) {
-		delete(s.cursor, "scroll_id")
-		return false, nil
-	}
-	s.cursor["scroll_id"] = got
-	return true, nil
+	count, _ := asInt64(got)
+	return count < step, nil
 }
 
-// ---- graphql_relay ----
-//
-// graphql_relay follows the GraphQL Relay cursor-connections spec: every
-// response carries a `pageInfo { hasNextPage, endCursor }` block, and the
-// next page is requested by passing `endCursor` back as the GraphQL variable
-// named by cursor_var (typically `after`). The runner stashes endCursor at
-// cursor.<cursor_var> — the cursor key name is author-declared.
-//
-// Templates expose the cursor via {ref: cursor.<cursor_var>} inside the
-// GraphQL variables map. On the first iteration cursor.<cursor_var> is
-// absent → the ref evaluates to nil → the GraphQL variable rides as JSON
-// null, which Relay servers treat as "from the start of the connection".
-//
-// Termination: has_next_page_at is the authoritative signal. False → end
-// the drain and clear cursor.<cursor_var>; true → capture end_cursor_at
-// into cursor.<cursor_var> for the next iteration. A missing has_next_page
-// path is treated as false (conservative). On termination the cursor is
-// cleared so the next drain starts a fresh connection traversal (mirrors
-// the reset behaviour of cursor_token / offset / page_number / link_header /
-// next_url_in_body / scroll_id).
-type graphQLRelayPagination struct {
-	cfg *schema.GraphQLRelayPagination
+// resolveInt evaluates an optional *Value field into an int64, falling
+// back to def when the field is unset. field names the slot for error
+// wrapping (start / step).
+func (p *counterPagination) resolveInt(s *scope, v *schema.Value, field string, def int64) (int64, error) {
+	if v == nil {
+		return def, nil
+	}
+	got, err := s.evalValue(*v)
+	if err != nil {
+		return 0, fmt.Errorf("pagination.counter.%s: %w", field, err)
+	}
+	n, err := toInt(got)
+	if err != nil {
+		return 0, fmt.Errorf("pagination.counter.%s: %w", field, err)
+	}
+	return n, nil
 }
 
-func (p *graphQLRelayPagination) seed(*scope) {
-	// cursor.<cursor_var> is written by advance() after the first response —
-	// nothing to seed. First iteration: cursor.<cursor_var> is absent, so
-	// {ref: cursor.<cursor_var>} resolves to nil and the GraphQL variable
-	// rides as null. Same shape as cursor_token's seed(), but the cursor
-	// key is author-named.
+// ---- custom ----
+
+// customPagination is the author-controlled primitive form: a list of
+// per-page {to, from, regex?, coerce?} writes plus an author-supplied
+// terminate_when predicate (required, no default).
+//
+// All from: expressions are resolved against the same pre-write
+// snapshot of state.* before any to: destination is written. This
+// matches the snapshot-then-write semantics of applyProgress and lets
+// authors write two entries that reference each other without seeing a
+// half-applied state mid-page.
+type customPagination struct {
+	cfg *schema.CustomPagination
 }
 
-func (p *graphQLRelayPagination) advance(s *scope, body any, _ http.Header, _ []any) (bool, error) {
-	hasNext, ok, err := s.resolveBodyPath(body, p.cfg.HasNextPageAt)
+func (p *customPagination) advance(s *scope) (bool, error) {
+	done, err := s.evalPredicate(p.cfg.TerminateWhen)
 	if err != nil {
-		return false, fmt.Errorf("pagination.graphql_relay.has_next_page_at: %w", err)
+		return false, fmt.Errorf("pagination.custom.terminate_when: %w", err)
 	}
-	if !ok {
-		// Missing signal → conservative terminate. Mirrors page_number's
-		// has_more_at handling.
-		delete(s.cursor, p.cfg.CursorVar)
-		return false, nil
-	}
-	more, err := toBool(hasNext)
-	if err != nil {
-		return false, fmt.Errorf("pagination.graphql_relay.has_next_page_at: %w", err)
-	}
-	if !more {
-		delete(s.cursor, p.cfg.CursorVar)
-		return false, nil
+	if done {
+		return true, nil
 	}
 
-	// has_next_page=true: the response MUST carry a fresh end_cursor for
-	// the next request. A missing / nil / empty end_cursor with
-	// has_next_page=true is a server contract violation, but the
-	// conservative read is "we can't request the next page without a
-	// cursor" — terminate and clear so the next drain can recover.
-	got, ok, err := s.resolveBodyPath(body, p.cfg.EndCursorAt)
-	if err != nil {
-		return false, fmt.Errorf("pagination.graphql_relay.end_cursor_at: %w", err)
+	staged := make([]any, len(p.cfg.Advance))
+	for i, w := range p.cfg.Advance {
+		got, err := s.evalValue(w.From)
+		if err != nil {
+			return false, fmt.Errorf("pagination.custom.advance[%d].from: %w", i, err)
+		}
+		if w.Regex != "" && got != nil {
+			matched, err := s.applyRegex(w.Regex, toString(got), 0, nil)
+			if err != nil {
+				return false, fmt.Errorf("pagination.custom.advance[%d].regex: %w", i, err)
+			}
+			got = matched
+		}
+		if w.Coerce != "" && got != nil {
+			coerced, err := applyFormat(w.Coerce, got)
+			if err != nil {
+				return false, fmt.Errorf("pagination.custom.advance[%d].coerce %s: %w", i, w.Coerce, err)
+			}
+			got = coerced
+		}
+		staged[i] = got
 	}
-	if !ok || isZeroRuntime(got) {
-		delete(s.cursor, p.cfg.CursorVar)
-		return false, nil
+
+	for i, w := range p.cfg.Advance {
+		name, err := paginationStateField(w.To)
+		if err != nil {
+			return false, fmt.Errorf("pagination.custom.advance[%d].to: %w", i, err)
+		}
+		s.state[name] = staged[i]
 	}
-	s.cursor[p.cfg.CursorVar] = got
-	return true, nil
+	return false, nil
+}
+
+// paginationStateField unpacks a pagination To path into its
+// state.<name> field name. The validator guarantees the shape; the
+// defensive check here keeps a future contract violation from silently
+// writing into the wrong slot.
+func paginationStateField(p schema.Path) (string, error) {
+	if len(p.Parts) != 2 || p.Parts[0] != "state" {
+		return "", fmt.Errorf("to must be state.<name>, got %q", p.String())
+	}
+	return p.Parts[1], nil
 }
