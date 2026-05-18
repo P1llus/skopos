@@ -1,24 +1,20 @@
+# Max-of-events high-water mark with no server-side since filter — the
+# server returns everything in one shot and the operator advances the
+# cursor by walking the events.* projection. The bootstrap window comes
+# from the default on state.last_timestamp.
+
 ir_version: "1"
 
-# Exercises progress.max_event_field — the variant for APIs that don't expose
-# a server-supplied "since" filter but whose events carry their own timestamps.
-# advance() walks the accumulated events and picks the max value at
-# event_time.path; the high-water mark is written to cursor.last_timestamp.
-# This is the per-iteration counterpart of latest_event_timestamp for sources
-# that return everything in one shot but where the operator wants to track
-# the most recently seen event timestamp.
-
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    api_key:
-      type: secret
-      default: "test-bearer-token-12345"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "24h"]}
 
 auth:
   bearer:
@@ -26,7 +22,7 @@ auth:
 
 requests:
   - method: GET
-    path: /api/v1/events
+    url: "${state.url}/api/v1/events"
 
 response:
   decode: json
@@ -36,11 +32,8 @@ pagination:
   none: {}
 
 progress:
-  max_event_field:
-    event_time:
-      path: timestamp
-    initial:
-      lookback: "24h"
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}
 
 error:
   mode: standard

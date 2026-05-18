@@ -1,26 +1,20 @@
+# Clock-driven cursor: state.last_timestamp advances to now() minus a
+# per-iteration lookback on every accepted page, without walking events.
+# Useful for time-window APIs where the server doesn't echo a timestamp
+# back but the cursor still needs to march forward in wall-clock time.
+
 ir_version: "1"
 
-# progress.use_now — advances cursor.last_timestamp to s.now() (optionally
-# minus a per-iteration lookback) on every drain, without walking events.
-# Useful for time-window APIs where the server doesn't echo a timestamp back
-# but the cursor still needs to march forward in wall-clock time.
-#
-# {ref: cursor.last_timestamp} resolves identically to
-# latest_event_timestamp / max_event_field — RFC 3339 string from
-# cursor.last_timestamp, absent on first drain (templates that need an
-# explicit empty value add {default: ""} on the ref).
-
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    api_key:
-      type: secret
-      default: "test-bearer-token-12345"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
 
 auth:
   bearer:
@@ -28,9 +22,9 @@ auth:
 
 requests:
   - method: GET
-    path: /api/v1/events
+    url: "${state.url}/api/v1/events"
     query:
-      since: {ref: cursor.last_timestamp}
+      since: {ref: state.last_timestamp}
 
 response:
   decode: json
@@ -40,8 +34,8 @@ pagination:
   none: {}
 
 progress:
-  use_now:
-    lookback: "5m"
+  - to: state.last_timestamp
+    from: {subtract: [{now: true}, "5m"]}
 
 error:
   mode: standard

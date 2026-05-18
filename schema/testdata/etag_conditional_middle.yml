@@ -1,25 +1,22 @@
+# Same conditional pattern as the etag_conditional template, but the
+# conditional step is in the MIDDLE of a three-step chain rather than the
+# last. Skip semantics apply identically: when the middle step's
+# if-predicate is false or the step returns 304, {ref:
+# steps.middle.body.<...>} resolves to a zero Value; the final step's
+# url uses {present: ...} guarding to handle that.
+#
+# The final step is marked produces_events: true; the middle step's body
+# is inspected only for the events path, never as the events source.
+
 ir_version: "1"
 
-# Same ETag conditional pattern as etag_conditional.yml, but the conditional
-# step is in the MIDDLE of a three-step chain rather than the last. Skip
-# semantics apply identically: when the middle step's if-predicate is false
-# or it returns 304, {ref: steps.middle.body.<...>} resolves to a zero
-# Value; the final step's path uses {present: ...} guarding to handle that.
-#
-# The final step is marked produces_events: true; the middle step's body is
-# inspected only for the data path, never as the events source.
-
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    etag_check:
-      type: bool
-      default: true
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  etag_check:
+    type: bool
+    default: true
 
 auth:
   none: {}
@@ -27,11 +24,11 @@ auth:
 requests:
   - id: probe
     method: GET
-    path: /api/v1/etag/probe
+    url: "${state.url}/api/v1/etag/probe"
 
   - id: middle
     method: GET
-    path: /api/v1/etag/data
+    url: "${state.url}/api/v1/etag/data"
     if:
       eq:
         path: state.etag_check
@@ -41,14 +38,15 @@ requests:
 
   - id: events
     method: GET
-    path:
+    url:
       select:
         branches:
-          - when:
-              present: steps.middle.body.next_path
+          - when: {present: steps.middle.body.next_path}
             value:
-              ref: steps.middle.body.next_path
-        default: /api/v1/etag/fallback
+              concat:
+                - {ref: state.url}
+                - {ref: steps.middle.body.next_path}
+        default: "${state.url}/api/v1/etag/fallback"
     produces_events: true
 
 response:
@@ -58,8 +56,7 @@ response:
 pagination:
   none: {}
 
-progress:
-  stateless: {}
+progress: []
 
 error:
   mode: standard

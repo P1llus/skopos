@@ -1,60 +1,61 @@
 # post_json_body — POST with a JSON body carrying a time-window query.
 #
-# Demonstrates: requests[].body.json with from_date / to_date pulled from
-# progress, progress.time_window so the next drain picks up where this one
-# left off, JSON decode.
+# Demonstrates: requests[].body.json with a sliding [window_start,
+# window_end) window written by progress:, plus offset-style counter
+# pagination within the window. The body reads the persistent window from
+# state.window_start / state.window_end and the per-drain offset bounds
+# from state.search_from / state.search_to.
 
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    api_key:
-      type: secret
-      default: "test-bearer-token-12345"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  page_size:
+    type: int
+    default: 5
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  window_start:
+    type: timestamp
+    format: rfc3339nano
+  window_end:
+    type: timestamp
+    format: rfc3339nano
+  search_from:
+    type: int
 
 auth:
   bearer:
     token: {ref: state.api_key}
 
-# POST search with JSON body. time_window progress provides window_start and
-# window_end; the body reads them directly via {ref: cursor.window_start} /
-# {ref: cursor.window_end}. The offset pagination layer slides over the
-# window on each page via {ref: cursor.offset} / {ref: cursor.offset_end}.
 requests:
   - method: POST
-    path: /post_json_body/search
+    url: "${state.url}/post_json_body/search"
     body:
       json:
-        from_date: {ref: cursor.window_start}
-        to_date: {ref: cursor.window_end}
-        search_from: {ref: cursor.offset}
-        search_to: {ref: cursor.offset_end}
+        from_date:   {ref: state.window_start}
+        to_date:     {ref: state.window_end}
+        search_from: {ref: state.search_from, default: 0}
+        search_to:   {add: [{ref: state.search_from, default: 0}, {ref: state.page_size}]}
 
 response:
   decode: json
   events_at: response.body.data.alerts
 
 pagination:
-  offset:
-    offset_param: search_from
-    batch_size: {ref: state.page_size}
+  counter:
+    to:    state.search_from
+    start: 0
+    step:  {ref: state.page_size}
 
 progress:
-  time_window:
-    initial_offset: "720h"
-    format: rfc3339nano
+  - to: state.window_start
+    from: {ref: state.window_end, default: {subtract: [{now: true}, "720h"]}}
+  - to: state.window_end
+    from: {now: true}
 
 error:
   mode: standard

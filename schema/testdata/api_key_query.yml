@@ -1,26 +1,23 @@
+# API key sent as a query parameter (in_query: true). The auth block adds
+# the key as a query parameter named by the header field; no
+# Authorization header is emitted.
+
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    api_key:
-      type: secret
-      default: "test-api-key-67890"
+  url:
+    type: url
+    default: "http://localhost:9999"
+  page_size:
+    type: int
+    default: 5
+  api_key:
+    type: secret
+    default: "test-api-key-67890"
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
 
-defaults:
-  base_url: {ref: state.url}
-
-# API key sent as a query parameter (in_query: true).
-# With in_query set, the auth block adds the key as a query param named by
-# the header field; no Authorization header is emitted.
 auth:
   api_key:
     header: apikey
@@ -29,9 +26,9 @@ auth:
 
 requests:
   - method: GET
-    path: /v3/detections
+    url: "${state.url}/v3/detections"
     query:
-      created_after: {ref: cursor.last_timestamp}
+      created_after: {ref: state.last_timestamp}
 
 response:
   decode: json
@@ -41,9 +38,8 @@ pagination:
   none: {}
 
 progress:
-  latest_event_timestamp:
-    event_time:
-      path: created_timestamp
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.created_timestamp}}]}
 
 error:
   mode: standard

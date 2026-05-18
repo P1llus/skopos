@@ -1,22 +1,27 @@
+# cursor_token fixture pinning the empty-page progress shape.
+#
+# Progress fires once per accepted page-response, including empty pages
+# (zero events). Server-provided cursors and ingestion timestamps can be
+# persisted independently of event production: this fixture writes the
+# server's reported next cursor into state.last_server_cursor on every
+# accepted page.
+
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    api_key:
-      type: secret
-      default: "test-bearer-token-12345"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  page_size:
+    type: int
+    default: 5
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  next_token:
+    type: string
+  last_server_cursor:
+    type: string
 
 auth:
   bearer:
@@ -24,30 +29,23 @@ auth:
 
 requests:
   - method: GET
-    path: /api/v1/findings/keepalive
+    url: "${state.url}/api/v1/findings/keepalive"
     query:
-      cursor: {ref: cursor.token, default: ""}
-      limit: {format: string, value: {ref: state.page_size}}
+      cursor: {ref: state.next_token, default: ""}
+      limit:  "${state.page_size}"
 
-# placeholder_event is emitted when the server returns an empty events list
-# but a non-empty pagination token. This signals a keepalive / warmup page:
-# the drain continues without emitting real events. Motivating patterns:
-# Splunk wait phase, ESET Protect keep-alive. Progress is stateless because
-# latest_event_timestamp would crash on an empty warmup page.
 response:
   decode: json
   events_at: response.body.findings
-  placeholder_event:
-    object:
-      keepalive: true
-      source: keepalive
 
 pagination:
   cursor_token:
-    token_at: response.body.next_cursor
+    from: response.body.next_cursor
+    to:   state.next_token
 
 progress:
-  stateless: {}
+  - to: state.last_server_cursor
+    from: {ref: response.body.next_cursor, default: ""}
 
 error:
   mode: standard

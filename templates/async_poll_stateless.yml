@@ -1,30 +1,24 @@
-# async_poll_stateless — async submit/poll/fetch with no cursor advance.
+# async_poll_stateless — async submit/poll/fetch with no progress.
 #
-# Sibling of async_poll.yml: same submit → poll → fetch chain, but the
-# on_complete cursor_update is kind=stateless — the cursor does NOT advance
-# at job-end. Appropriate for async pulls that are already idempotent at
-# the server layer (e.g. "always re-fetch the last 24h export"), where the
-# operator wants every drain to re-issue submit with the same parameters.
+# Sibling of async_poll.yml: the submit/poll/fetch chain is identical, but
+# progress is empty — state.last_timestamp never advances and every drain
+# re-issues submit with the same parameters. Appropriate when the export
+# is already idempotent at the server layer ("always re-fetch the last
+# 24h").
 
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    api_key:
-      type: secret
-      default: "test-bearer-token-12345"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  export_id:
+    type: string
+  result_url:
+    type: url
 
 auth:
   bearer:
@@ -33,20 +27,25 @@ auth:
 requests:
   - id: submit
     method: POST
-    path: /async_poll_stateless/exports
+    url: "${state.url}/async_poll_stateless/exports"
     expect_status: [202]
+    extract:
+      - {to: state.export_id, from: response.body.export_id}
 
   - id: poll
     method: GET
-    path:
-      concat:
-        - /async_poll_stateless/exports/
-        - {ref: cursor.export_id}
-        - /status
+    url: "${state.url}/async_poll_stateless/exports/${state.export_id}/status"
+    terminate_when:
+      and:
+        - {present: response.body.status}
+        - {eq: {path: response.body.status, value: complete}}
+    extract:
+      - {to: state.result_url, from: response.body.result_url}
 
   - id: fetch
     method: GET
-    url: {ref: cursor.result_url}
+    url: {ref: state.result_url}
+    produces_events: true
 
 response:
   decode: json
@@ -55,25 +54,7 @@ response:
 pagination:
   none: {}
 
-progress:
-  async_job:
-    submit:
-      step: submit
-      extract:
-        export_id: {from: response.body.export_id}
-    poll:
-      step: poll
-      complete_when:
-        eq:
-          path: response.body.status
-          value: complete
-      extract:
-        result_url: {from: response.body.result_url}
-    fetch:
-      step: fetch
-    on_complete:
-      cursor_update:
-        kind: stateless
+progress: []
 
 error:
   mode: standard

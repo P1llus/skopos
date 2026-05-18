@@ -1,58 +1,53 @@
 # etag_conditional — conditional GET driven by an ETag.
 #
-# Demonstrates: response.on_status with skip for 304 (advance the cursor
-# without emitting events) and extract for the new ETag, which is captured
-# into the cursor so the next request's If-None-Match header carries it.
-
-ir_version: "1"
-
-state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    etag_check:
-      type: bool
-      default: true
-
-defaults:
-  base_url: {ref: state.url}
-
-auth:
-  none: {}
-
-# ETag conditional two-step chain.
+# Demonstrates: state.etag captured via extract, ridden as If-None-Match
+# on the next iteration, on_status: {304: skip} so a 304 response counts
+# as an accepted page (progress fires, no events emit) and state.etag
+# survives across drains.
 #
 # The probe step is unconditional; it exists to make the chain genuinely
 # multi-step. The data step carries both conditional primitives:
 #
-#   if: <Predicate>  — evaluated before issuing the request. When false, the
-#                      step emits the skip-block and no HTTP call is made.
-#                      The fixture guard reads state.etag_check (default: true).
-#
-#   on_status: {304: skip} — post-response check. When 304 is returned the
-#                      step yields the skip-block (empty events, want_more=false,
-#                      cursor preserved).
+#   if:          gated by state.etag_check (default: true).
+#   on_status:   304 → skip (canonical "Not Modified" handling).
+
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+  etag_check:
+    type: bool
+    default: true
+  etag:
+    type: string
+  page:
+    type: int
+  last_seen_at:
+    type: timestamp
+
+auth:
+  none: {}
+
 requests:
   - id: probe
     method: GET
-    path: /etag_conditional/probe
+    url: "${state.url}/etag_conditional/probe"
 
   - id: data
     method: GET
-    path: /etag_conditional/data
+    url: "${state.url}/etag_conditional/data"
     query:
-      page: {format: string, value: {ref: cursor.page}}
+      page: "${state.page|1}"
+    headers:
+      If-None-Match: {ref: state.etag, default: ""}
     if:
       eq:
         path: state.etag_check
         value: true
+    extract:
+      - {to: state.etag, from: response.header.ETag}
     on_status:
       304: skip
 
@@ -61,12 +56,16 @@ response:
   events_at: response.body.items
 
 pagination:
-  page_number:
-    page_param: page
-    has_more_at: response.body.meta.has_next
+  counter:
+    to:    state.page
+    start: 1
+    step:  1
+    terminate_when:
+      not: {present: response.body.meta.has_next}
 
 progress:
-  stateless: {}
+  - to: state.last_seen_at
+    from: {now: true}
 
 error:
   mode: standard

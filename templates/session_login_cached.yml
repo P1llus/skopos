@@ -1,64 +1,54 @@
-# session_login_cached — custom JSON login with a per-step token cache.
+# session_login_cached — custom JSON login with a step-level token cache.
 #
-# Demonstrates: a POST /login step wrapped in requests[].cache so the login
-# round-trip is paid once and then SKIPPED on later iterations and drains
-# until the cached token nears expiry. The events step rides the cached
-# token as Bearer auth. This is the non-OAuth2 counterpart of
-# auth.oauth2.<grant>.cache — for vendors whose login does not fit the
-# OAuth2 client_credentials shape (custom JSON logins, session-key
-# exchanges, etc.).
+# A POST /login step wrapped in requests[].cache pays the round-trip once
+# and reuses the captured response body until the cache nears expiry. The
+# events step rides the cached token as Bearer auth. This is the
+# non-OAuth2 counterpart of auth.oauth2.<grant>.cache — for vendors whose
+# login does not fit the OAuth2 client_credentials shape.
 
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    username:
-      type: string
-      default: "admin"
-    password:
-      type: secret
-      default: "test-password"
+  url:
+    type: url
+    default: "http://localhost:9999"
+  username:
+    type: string
+    default: "admin"
+  password:
+    type: secret
+    default: "test-password"
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
 
-defaults:
-  base_url: {ref: state.url}
-
-# Bearer auth rides the cached token slot (state.session_token), which is
-# auto-registered as a runtime field by the cache: block on the login step.
-# The default keeps the login request itself (auth is applied to every
-# request) from failing on the first drain before the slot is populated;
-# the login endpoint ignores the Authorization header.
+# Bearer auth reads the token field from the cache.session_token slot.
+# The default keeps auth resolution from failing on the very first drain
+# (before the slot is populated) — the login endpoint ignores the
+# Authorization header.
 auth:
   bearer:
-    token: {ref: state.session_token, default: "pending"}
+    token: {ref: cache.session_token.token, default: "pending"}
 
 requests:
-  # Step 1 (login): POST /session_login_cached/login. The cache: block
-  # captures the response's session_token field into state.session_token and
-  # pairs it with an expiry stamp at state.session_token_expires_at (both
-  # slots are auto-registered as runtime string state fields by the IR
-  # validator). On the next iteration/drain the step is skipped while the
-  # token is still inside its expiry_buffer.
+  # Step 1 (login): POST the credentials. requests[].cache captures the
+  # decoded body into cache.session_token and re-runs the step when the
+  # remaining lifetime falls below buffer.
   - id: login
     method: POST
-    path: /session_login_cached/login
+    url: "${state.url}/session_login_cached/login"
     body:
       json:
         username: {ref: state.username}
         password: {ref: state.password}
     cache:
-      store_in: session_token
-      expiry_field: response.body.expires_in
-      expiry_buffer: 60s
-      expiry_format: duration
+      to:         cache.session_token
+      expires_at: {ref: response.body.expires_in, default: "1h"}
+      buffer:     60s
 
-  # Step 2 (events): GET /session_login_cached/events, riding the cached
-  # Bearer token.
   - id: events
     method: GET
-    path: /session_login_cached/events
+    url: "${state.url}/session_login_cached/events"
     produces_events: true
 
 response:
@@ -69,9 +59,8 @@ pagination:
   none: {}
 
 progress:
-  latest_event_timestamp:
-    event_time:
-      path: timestamp
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}
 
 error:
   mode: standard

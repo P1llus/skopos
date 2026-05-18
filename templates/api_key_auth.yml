@@ -1,27 +1,23 @@
-# api_key_auth — API key carried in a custom header (X-Api-Key).
+# api_key_auth — API key carried in a custom header (X-API-Key).
 #
-# Demonstrates: auth.api_key with location=header, single GET request,
-# pagination.none, progress.latest_event_timestamp.
+# Demonstrates: auth.api_key in a named header, single GET request,
+# pagination.none, max-over-events timestamp progress.
 
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    api_key:
-      type: secret
-      default: "test-api-key-67890"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  page_size:
+    type: int
+    default: 5
+  api_key:
+    type: secret
+    default: "test-api-key-67890"
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
 
 auth:
   api_key:
@@ -30,9 +26,9 @@ auth:
 
 requests:
   - method: GET
-    path: /api_key_auth/detections
+    url: "${state.url}/api_key_auth/detections"
     query:
-      created_after: {ref: cursor.last_timestamp}
+      created_after: {ref: state.last_timestamp}
 
 response:
   decode: json
@@ -42,9 +38,8 @@ pagination:
   none: {}
 
 progress:
-  latest_event_timestamp:
-    event_time:
-      path: created_timestamp
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.created_timestamp}}]}
 
 error:
   mode: standard

@@ -1,50 +1,40 @@
-# fan_out per-item iteration. Validator-surface fixture: exercises the
-# fan_out checks in schema/validate.go without involving the runner.
+# Two-step fan-out: list incidents, then fetch event details per
+# incident. Validator-surface fixture: exercises the fan_out checks in
+# schema/validate.go without involving the runner. The list step returns
+# incident summaries filtered by since; the detail step fans out over
+# that list (one HTTP call per incident). Each per-incident response is
+# a JSON list; merge: flatten concatenates them.
+
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    api_key:
-      type: secret
-      default: "test-bearer-token-12345"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
 
 auth:
   bearer:
     token: {ref: state.api_key}
 
-# Two-step fan-out: list incidents, then fetch event details per incident.
-# The list step returns incident summaries filtered by since.
-# The detail step fans out over that list: one HTTP call per incident.
-# Each per-incident response is a JSON list; merge: flatten concatenates them.
 requests:
   - id: list
     method: GET
-    path: /api/v1/incidents
+    url: "${state.url}/api/v1/incidents"
     query:
-      since: {ref: cursor.last_timestamp}
+      since: {ref: state.last_timestamp}
 
   - id: detail
     method: GET
-    path:
-      concat:
-        - /api/v1/incidents/
-        - {ref: incident.id}
-        - /details
+    url: "${state.url}/api/v1/incidents/${incident.id}/details"
     fan_out:
-      over: {ref: steps.list.body.incidents}
-      as: incident
+      over:  {ref: steps.list.body.incidents}
+      as:    incident
       merge: flatten
 
 response:
@@ -55,9 +45,8 @@ pagination:
   none: {}
 
 progress:
-  latest_event_timestamp:
-    event_time:
-      path: timestamp
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}
 
 error:
   mode: standard

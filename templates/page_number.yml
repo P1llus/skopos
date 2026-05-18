@@ -1,27 +1,26 @@
-# page_number — page-number / per-page pagination.
+# page_number — page-number pagination via the counter variant.
 #
-# Demonstrates: pagination.page_number. Each request increments the
-# `page` index; termination when the page is short or empty.
+# Demonstrates: pagination.counter with start: 1, step: 1. Termination is
+# driven by the server's has_next flag rather than the default short-page
+# detection.
 
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    api_key:
-      type: secret
-      default: "test-bearer-token-12345"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  page_size:
+    type: int
+    default: 5
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  page:
+    type: int
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
 
 auth:
   bearer:
@@ -29,25 +28,27 @@ auth:
 
 requests:
   - method: GET
-    path: /page_number/findings
+    url: "${state.url}/page_number/findings"
     query:
-      since: {ref: cursor.last_timestamp}
-      page: {format: string, value: {ref: cursor.page}}
-      page_size: {format: string, value: {ref: state.page_size}}
+      since:     {ref: state.last_timestamp}
+      page:      "${state.page|1}"
+      page_size: "${state.page_size}"
 
 response:
   decode: json
   events_at: response.body.data
 
 pagination:
-  page_number:
-    page_param: page
-    has_more_at: response.body.meta.has_next
+  counter:
+    to:    state.page
+    start: 1
+    step:  1
+    terminate_when:
+      not: {present: response.body.meta.has_next}
 
 progress:
-  latest_event_timestamp:
-    event_time:
-      path: timestamp
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}
 
 error:
   mode: standard

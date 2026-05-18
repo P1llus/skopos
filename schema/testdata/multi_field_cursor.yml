@@ -1,26 +1,30 @@
-ir_version: "1"
-
-# Multi-field cursor expressed via extract[].target: cursor.
+# Multiple persistent state fields written by extract.to: state.*.
 #
 # Drives a worklist API where each iteration:
-#   1. Reads the previous worklist top (cursor.next_partition_id, default 0)
-#      and rolling-max timestamp (cursor.last_timestamp).
+#   1. Reads the previous worklist top (state.next_partition_id) and
+#      rolling-max timestamp (state.last_timestamp).
 #   2. Calls /api/v1/segments?partition=<id>&since=<ts>.
-#   3. Captures next_partition_id (a server-supplied "where to resume") and
-#      a freeze_flag boolean back into the cursor namespace.
-#   4. last_timestamp is advanced by the latest_event_timestamp progress.
+#   3. Captures next_partition_id (server-supplied resume token) and
+#      freeze_flag (a boolean) into persistent state fields via extract.
+#   4. state.last_timestamp advances via the progress max-merge.
+
+ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    api_key:
-      type: secret
-      default: "test-bearer-token-12345"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  next_partition_id:
+    type: int
+    default: 0
+  freeze_flag:
+    type: bool
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
 
 auth:
   bearer:
@@ -28,23 +32,16 @@ auth:
 
 requests:
   - method: GET
-    path: /api/v1/segments
+    url: "${state.url}/api/v1/segments"
     query:
-      partition: {format: string, value: {ref: cursor.next_partition_id, default: 0}}
-      since: {ref: cursor.last_timestamp}
+      partition: "${state.next_partition_id|0}"
+      since:     {ref: state.last_timestamp}
     extract:
-      - name: next_partition_id
-        from: response.body.next_partition_id
-        target: cursor
-        coerce: int
-      - name: freeze_flag
-        # The body field is genuinely named "state". With slice 3's
-        # namespace-rooted from: Path the prior namespace-shadow false-
-        # positive is gone — the response.body.<...> root makes the body
-        # locator unambiguous regardless of the field name underneath.
-        from: response.body.state.frozen
-        target: cursor
-        coerce: bool
+      - {to: state.next_partition_id, from: response.body.next_partition_id, coerce: int}
+      # The body field is genuinely named "state". The response.body.<...>
+      # root makes the body locator unambiguous regardless of the field
+      # name underneath.
+      - {to: state.freeze_flag, from: response.body.state.frozen, coerce: bool}
 
 response:
   decode: json
@@ -54,9 +51,8 @@ pagination:
   none: {}
 
 progress:
-  latest_event_timestamp:
-    event_time:
-      path: timestamp
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}
 
 error:
   mode: standard

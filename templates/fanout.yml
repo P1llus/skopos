@@ -8,10 +8,9 @@
 # detail-row across every incident.
 #
 # Mapping to the runner:
-#   - {ref: incident.id} resolves against scope.item while the fan_out
-#     step iterates. The binding name comes from fan_out.as, so authors
-#     pick what reads well (incident, blob, asset, …) — not a fixed
-#     `item.` prefix.
+#   - {ref: incident.id} resolves against the per-item binding while the
+#     fan_out step iterates. The binding name comes from fan_out.as, so
+#     authors pick what reads well (incident, blob, asset, …).
 #   - The fan-out step is the implicit producer (last request). The
 #     merged body is the events stream; response.events_at is the body
 #     root.
@@ -22,16 +21,15 @@
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    api_key:
-      type: secret
-      default: "test-bearer-token-12345"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
 
 auth:
   bearer:
@@ -40,18 +38,14 @@ auth:
 requests:
   - id: list
     method: GET
-    path: /fanout/incidents
+    url: "${state.url}/fanout/incidents"
 
   - id: detail
     method: GET
-    path:
-      concat:
-        - /fanout/incidents/
-        - {ref: incident.id}
-        - /events
+    url: "${state.url}/fanout/incidents/${incident.id}/events"
     fan_out:
-      over: {ref: steps.list.body.incidents}
-      as: incident
+      over:  {ref: steps.list.body.incidents}
+      as:    incident
       merge: flatten
 
 response:
@@ -64,9 +58,8 @@ pagination:
   none: {}
 
 progress:
-  latest_event_timestamp:
-    event_time:
-      path: timestamp
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}
 
 error:
   mode: standard

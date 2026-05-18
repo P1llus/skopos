@@ -1,31 +1,25 @@
-# Handoff — Phase 2 Slice 16 (`templates/*.yml` + `templates/templates.go` + `schema/testdata/*.yml`)
+# Handoff — Phase 2 Slice 17 (`*_test.go` rewrites across `schema/`, `client/`, `cmd/`, `internal/testserver/`)
 
-Slice 15 closed (`cmd/skopos/*` audited against the post-redesign
-client + schema). The CLI surface and its wiring were already in the
-new shape by the time this slice opened; the only source-level change
-was a stale `cursor.*` framing comment in `cmd_init.go`. The build is
-green:
+Slice 16 closed (every bundled template and every schema test fixture
+rewritten against the post-redesign IR). All 27 `templates/*.yml` and all
+20 `schema/testdata/*.yml` parse + validate clean; YAML/JSON round-trips
+are byte-stable. `go build ./...` is green; `*_test.go` files remain red
+against the old shape — those are this slice's job.
 
-- `go build ./cmd/...` → no errors.
-- `go build ./...` → no errors (schema + client + cmd + tools all green).
+`templates/templates.go` was left untouched (no shape coupling; the
+`//go:embed *.yml` directive picked up the rewrites transparently).
 
-The audit grep for legacy vocabulary returned only the one comment
-line, which was fixed. The four subcommands — `validate`, `run`,
-`init`, `template list|show` — match `docs/usage.md` §1 flag-for-flag.
-The continuous-mode "always retry" policy sits in the CLI loop, not in
-`Runner.Drain`; `--trace` writes raw JSONL (including the cache-HIT
-`{iteration, step_id, cache_hit:true}` tombstone from Slice 14); the
-`--state` `FileStore` writes the post-redesign `{"state": {...}}`
-JSON shape from Slice 8 / Slice 14.
+See [`IMPL-16-templates.md`](IMPL-16-templates.md) for the per-file
+rewrite log, removed-content list, walkthroughs of the trickier reshapes
+(`async_poll` request-level loop, `oauth2_client_credentials` unified
+Cache, `fanout` absolute URLs), and downstream notes for Slices 17 / 18.
 
-See [`IMPL-15-cmd-cli.md`](IMPL-15-cmd-cli.md). Tests stay red until
-Slice 17 (`cmd/skopos/*_test.go` carries the legacy spec shape per
-global rule #6).
-
-The next slice is **Slice 16 — `templates/*.yml` +
-`templates/templates.go` + `schema/testdata/*.yml`** (rewrite every
-bundled template and every schema test fixture against the post-redesign
-IR).
+The next slice is **Slice 17 — `*_test.go` rewrites across the
+project**. This is the verification gate for every preceding code slice
+— the package builds have been green since Slice 7, but the test suite
+has been frozen against the pre-redesign shape and is the back-stop
+that proves the post-redesign code (Slices 4 – 15) and templates
+(Slice 16) actually behave end-to-end.
 
 ---
 
@@ -34,235 +28,197 @@ IR).
 In this order:
 
 1. [`RESEARCH_PLAN.md` §"Global rules"](RESEARCH_PLAN.md#global-rules---apply-to-every-slice).
-   Eight global rules apply to every slice.
-2. [`PHASE-2-PLAN.md` §1 + §3 + §4](PHASE-2-PLAN.md). The Phase 2
-   slice list, the cross-cutting rules, the verification posture.
-3. [`PHASE-2-PLAN.md` §"Slice 16"](PHASE-2-PLAN.md#slice-16--templatesyml--templatestemplatesgo--schematestdatayml).
-   Your slice's detailed scope, including the per-template rewrite
-   checklist and the variant-mapping table reference.
-4. [`docs/schema.md`](../schema.md) end-to-end — the source of truth for
-   the post-redesign IR shape. Pay special attention to:
-   - §state (lifetime inference: operator-config / per-drain scratch /
-     persistent);
-   - §3.6 pagination variant mapping table;
-   - §progress (flat list of writes);
-   - §namespaces (the closed root set: `state | cache | events |
-     extract | steps | response`).
-5. [`docs/api-methods.md`](../api-methods.md) — the variant catalogue
-   that maps vendor patterns onto schema fragments. Reach for it
-   while rewriting each template.
-6. [`docs/runtime.md`](../runtime.md) §2 (drain lifecycle), §3
-   (pagination loop), §5 (progress evaluation timing), §6 (error
-   semantics), §8 (cache namespace) — the runtime contract every
-   template must be authored against.
-7. [`docs/usage.md`](../usage.md) §3 (writing a template from scratch)
-   — the step-by-step recipe vocabulary the rewritten templates must
-   be self-consistent with.
-8. [`IMPL-14-client-sink-trace.md`](IMPL-14-client-sink-trace.md) and
-   [`IMPL-13-client-http-cache-auth.md`](IMPL-13-client-http-cache-auth.md)
-   for the cache + secret-taint semantics OAuth2 / session-cookie /
-   ETag templates depend on.
-9. [`schema/validate.go`](../../schema/validate.go) — the validator
-   you'll be running every rewritten template through. The diagnostic
-   text is your fastest debugging surface.
+   Eight global rules apply to every slice — especially #1
+   (no-backwards-compat), #4/#5 (clean stale comments), and #6 (tests
+   are this slice's purpose, not a side-effect).
+2. [`PHASE-2-PLAN.md` §1 + §3 + §4](PHASE-2-PLAN.md). The Phase 2 slice
+   list, the cross-cutting rules, the verification posture.
+3. [`PHASE-2-PLAN.md` §"Slice 17"](PHASE-2-PLAN.md#slice-17--all-tests).
+   This slice's scope, the file inventory, and the consolidation
+   strategy (golden files where the legacy suite had dense per-form
+   unit tests).
+4. [`IMPL-16-templates.md`](IMPL-16-templates.md) for the rewritten
+   template + fixture shapes — your golden inputs.
+5. [`docs/schema.md`](../schema.md), [`docs/runtime.md`](../runtime.md),
+   [`docs/stores.md`](../stores.md), [`docs/usage.md`](../usage.md),
+   [`docs/api-methods.md`](../api-methods.md) — the operational spec
+   the tests must verify. The validator's diagnostic surface is in
+   [`schema/validate.go`](../../schema/validate.go); every runtime
+   contract is documented under one of the post-redesign prose docs.
+6. The earlier `IMPL-04` through `IMPL-15` impl plans for the per-file
+   shape that each test must verify (the design rationale lives in
+   `docs/DESIGN_SUGGESTIONS.md`; consult it only when the prose docs
+   are ambiguous).
 
 ---
 
 ## Your slice
 
-**Branch.** Develop on `claude/slice-16-templates-<token>`.
+**Branch.** Develop on `claude/slice-17-tests-<token>`.
 
-**Files you may touch.**
+**Files you may touch (and only these — plus the new
+`IMPL-17-tests.md`).**
 
-- Every `templates/*.yml` (27 files):
-
-  ```
-  api_key_auth, async_poll, async_poll_latest_ts, async_poll_stateless,
-  basic_auth, bearer_simple, cursor_token, custom_auth, etag_conditional,
-  etag_conditional_middle, fanout, link_header, multi_mode_auth,
-  ndjson_response, next_url_in_body, oauth2_client_credentials,
-  oauth2_password_grant, oauth2_relay, offset_pagination, page_number,
-  post_form_body, post_json_body, post_raw_body, scroll_id,
-  session_cookie, session_login_cached, simple_get_object
-  ```
-
-- `templates/templates.go` (only if the embedded FS interface changes;
-  most likely no edit needed — the `//go:embed *.yml` directive picks
-  up rewrites transparently).
-- Every `schema/testdata/*.yml`:
-
-  ```
-  api_key_query, async_poll_latest_ts, async_poll_stateless,
-  cursor_token_placeholder, dual_mode_url_commercial,
-  dual_mode_url_gov, etag_conditional_middle, fanout, format_verbs,
-  lookback_progress, max_event_field, multi_field_cursor,
-  oauth2_password_grant, oauth2_relay, on_status_dispatch,
-  predicate_composition, token_cache, token_cache_multistep,
-  use_now, value_forms
-  ```
+- Every `*_test.go` in `schema/`. The matrix-coverage fixture suite at
+  `schema/fixtures_test.go` (3128 lines today) consolidates around
+  goldens; per-form unit tests stay only where the parse / validate
+  path is non-trivial.
+- Every `*_test.go` in `client/`. Two pairs are very large:
+  `client/pagination_test.go` + `progress_test.go` (~2400 lines
+  combined) collapse into per-variant golden goldens driven by the
+  `internal/testserver/` fakes. `client/runner_test.go`,
+  `client/oauth2_test.go` (rename to `auth_test.go` to match
+  `auth.go` + the merged `cache.go`), `client/fanout_test.go`,
+  `client/redact_test.go`, `client/trace_test.go`,
+  `client/requests_test.go` each rewrite against the new shape.
+- Every `*_test.go` in `cmd/skopos/`. Smaller. Reshape against the new
+  CLI surface (`validate` / `run` / `init` / `template list|show`).
+- Every `*.go` file (production code AND tests) under
+  `internal/testserver/`. The per-template fakes need URL-shape updates
+  for every template that changed endpoint path. Most kept the
+  original paths; the etag templates pulled the
+  `/etag_conditional/data` and `/etag_conditional_middle/data`
+  endpoints. The OAuth2 fakes still serve `/oauth2/token`.
 
 **Files you must NOT touch.**
 
-- Any file under `client/` (frozen at Slices 8-14's close).
-- Any file under `schema/` other than `schema/testdata/*.yml` (frozen
-  at Slice 7's close).
-- Any file under `cmd/skopos/` (frozen at Slice 15's close).
-- Any `*_test.go` file (Slice 17 owns the test rewrite).
+- Any `*.yml` under `templates/` or `schema/testdata/` (frozen at
+  Slice 16's close).
+- Any `.go` file outside the `*_test.go` set and `internal/testserver/`
+  (schema, client, cmd are frozen at their respective slice closes).
+- `docs/schema-reference.md` (Slice 18).
 
 **Deliverables.**
 
-1. **Each `templates/*.yml`** rewritten against the post-redesign IR.
-   Per-template rewrite checklist (from PHASE-2-PLAN.md §2 Slice 16):
-   - `state:` flattens — `state.fields.<name>:` becomes `state.<name>:`.
-   - Remove `state.initial_interval`. First-run seeding moves to a
-     `default: {subtract: [{now: true}, "720h"]}` on the destination
-     state field (typically `state.last_timestamp`).
-   - Remove `defaults:` block. Inline the base URL via interpolation
-     (`url: "${state.url}/path"`).
-   - Rename `cursor.<x>` → `state.<x>` everywhere; declare every such
-     field under the top-level `state:` block.
-   - Collapse pagination variants per `docs/schema.md` §3.6:
-     - `cursor_token`, `scroll_id`, `graphql_relay`, page-number-from-body
-       → `cursor_token` with `from:` / `to:` / optional `terminate_when:`.
-     - `link_header`, `next_url_in_body` → `next_url` with `from:` /
-       `to:` / optional `regex:` + `capture:`.
-     - `page_number`, `offset` → `counter` with `start:` / `step:`.
-   - Rewrite `progress:` as a flat list of `{to, from}` writes.
-   - Replace `async_job:` progress with a three-request
-     `submit / poll / fetch` chain in `requests:`; the poll step
-     carries `terminate_when:` keyed on the job's completion signal.
-   - Token caching (OAuth2 + custom-login) writes to `cache.<name>`
-     via the unified `Cache` block (`cache: {to, expires_at, buffer}`).
-   - ETag conditional templates write the etag into `state.<name>` via
-     `extract:`; no `cursor.*`.
-   - Drop `placeholder_event:` from `response:` blocks.
-   - Drop `state.fields`-keyed `mutability:` markers (lifetime is now
-     inferred from write sites).
-   - `requests[].path` becomes `url:` (absolute URL Value, typically an
-     interpolation).
-   - Closed `on_status:` verb set (`skip | fail | empty_events |
-     invalidate_cache`). No `retry` verb.
-2. **Each `schema/testdata/*.yml`** rewritten the same way. These
-   fixtures drive `schema.Validate` golden tests in Slice 17.
-3. **`templates/templates.go`** — most likely unchanged. If the
-   bundled name list rotates (some templates renamed away), update
-   the package-level comment and any in-code name lists.
-4. **Hygiene pass** per global rule #5. Each rewritten YAML reads as
-   if the post-redesign shape had always existed — no comments
-   referencing the old shape, no "formerly", no `cursor.*` mentions in
-   in-line YAML comments.
-5. **Smoke test (delete before close).** A throwaway test that
-   iterates `templates.Names()` and runs `schema.Parse` + `schema.Validate`
-   on each; fails the slice if any rewritten template emits an
-   error-severity diagnostic. Same for `schema/testdata/*.yml`.
-6. **New artefact `docs/planning/IMPL-16-templates.md`** carrying:
+1. **`go test ./...` green** at slice close. This is the slice's
+   verification gate.
+2. **Consolidation around goldens** where the legacy suite was dense
+   per-form unit tests — matches commit `f8db414`'s posture (the
+   project's stated testing model). The `schema/testdata/*.yml`
+   fixtures and the `templates/*.yml` templates are the natural
+   inputs; runtime goldens (events.jsonl + state.json + exchange
+   records) live under a sibling directory the slice agent names. Per-
+   form unit tests stay where the form has a non-trivial parse /
+   validate / lower path.
+3. **`internal/testserver/` fakes match the rewritten template URLs.**
+   The fakes drive the runner end-to-end goldens; their handler maps
+   stay 1:1 with the templates that exercise them.
+4. **Hygiene pass.** Per global rules #4/#5: no `// formerly`,
+   `// see slice N`, `// for backwards compat` lines anywhere. Every
+   test that touches a file with stale top-of-file vocabulary fixes the
+   vocabulary as part of the test rewrite.
+5. **New artefact `docs/planning/IMPL-17-tests.md`** carrying:
    - Scope (one sentence).
-   - Per-template rewrite log (one row per template; old variant →
-     new variant; notes on tricky reshape calls — async_job to
-     submit/poll/fetch, OAuth2 cache wiring, etc.).
-   - Removed-content list (every dropped variant per template).
-   - Build-state enumeration (`go build ./...` green; every template
-     parses + validates clean).
-   - Walkthrough verification (one or two of the more interesting
-     reshapes — async_poll, oauth2_client_credentials, fanout).
-   - Notes for downstream slices (Slice 17 on the goldens that lock
-     the new shape; Slice 18 on the schema-reference regeneration).
-7. Slice-table row 16 in `RESEARCH_PLAN.md` flipped to `[x]` with the
-   `IMPL-16-templates.md` link.
-8. `HANDOFF.md` rewritten to point at Slice 17 (`*_test.go` rewrites
-   across `schema/`, `client/`, `cmd/`, `internal/testserver/`).
+   - Per-package rewrite log (old → new test count; what consolidated
+     into goldens; what per-form tests remained; cross-package shared
+     fixtures).
+   - The runtime-golden directory layout (path + naming convention +
+     how the fakes feed the goldens).
+   - Build-state enumeration (`go test ./...` green; `go vet ./...`
+     clean).
+   - Walkthrough verification (one or two of the trickier rewrites —
+     `client/runner_test.go`'s drain lifecycle, `client/oauth2_test.go`
+     (renamed `auth_test.go`)'s cache invalidation path,
+     `schema/fixtures_test.go`'s consolidation strategy).
+   - Notes for Slice 18 on what to expect from the schema-reference
+     regenerator now that the type set is fully exercised by tests.
+6. Slice-table row 17 in `RESEARCH_PLAN.md` flipped to `[x]` with the
+   `IMPL-17-tests.md` link.
+7. `HANDOFF.md` rewritten to point at Slice 18 (`docs/schema-reference.md`
+   regeneration).
 
 **Verification.**
 
-- `go build ./...` stays green.
-- `skopos validate -i <each template>` exits `0` for every template.
-- `skopos validate -i <each schema/testdata fixture>` exits `0` for
-  every fixture intended to be valid (some fixtures may be
-  intentionally-broken negative cases; check the existing test
-  fixtures' role before rewriting).
-
-End-to-end correctness (drain → events → progress → snapshot) against
-the bundled templates is checkable manually once each template is
-rewritten — `skopos run -i <template> --once --out events.jsonl` with
-a local fake (the `internal/testserver/` fixtures, but those are
-themselves stale until Slice 17). The validate pass is the binding
-verification target for this slice.
-
-**Out of scope.** No schema changes (Slice 7 closed). No client
-changes (Slices 8-14 closed). No CLI changes (Slice 15 closed). No
-test rewrite (Slice 17). No docs regeneration (Slice 18).
+- `go test ./...` is green.
+- `go vet ./...` is clean (zero warnings, including in test files).
+- `go test -race ./client/...` is green for the runner / sink-concurrency
+  tests (the runner is single-goroutine but the sink contract is mutex-
+  guarded — see `docs/runtime.md` §11).
 
 ---
 
 ## Watch out for
 
-- **`docs/schema.md` §3.6 is the variant-mapping table.** Use it
-  verbatim when collapsing pagination variants; don't reinvent the
-  mapping per template.
+- **Many existing tests reference removed shapes.** `schema.TokenCache`,
+  `schema.RequestCache`, `schema.State` (the old wrapper type), the
+  `Defaults` block, `cursor.*`, `progress.async_job`, the seven legacy
+  pagination variants, `placeholder_event` — none of these survive.
+  When a test references a removed type or field, delete the test (the
+  shape it pinned no longer exists); when a test references a shape
+  whose new spelling differs, rewrite the test.
 
-- **First-run seeding moves into `default:`.** The old
-  `progress: {initial: {lookback: "720h"}}` pattern doesn't survive.
-  The destination state field carries
-  `default: {subtract: [{now: true}, "720h"]}` and `progress:` is
-  just the per-page write (typically a `{max: [...]}` over the prior
-  value + the page's event timestamps).
+- **Empty-page progress is the new behaviour, not an opt-in.** Tests
+  that previously asserted "progress fires only on non-empty pages"
+  are obsolete — the new contract (`docs/runtime.md` §5) is "progress
+  fires once per accepted page-response, including empty pages." The
+  rewritten tests should pin that contract directly.
 
-- **`requests[].url:` is always absolute.** No `path:` field; no
-  `defaults.base_url` to prefix. The interpolation `${state.url}/path`
-  is how authors compose URLs.
+- **`error.mode: standard` keeps progress writes that already fired.**
+  The deferred `Save` runs on every exit (normal, warn, fail). Tests
+  that previously asserted "no state survives a standard error" should
+  be replaced by tests asserting "state writes from completed pages
+  survive a mid-drain error."
 
-- **`cache.<name>` is process memory only.** OAuth2 token caching
-  writes to `cache.<name>`, not `state.<store_in>`. The slot expires
-  per the `Cache.expires_at` Value (typically
-  `{ref: response.body.expires_in, default: "1h"}`).
+- **`cache.*` is process memory only.** Tests must verify that
+  `Store.Save` does NOT persist `cache.*` (and that a runner restart
+  forces a fresh OAuth2 / session-login fetch). The legacy
+  `state.<store_in>_expires_at` slot convention is gone — `cache.<name>`
+  carries the value AND its expiry internally.
 
-- **`async_job:` progress disappears.** The three-request chain
-  (submit / poll / fetch) is the new shape; the poll step carries
-  `terminate_when:` keyed on the job's done signal. See
-  `docs/api-methods.md` §6 for the recipe.
+- **`requests[].terminate_when:` is the async-job loop primitive.** Tests
+  that previously walked the `progress.async_job` phase machine should
+  exercise the three-request chain pattern with a `terminate_when:` on
+  the poll step instead.
 
-- **`placeholder_event:` is gone.** Empty pages just trigger the next
-  page; no synthetic event is injected.
+- **String interpolation is everywhere.** Tests that previously asserted
+  on `Concat`-shaped Values should accept the desugared form (a string
+  literal in a Value position desugars to `{concat: [...]}` when it
+  contains `${...}` segments). The codec round-trips the desugared form
+  byte-stably; tests should compare the parsed-and-marshalled YAML, not
+  the source string.
 
-- **Reserved fan-out root list:** `state | cache | events | extract |
-  steps | response`. `fan_out.as` cannot collide with these (the
-  validator enforces it; the rewritten fanout template should pick a
-  name like `incident` or `item` that doesn't hit any root).
+- **`cursor_token_placeholder.yml` was repurposed.** Slice 16 turned
+  it into an empty-page progress fixture. Any legacy test that
+  reached for it as a placeholder-event fixture needs to be deleted
+  or retargeted at the new role.
 
-- **Tests stay stale.** Per global rule #6, Slice 17 owns the
-  `*_test.go` rewrite. You may NOT touch any `_test.go` file.
-  `go test ./...` stays red.
+- **`internal/testserver/` is shared across packages.** Tests in
+  `client/` and `cmd/skopos/` import the same handlers. Coordinate
+  URL-shape changes so neither package breaks the other — make the
+  testserver match the rewritten templates, then update every consumer
+  in one pass.
 
-- **`schema/testdata/cursor_token_placeholder.yml`** — re-read this
-  fixture's purpose before rewriting. If it was a deliberate negative
-  fixture pinning the `placeholder_event:` rejection (and the
-  validator already rejects the field at parse time), the fixture may
-  need a different unhappy-path role under the new validator.
+- **`go test -race` is the bar for the runner.** A bug here would
+  surface only under race, not under plain `go test`. Run it before
+  declaring slice-close.
 
 ---
 
 ## When you finish
 
-`git add` every rewritten `templates/*.yml` and `schema/testdata/*.yml`,
-the new `IMPL-16-templates.md`, the updated `RESEARCH_PLAN.md`, and
-the updated `HANDOFF.md`. Commit with a message like:
+`git add` every rewritten `*_test.go`, every modified file under
+`internal/testserver/`, the new `IMPL-17-tests.md`, the updated
+`RESEARCH_PLAN.md`, and the updated `HANDOFF.md`. Commit with a message
+like:
 
 ```
-feat(templates): slice 16 — bundled templates against the new IR
+test: slice 17 — *_test.go rewrites across schema/, client/, cmd/,
+internal/testserver/ against the new IR
 
-Every templates/*.yml and schema/testdata/*.yml rewritten against the
-post-redesign IR. state: flattens, defaults.base_url disappears in
-favour of ${state.url} interpolation, cursor.* renames to state.*,
-pagination collapses to 4 named variants + custom, progress is a flat
-write list, async_job becomes a three-request submit/poll/fetch chain,
-OAuth2 and session-login tokens write to cache.* via the unified
-Cache block.
+Every *_test.go rewritten against the post-redesign IR. The matrix-
+coverage suites in schema/fixtures_test.go and client/{pagination,
+progress}_test.go consolidate around golden inputs from templates/
+and schema/testdata/ plus per-template fakes in internal/testserver/.
+oauth2_test.go renames to auth_test.go to match auth.go + the merged
+cache.go. Empty-page progress, request-level terminate_when async
+loops, cache.* process-memory semantics, and the unified Cache block
+are pinned by new goldens.
 
-schema/ + client/ + cmd/ + every bundled template parses + validates
-clean; tests stay red until Slice 17.
+go test ./... and go test -race ./client/... are green. The full
+Phase 2 surface is verified end-to-end.
 ```
 
-Push to `claude/slice-16-templates-<token>` and open a PR.
+Push to `claude/slice-17-tests-<token>` and open a PR.
 
 If you discover the slice is wider than the plan, **stop and flag it
 via `AskUserQuestion`** rather than widening scope silently.

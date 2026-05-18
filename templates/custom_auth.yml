@@ -1,28 +1,21 @@
-# custom_auth — operator-defined auth headers.
+# custom_auth — single custom auth header.
 #
 # Demonstrates: auth.custom for APIs that don't fit one of the named auth
-# variants (signed requests, vendor-specific token schemes, etc.). Headers
-# are built from state and request metadata via Value expressions.
+# variants. The header value is built from a state ref; richer compositions
+# are expressed with `{concat: [...]}` or string interpolation.
 
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    api_key:
-      type: secret
-      default: "custom-auth-value-99999"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  api_key:
+    type: secret
+    default: "custom-auth-value-99999"
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
 
 auth:
   custom:
@@ -31,9 +24,9 @@ auth:
 
 requests:
   - method: GET
-    path: /custom_auth/events
+    url: "${state.url}/custom_auth/events"
     query:
-      since: {ref: cursor.last_timestamp}
+      since: {ref: state.last_timestamp}
 
 response:
   decode: json
@@ -43,9 +36,8 @@ pagination:
   none: {}
 
 progress:
-  latest_event_timestamp:
-    event_time:
-      path: timestamp
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}
 
 error:
   mode: standard
