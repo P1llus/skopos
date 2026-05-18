@@ -2,13 +2,15 @@
 
 This document proposes a reshaped schema for skopos. It covers every
 top-level block, the cross-cutting primitives, and two side-by-side
-template migrations to ground the proposal in concrete YAML. A short
-list of open questions at the end calls out the decisions that still
-need a vote before any code moves.
+template migrations to ground the proposal in concrete YAML.
 
-No code changes accompany this document. Once the shape described here
-is agreed, a follow-up plan will specify the Go-side refactor (struct
-changes, validator changes, runtime changes, snapshot migration).
+Section 6 records the settled decisions from the design discussion and
+the implementation-time work items that the code-change PR will pick
+up. There are no open schema questions.
+
+No code changes accompany this document. The next step is a separate
+plan specifying the Go-side refactor (struct changes, validator
+changes, runtime changes, snapshot migration).
 
 ---
 
@@ -35,9 +37,14 @@ changes, validator changes, runtime changes, snapshot migration).
   `custom:` escape hatch). Progress is just a list of state writes; no
   variants. The schema is small.
 - Per-page progress checkpointing. The runner advances `state.*`
-  destinations after each successful page-to-sink delivery, not at
-  drain end. Failure mid-pagination preserves progress up through the
-  last successful page.
+  destinations after each accepted page-response, regardless of event
+  count, so authors can persist server-provided cursors and timestamps
+  even when an individual page returned no events.
+- Recovery via progress, not via per-drain state. Per-drain pagination
+  state is always wiped at drain start. A drain that fails mid-page
+  re-bootstraps pagination on retry; the high-water mark that prevents
+  refetching the universe is whatever `progress:` already persisted to
+  `state.*`. At-least-once delivery + sink dedup handles any overlap.
 
 **Non-goals**
 
@@ -48,10 +55,9 @@ changes, validator changes, runtime changes, snapshot migration).
 - Rewriting all 26 templates in this document. Two migration sketches
   are included to validate the proposal; the remaining templates will
   be migrated in the code-change PR.
-- Specifying the runtime contract for resuming a partially-failed
-  drain. The schema describes shape; the per-drain-state lifetime
-  decision (wipe at drain start vs. persist for resume) is a runtime
-  open question — see §6.
+- Specifying every runtime detail. Some implementation choices
+  surface in §6 as notes for the implementation plan; none of them
+  affect the schema shape.
 
 ---
 
@@ -104,10 +110,22 @@ changes, validator changes, runtime changes, snapshot migration).
    thrown; the CEL/httpjson pattern of "force a failure to terminate"
    has no place in this schema.
 
-7. **Per-page progress checkpoints.** Progress writes happen after each
-   successfully-sent page, not at drain end. The runner does not buffer
-   events across pages; reducers (`max`, `min`, `first`, `last`,
-   `count`) are streaming operations.
+7. **Per-page progress checkpoints, irrespective of event count.**
+   Progress writes happen once per accepted page-response (i.e. any
+   response whose status passes `expect_status:` and `on_status:`),
+   not at drain end. Empty event lists still trigger progress so that
+   authors can persist server-provided cursors, ingestion timestamps,
+   or other body fields that live outside the events array. The runner
+   does not buffer events across pages; reducers (`max`, `min`,
+   `first`, `last`, `count`) are streaming operations.
+
+8. **Per-drain state always resets at drain start.** Fields written by
+   `pagination:` are not preserved across drain boundaries. A drain
+   that fails mid-page re-bootstraps pagination on the next start.
+   Recovery from partial failure is the author's responsibility via
+   what they choose to write in `progress:` — typically a high-water
+   timestamp or server-provided cursor that lives in `state.*` and
+   survives.
 
 ---
 
@@ -504,28 +522,40 @@ progress:
 | Field    | Required | Description |
 |----------|----------|-------------|
 | `to`     | yes      | `state.<name>`. Persistent across drains (lifetime inferred). The state field must be declared under `state:`. |
-| `from`   | yes      | Any Value. Can use reducers (`max`/`min`/`first`/`last`/`count`) over `events.*`, arithmetic primitives, refs to other state, etc. |
+| `from`   | yes      | Any Value. Has access to every namespace the request scope has: `state.*`, `events.*`, `response.body.*`, `response.header.*`, `steps.<id>.body.*`, `steps.<id>.header.*`. Can use reducers (`max`/`min`/`first`/`last`/`count`) over `events.*`, arithmetic primitives, etc. |
 | `coerce` | no       | Type coercion verb. |
 | `regex`  | no       | Optional regex transform. |
 
 **Evaluation semantics**
 
-- All `from:` expressions evaluate against the same snapshot of state
-  (batch semantics, not sequential). A later entry referencing
+- **One firing per accepted page-response.** A page-response is
+  accepted when its status passes `requests[].expect_status` and any
+  `on_status:` action did not abort the drain. Progress fires even
+  when `events.*` is empty — server-provided cursors, ingestion
+  timestamps, and other response-body fields can be persisted
+  independently of event production. Progress does NOT fire when a
+  request is skipped by `if:`, aborted by `on_status: fail`, or
+  errored out before a response was decoded.
+- **Batch semantics across entries.** All `from:` expressions evaluate
+  against the same snapshot of state. A later entry referencing
   `state.window_start` sees the *pre-write* value of that field,
   whatever order the entries appear in. This makes the time_window
   pattern (where the new `window_start` is read from the *old*
   `window_end`) correct regardless of declaration order.
-- Each entry fires once per page, after the page's events have been
-  delivered to the sink and the sink has acked. State commit then
-  follows. Failure between events-sent and state-committed is
-  acceptable (at-least-once); failure before events-sent leaves state
-  unchanged.
-- No accumulation primitive is provided. Authors who want a
-  cumulative high-water mark write the merge explicitly:
+- **Sink delivery before commit.** The runner emits the page's events
+  to the sink, then evaluates progress writes, then commits state.
+  Failure between events-sent and state-committed is acceptable
+  (at-least-once); failure before events-sent leaves state unchanged.
+- **No implicit accumulation.** Authors who want a cumulative
+  high-water mark write the merge explicitly:
   `from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}`.
   This is verbose but precise; the runner never has to guess what
   "merging" means for a given field.
+- **First-write-wins via `ref` default.** "Persist on the very first
+  drain only" is just `from: {ref: state.x, default: <new-value>}` —
+  if `state.x` is set, it writes itself back (no-op); if absent, the
+  default kicks in and writes the new value. No new schema primitive
+  needed.
 
 **Variant mapping from current schema**
 
@@ -569,6 +599,7 @@ schema blocks expressible as primitives.
 | Form | YAML shape | Produces |
 |------|------------|----------|
 | Literal string | `"foo"` | string |
+| **Interpolated string** | `"${state.url}/api/v1"` | string with `${...}` segments resolved against any namespace |
 | Literal int | `100` | int64 |
 | Literal bool | `true` | bool |
 | Ref | `{ref: state.url}` | resolved value |
@@ -588,6 +619,28 @@ schema blocks expressible as primitives.
 | **Last** | `{last: <list-or-projection>}` | reducer — last element in declared order |
 | **Count** | `{count: <list-or-projection>}` | reducer — number of elements |
 | **Regex** | `{regex: {pattern: <string>, from: <Value>, capture?: <int>, default?: <Value>}}` | extracted substring |
+
+**String interpolation.** Any YAML string literal in a Value position
+is scanned for `${<path>}` segments, which resolve against the same
+namespaces as `{ref: <path>}`. The string desugars to a `{concat:
+[...]}` Value with interleaved literal segments and refs. For example,
+`"${state.url}/api/${state.endpoint}/events"` is exactly:
+
+```yaml
+{concat: [{ref: state.url}, "/api/", {ref: state.endpoint}, "/events"]}
+```
+
+Each `${...}` segment may use a default with the `|` sigil:
+`"${state.next_token|}"` is `{ref: state.next_token, default: ""}`; the
+text after the pipe is parsed as a YAML scalar so non-string defaults
+work too (`"${state.page|1}"` defaults to integer `1`). Literal `$`
+needs escaping as `\$`; once we see `$`, a literal `{` after it is
+`\{`. Outside an `${...}` segment, `$` and `{` are plain text.
+
+Interpolation produces a string. Refs inside `${...}` that resolve to
+non-string values are coerced as if wrapped in `{format: string,
+value: ...}`. Secret-tainted refs propagate their secret status to the
+composed string (same rule as `{concat}` today).
 
 **Reducer inputs.** A reducer accepts either:
 - A list literal: `{max: [v1, v2, v3]}` — sugar for `{max: {list: [v1, v2, v3]}}`.
@@ -745,10 +798,10 @@ auth:
 
 requests:
   - method: GET
-    url: {concat: [{ref: state.url}, "/bearer_simple/events"]}
+    url: "${state.url}/bearer_simple/events"
     query:
       since: {ref: state.last_timestamp}
-      limit: {format: string, value: {ref: state.page_size}}
+      limit: "${state.page_size}"
 
 response:
   decode: json
@@ -759,7 +812,7 @@ pagination:
 
 progress:
   - to: state.last_timestamp
-    from: {max: {ref: events.*.timestamp}}
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}
 
 error:
   mode: standard
@@ -770,14 +823,17 @@ error:
 - `state.fields.*` → `state.*` (no `.fields` wrapper).
 - `state.initial_interval` is gone. The first-run window is the
   `default:` on `state.last_timestamp`.
-- `defaults.base_url` is gone. The request uses an absolute `url:`
-  built with `concat`.
+- `defaults.base_url` is gone. The request uses an interpolated `url:`
+  string (`${state.url}/...`).
 - `cursor.last_timestamp` → `state.last_timestamp`. No more `cursor.*`
   namespace.
 - `progress.latest_event_timestamp` → a flat write list. The
-  `event_time.path` sub-object is gone; the reducer (`{max: ...}`) and
-  the events projection (`events.*.timestamp`) say the same thing in
-  primitives.
+  `event_time.path` sub-object is gone; the reducer over
+  `events.*.timestamp` plus the explicit `max` against the prior
+  state value says the same thing in primitives and is correct
+  across partial-failure restarts.
+- `{format: string, value: ...}` wrappers for query-string
+  coercions collapse to `"${state.page_size}"` interpolation.
 
 ---
 
@@ -866,12 +922,10 @@ auth:
 
 requests:
   - method: GET
-    url:
-      ref: state.next_url
-      default: {concat: [{ref: state.url}, "/next_url_in_body/alerts"]}
+    url: {ref: state.next_url, default: "${state.url}/next_url_in_body/alerts"}
     query:
       since: {ref: state.last_timestamp}
-      limit: {format: string, value: {ref: state.page_size}}
+      limit: "${state.page_size}"
 
 response:
   decode: json
@@ -884,7 +938,7 @@ pagination:
 
 progress:
   - to: state.last_timestamp
-    from: {max: {ref: events.*.created_at}}
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.created_at}}]}
 
 error:
   mode: standard
@@ -893,85 +947,77 @@ error:
 **What changed**
 
 - `state.fields.*` → `state.*`; `state.initial_interval` gone.
-- `defaults.base_url` gone; the request's bootstrap URL is built
-  inline.
+- `defaults.base_url` gone; the request's bootstrap URL is the `ref`'s
+  default, written with interpolation for brevity.
 - `state.next_url` is declared explicitly. Pagination's `to:`
-  destination makes the per-drain write visible.
+  destination makes the per-drain write visible at declaration time.
 - `pagination.next_url_in_body.next_url_at` → `pagination.next_url`
   with explicit `from:` and `to:` (same primitive shape that
   `cursor_token`, `counter`, and `custom` use).
 - `cursor.next_url` / `cursor.last_timestamp` → `state.next_url` /
   `state.last_timestamp`.
 - `progress.latest_event_timestamp.event_time.path` → a flat write
-  using a reducer over `events.*.created_at`.
+  using a reducer over `events.*.created_at` plus an explicit `max`
+  against prior state.
 
 ---
 
-## 6. Open questions
+## 6. Settled decisions and implementation notes
 
-The remaining decisions before a code plan can be written:
+There are no remaining open schema questions. The notes below record
+choices that were considered and resolved during the design discussion,
+plus implementation-time work items that the code-change PR will pick
+up.
 
-**A. Per-drain state lifetime across drain boundaries.**
+**A. Per-drain state lifetime.** Per-drain state (every `state.*` field
+written by `pagination:`) wipes at the start of every drain. A drain
+that fails mid-page re-bootstraps pagination on the next start. The
+progress mechanism is the only path for recovery — authors who care
+about resuming write a high-water mark (timestamp, server cursor,
+etc.) to a persistent `state.*` field under `progress:` and rely on
+at-least-once delivery + sink dedup to handle the overlap. This keeps
+the runtime contract simple and removes the "did the previous drain
+complete normally" branch from the snapshot loader.
 
-When a drain fails mid-pagination at page 801 of 1000, two behaviours
-are possible:
+**B. URL composition.** Adopted: string interpolation. `${state.url}`
+inside any string Value desugars to `{concat: [...]}`. The change is
+strictly additive at the parser; it is not URL-specific and works for
+headers, body fields, raw bodies, etc. See §4.1 for full syntax. The
+verbose `{concat: [...]}` form is still accepted; templates are free
+to mix.
 
-- **Wipe at drain start.** The per-drain state (e.g. `state.next_token`)
-  is cleared at the start of every drain. Failed drains restart from
-  bootstrap; recovery relies on at-least-once delivery and the
-  progress floor (`state.last_timestamp`) plus sink dedup.
-- **Persist across boundaries; clear on normal completion.** The
-  per-drain state survives a failed drain. On the next drain start,
-  the runner checks whether the previous drain completed normally
-  (terminate_when fired); if so, the per-drain state is cleared; if
-  not, the drain resumes from where it failed.
+**C. Progress sugar.** Not adopted for now. The flat list of writes
+in §3.7 covers every current template; we will revisit if a recurring
+pattern emerges that authors find verbose. Adding a named variant
+later is additive — no migration needed.
 
-The second is friendlier to long-running drains over flaky networks
-but requires the runner to track "did the previous drain complete
-normally." This is purely a runtime decision; the schema shape is the
-same either way.
+**D. State namespace split.** Not adopted. A single `state.*`
+namespace with lifetime inferred from write sites is enough for today.
+A future split into `state.*` (persistent) and `scratch.*` (per-drain)
+remains possible if implicit lifetime inference confuses authors in
+practice.
 
-**B. URL composition ergonomics.**
+**E. Reducer set.** Adopted: `max`, `min`, `first`, `last`, `count`.
+`sum` and `avg` are not added because no current template needs them.
+Adding more is additive.
 
-Every request now writes `url: {concat: [{ref: state.url}, "/path"]}`
-because `defaults.base_url` is gone. Two follow-ups worth considering:
+**F. Vocabulary final pass.** The current draft uses `to:` / `from:`
+everywhere except `fan_out:` (which keeps `over:` and `as:` because
+those words carry the right meaning for the per-item construct). The
+code-change PR will run a final audit; any straggler will be renamed
+at that point.
 
-- **String interpolation Value form.** `url: "{state.url}/path"` would
-  collapse the concat to a one-liner. Useful far beyond URLs (raw
-  bodies, headers, etc.). Adds a new Value form to the parser.
-- **Status quo (concat).** No new parser surface; templates are
-  slightly more verbose. Acceptable if interpolation feels out of
-  scope.
+**G. Snapshot migration.** The code change must migrate existing
+`state.json` files: `cursor.<name>` keys move to `state.<name>` keys
+(per the namespace consolidation). Per-drain state entries can be
+dropped during migration; they'll be re-derived from pagination on
+the first post-migration drain.
 
-**C. `time_window` as sugar vs. always-primitive.**
-
-The proposal puts `time_window` in the primitive form (two writes,
-order-independent). For APIs that need the sliding window pattern,
-that's two lines and a small Value expression. We could add a
-`time_window:` sugar variant under `progress:` later if templates
-start repeating the pattern.
-
-**D. Per-drain state namespace split.**
-
-The proposal keeps everything in `state.*` with lifetime *inferred*
-from where the field is written. An alternative is splitting into
-`state.*` (persistent) and `scratch.*` (per-drain) so lifetime is
-visible at every ref site. This was discussed and deferred — the
-single namespace is simpler for authors today and we can split later
-if the implicit inference becomes confusing.
-
-**E. Reducers — additional verbs.**
-
-`max`, `min`, `first`, `last`, `count` cover every current template's
-needs. `sum` and `avg` are not added yet. Adding more verbs is purely
-additive.
-
-**F. Vocabulary final pass.**
-
-The current draft uses `to:` and `from:` everywhere except in
-`fan_out:` (which uses `over:` and `as:`) and a couple of small spots.
-A vocabulary audit during the code-change PR should catch any
-remaining inconsistencies.
+**H. Type rename.** The current schema's `type: rfc3339` (proposed in
+an earlier draft) does not exist in code; the production schema uses
+`type: duration` for timestamp-flavoured fields. The new `type:
+timestamp` with `format:` replaces both, but no migration is needed
+beyond updating templates.
 
 ---
 
