@@ -7,41 +7,37 @@ import (
 	"log"
 	"maps"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/p1llus/skopos/schema"
 )
 
-// Snapshot is the persistable runtime state.
+// Snapshot is the persistable runtime state. Only the state namespace is
+// persisted; every other runtime namespace (cache, events, extract, steps,
+// response, fan-out aliases) lives in process memory only.
 //
-// Config-mutability state fields (mutability: config, the default) are NOT
-// persisted — they come from schema.State.Fields[].Default or from the
-// operator's configuration. A Snapshot loaded from disk merges in defaults
-// from the IR document for any config field the file does not carry.
+// State keys map exactly to the field names declared under state: in the
+// spec, with no namespace prefix. Values round-trip through JSON.
 type Snapshot struct {
-	// State holds runtime-mutable state fields — the only ones that
-	// change between iterations: OAuth2 cached tokens at
-	// state.<cache.store_in>, custom-login session tokens, etc.
+	// State holds every persisted state field: operator-config fields
+	// (declared with default: and never written to) and persistent
+	// fields (the target of any progress write, or an extract with
+	// to: state.<name>). Per-drain-scratch fields are omitted.
 	State map[string]any `json:"state,omitempty"`
-	// Cursor holds every inferred cursor field for the active
-	// pagination + progress + async_job strategies. Slice 7 moved the
-	// framework-internal expiry-tracking slots out of cursor and into
-	// state (paired with the token they describe), so Snapshot.Cursor
-	// now carries only author-facing pagination / progress / async_job
-	// state.
-	Cursor map[string]any `json:"cursor,omitempty"`
 }
 
-// Store is the persistence contract. Implementations: MemoryStore (default,
-// in-memory only), FileStore (JSON file). External callers can plug in
-// BoltDB, etcd, etc.
+// Store is the persistence contract. Implementations: MemoryStore
+// (in-memory, default), FileStore (atomic JSON file). External callers
+// can plug in any backend that round-trips a Snapshot through
+// Save/Load.
 type Store interface {
 	// Load returns the latest persisted snapshot, or the zero Snapshot
-	// when no prior snapshot exists (first-run state). A missing
-	// underlying medium (e.g. a not-yet-created file) is not an error.
+	// when no prior snapshot exists. A missing underlying medium
+	// (e.g. a not-yet-created file) is not an error.
 	Load() (Snapshot, error)
 	// Save persists s, overwriting any prior snapshot atomically. The
-	// runner calls Save once per Drain (via a deferred call, even on
+	// runner calls Save once per Drain via a deferred call (even on
 	// error) so partial progress survives a crash.
 	Save(Snapshot) error
 }
@@ -61,102 +57,62 @@ func (m *MemoryStore) Load() (Snapshot, error) { return m.snap, nil }
 // Save overwrites the in-memory snapshot. Always nil error.
 func (m *MemoryStore) Save(s Snapshot) error { m.snap = s; return nil }
 
-// scope holds the resolved namespaces for one iteration of the loop. It
-// shadows the IR namespace table.
+// scope is the namespace-resolution context for one drain. It mirrors the
+// IR's namespace table and is reused across pagination iterations within
+// a drain; continuous-mode operation reuses the same scope across
+// redrains.
 //
-// # Field lifetimes
+// Each namespace has a defined lifetime:
 //
-// Be precise about which fields survive iterations and which do not — bugs
-// here are silent and load-bearing.
+//   - state:           Per-drain, with operator-config and persistent
+//     sub-fields persisted across drains via the deferred store.Save in
+//     Runner.Drain. Per-drain scratch sub-fields (every pagination
+//     write destination) are reset to their declared default at the
+//     start of every drain.
 //
-//   - state:          PER-DRAIN. Seeded once from Snapshot.State + IR defaults
-//     in newScope; runtime-mutable writes (OAuth2 token cache, custom-login
-//     session tokens, plus their paired <store_in>_expires_at slots after
-//     slice 7) accumulate within a drain and persist across drains via the
-//     deferred store.Save in Runner.Drain.
+//   - cache:           Process memory only. Slots are written by Cache
+//     blocks (auth.oauth2.<grant>.cache, requests[].cache) and never
+//     persisted. Repopulated lazily after a runner restart.
 //
-//   - cursor:         PER-DRAIN, PERSISTED. Seeded once from Snapshot.Cursor
-//     in newScope. Mutated by pagination.seed + pagination.advance +
-//     progress.seed + progress.advance + the async_job phase machine +
-//     extract[].target=cursor. Persisted whole on drain end (even on
-//     error) so the next drain resumes from the high-water mark. The
-//     schema is inferred from the document's active strategies — there's
-//     no central registry. The keys written by each strategy in the
-//     runner today:
+//   - events:          Per-page-response. The decoded events list bound
+//     by the runner before sink delivery and progress evaluation;
+//     rebound on the next page-response. Exposed as events.count,
+//     events.first[.field], events.last[.field], events.<int>[.field],
+//     and events.*[.field].
 //
-//     pagination.cursor_token         "token"            (opaque server-supplied cursor; absent on first iteration — advance writes only when token_at returns a non-zero value, so {ref: cursor.token} resolves to nil and the slot is skipped on the bootstrap request)
-//     pagination.page_number          "page"             (1-based; seed defaults to 1 on first iteration, advance increments)
-//     pagination.offset               "offset"           (0-based; seed defaults to 0; advance bumps by batch_size or observed event count)
-//     pagination.offset (with batch)  "offset_end"       (offset + batch_size; seed writes alongside cursor.offset when batch_size is declared and evaluates cleanly)
-//     pagination.link_header          "next_link"        (full next-page URL parsed from the Link header; absent on first iteration so templates default to the bootstrap URL)
-//     pagination.next_url_in_body     "next_url"         (full next-page URL read from the producer body at next_url_at; absent on first iteration)
-//     pagination.scroll_id            "scroll_id"        (server-supplied scroll session id; absent on first iteration so the bootstrap request opens a new session; cleared on complete_when termination)
-//     pagination.graphql_relay        <cursor_var>       (Relay endCursor; author-named via cfg.CursorVar — typically "after"; absent on first iteration so the GraphQL variable rides as null; cleared when has_next_page=false)
-//     progress.latest_event_timestamp "last_timestamp"   (RFC 3339 string; seed pre-seeds initial.lookback on first drain, advance bumps to max(events))
-//     progress.max_event_field        "last_timestamp"   (RFC 3339 string; same code path as latest_event_timestamp)
-//     progress.time_window            "window_start", "window_end" (formatted via cfg.Format — default rfc3339; seed pins the window once per drain, advance slides window_start to the just-finished window_end)
-//     progress.use_now                "last_timestamp"   (advance writes s.now() - lookback; no events walk; seed leaves the cursor untouched)
-//     progress.async_job              "phase"            ("submit" | "poll" | "fetch"; seed defaults to firstPhase when absent)
-//     async_job.{submit,poll}.extract <author-named>     (auth tokens, job ids, etc.)
-//     async_job.on_complete=use_now   "last_timestamp"   (set at producer completion)
-//     async_job.on_complete=latest_event_timestamp "last_timestamp" (max value at cu.event_time.path inside the producer body's events list)
-//     extract[].target=cursor         <extract.name>     (author-declared)
+//   - extract:         Per-iteration. Reset to a fresh empty map at the
+//     top of every pagination iteration in Runner.Drain; a later
+//     iteration MUST NOT see a previous iteration's extract bindings.
 //
-//     Unset keys read as nil at Value-eval time; the {default: ...} branch
-//     on Ref covers first-drain absence.
+//   - steps / stepHeaders: Per-iteration, same reset rule as extract.
+//     Decoded bodies and post-auth response headers indexed by
+//     request id.
 //
-//   - extract:        PER-ITERATION. Reset to a fresh empty map at the top
-//     of every iteration in Runner.Drain. A later iteration MUST NOT see a
-//     previous iteration's extract bindings — that would silently leak
-//     stale values into multi-page drains.
+//   - body / responseHeaders: Per-evaluation. Bound only while a
+//     predicate or extract is being resolved against a specific
+//     response context; resolves response.body.<path> via
+//     lookupBodyPath and response.header.<name> via headerLookup.
 //
-//   - steps:          PER-ITERATION. Same reset rule as extract. Step bodies
-//     from a previous iteration are not visible to later iterations;
-//     authors who need cross-iteration access must extract a field into
-//     state or cursor.
-//
-//   - item / itemBinding: PER-FAN-OUT-ITERATION. While a step with
-//     fan_out is executing, item holds the current per-item value and
-//     itemBinding holds the author-chosen name from fan_out.as. Refs
-//     rooted at that name (e.g. {ref: incident.id} when as=incident)
-//     resolve against item; outside a fan_out step both are zeroed and
-//     the root falls through to the unknown-namespace branch.
-//
-//   - body:           SCOPED to complete_when predicate evaluation
-//     (pagination.scroll_id.complete_when, progress.async_job.poll.complete_when).
-//     Outside that narrow window the field is unset. The
-//     response.body.<path> ref resolves against this field; the legacy
-//     body.<path> root was deleted in slice 2.
-//
-//   - responseHeaders: SCOPED, mirrors body. Set alongside scope.body
-//     whenever the response context is active (currently only
-//     complete_when predicate evaluation). Resolves response.header.<name>
-//     refs case-insensitively via http.Header.Get.
-//
-//   - stepHeaders:    PER-ITERATION, mirrors steps. Populated after every
-//     completed request whose req.ID is set. Resolves
-//     steps.<id>.header.<name> refs.
-//
-// Note on pagination / progress signals: there is no separate
-// fromPagination / fromProgress map any more — pagination.seed and
-// progress.seed write directly into scope.cursor, and templates read those
-// values via {ref: cursor.<name>}. This collapses two namespaces into one
-// and matches the §1.6 design (the stable cursor.<role> names ARE the
-// progression signal). pagination.seed runs once per iteration before the
-// producer step's request bodies / queries are evaluated; progress.seed
-// runs once per drain so the window-start stays stable across pages.
+//   - item / itemBinding: Per-fan-out-iteration. Set while a step with
+//     fan_out is executing the active per-item iteration; refs rooted
+//     at itemBinding resolve against item. Outside a fan_out step both
+//     are zeroed and the binding name falls through to the
+//     unknown-namespace branch.
 type scope struct {
-	doc     *schema.Doc
+	doc *schema.Doc
+
 	state   map[string]any
-	cursor  map[string]any
+	cache   map[string]any
 	extract map[string]any
-	steps       map[string]any // step id → decoded body
-	item        any            // current per-item value while a fan_out step runs
-	itemBinding string         // active fan_out.as name; "" outside fan_out
-	body    any            // active response context body (unused outside the predicate);
-	// resolves response.body.<path> via lookupBodyPath
-	responseHeaders http.Header            // active response context headers (mirrors body)
-	stepHeaders     map[string]http.Header // step id → response headers
+	steps   map[string]any
+	events  any
+
+	body            any
+	responseHeaders http.Header
+	stepHeaders     map[string]http.Header
+
+	item        any
+	itemBinding string
 
 	// nowFn is the clock; defaults to time.Now. Per-scope (not package
 	// global) so concurrent runners can use independent clocks.
@@ -169,10 +125,14 @@ type scope struct {
 	logger *log.Logger
 }
 
-// newScope seeds a scope from a snapshot and the IR's state-field defaults.
-// For each declared state field, the snapshot value wins over the default;
-// fields absent from both stay unset (and any {ref: state.<name>} hits the
-// {default: ...} branch or errors).
+// newScope seeds a scope from a snapshot and the IR's state-field
+// defaults. Each declared field's default Value is evaluated and laid
+// down first; the snapshot values are then overlaid so persisted fields
+// win over defaults.
+//
+// Per-drain scratch fields are NOT wiped here — Runner.Drain owns the
+// per-drain wipe call site so continuous-mode operation can reuse one
+// scope across drains without re-loading the snapshot.
 func newScope(doc *schema.Doc, snap Snapshot, now func() time.Time) (*scope, error) {
 	if now == nil {
 		now = time.Now
@@ -180,72 +140,198 @@ func newScope(doc *schema.Doc, snap Snapshot, now func() time.Time) (*scope, err
 	s := &scope{
 		doc:         doc,
 		state:       make(map[string]any),
-		cursor:      make(map[string]any),
+		cache:       make(map[string]any),
 		extract:     make(map[string]any),
 		steps:       make(map[string]any),
 		stepHeaders: make(map[string]http.Header),
 		nowFn:       now,
 	}
-
-	// Seed state from defaults, overriding with snapshot writes.
-	if doc.State != nil {
-		for name, fd := range doc.State.Fields {
-			if fd.Default != nil {
-				s.state[name] = fd.Default
-			}
-		}
+	if err := s.seedDefaults(); err != nil {
+		return nil, err
 	}
 	maps.Copy(s.state, snap.State)
-
-	// Seed cursor from snapshot. Cursor schema is inferred from strategies;
-	// unset fields read as the zero value at evaluation time.
-	maps.Copy(s.cursor, snap.Cursor)
-
 	return s, nil
 }
 
-// snapshot returns a Snapshot containing only fields that should persist.
-// Runtime-mutability state fields persist; config-mutability fields do not
-// (they come from schema.State.Fields[].Default). Cursor is persisted whole.
-func (s *scope) snapshot() Snapshot {
-	out := Snapshot{
-		State:  make(map[string]any),
-		Cursor: make(map[string]any),
+// seedDefaults evaluates every declared state field's Default Value into
+// state. Fields without a default stay unset; readers fall through to the
+// {ref: ..., default: ...} branch or surface absence.
+func (s *scope) seedDefaults() error {
+	for name, fd := range s.doc.State {
+		if fd.Default == nil {
+			continue
+		}
+		v, err := s.evalValue(*fd.Default)
+		if err != nil {
+			return fmt.Errorf("state.%s default: %w", name, err)
+		}
+		s.state[name] = v
 	}
-	if s.doc.State != nil {
-		for name, fd := range s.doc.State.Fields {
-			if fd.Mutability != "runtime" {
-				continue
-			}
-			if v, ok := s.state[name]; ok {
-				out.State[name] = v
-			}
+	return nil
+}
+
+// snapshot returns the Snapshot to persist. Only operator-config and
+// persistent state fields are written; per-drain scratch fields are
+// omitted. The cache namespace and every other non-state runtime
+// namespace are never persisted.
+func (s *scope) snapshot() Snapshot {
+	out := Snapshot{State: make(map[string]any)}
+	scratch := perDrainScratchFields(s.doc)
+	for name := range s.doc.State {
+		if _, isScratch := scratch[name]; isScratch {
+			continue
+		}
+		if v, ok := s.state[name]; ok {
+			out.State[name] = v
 		}
 	}
-	maps.Copy(out.Cursor, s.cursor)
 	return out
 }
 
-// resolveNamespaceRef returns the value at path within s. The path's root
-// segment must be one of: state, cursor, extract, steps, response, or the
-// author-chosen fan_out.as name active in s.itemBinding (e.g. "incident"
-// when the running step has `fan_out: {as: incident}`). The remaining
-// segments index into the value at that root.
+// resetPerDrainScratch resets every per-drain-scratch state field on s to
+// its declared default Value, or deletes the slot when no default is
+// declared. The runner calls this at the start of every Drain so a drain
+// that fails mid-page re-bootstraps pagination on the next start.
+func (s *scope) resetPerDrainScratch() error {
+	scratch := perDrainScratchFields(s.doc)
+	for name := range scratch {
+		fd, declared := s.doc.State[name]
+		if !declared || fd.Default == nil {
+			delete(s.state, name)
+			continue
+		}
+		v, err := s.evalValue(*fd.Default)
+		if err != nil {
+			return fmt.Errorf("state.%s default: %w", name, err)
+		}
+		s.state[name] = v
+	}
+	return nil
+}
+
+// fieldLifetime classifies a declared state field by where it is written.
+// The classification drives both the per-drain wipe (per-drain scratch
+// fields are reset at drain start) and the snapshot filter (per-drain
+// scratch fields are excluded from the persisted state).
+type fieldLifetime int
+
+const (
+	// lifetimeOperatorConfig is a state field declared with a default
+	// but never written as the to: of any pagination, progress, or
+	// extract site. Persisted whole so the snapshot file stays
+	// self-contained and a re-load reproduces the same starting state
+	// without needing the operator to re-supply defaults.
+	lifetimeOperatorConfig fieldLifetime = iota
+	// lifetimePerDrainScratch is a state field that appears as the to:
+	// destination of any pagination write (cursor_token.to /
+	// next_url.to / counter.to / custom.advance[].to). Wiped at the
+	// start of every drain; not persisted.
+	lifetimePerDrainScratch
+	// lifetimePersistent is a state field that appears as the to:
+	// destination of any progress write or as an extract destination
+	// with to: state.<name>. Persisted on every drain.
+	lifetimePersistent
+)
+
+// classifyStateField returns the lifetime classification for state.<name>.
+// ok=false when name is not declared under state:.
 //
-// Returns (nil, false) for unresolved leaves; callers decide whether the
-// absence is fatal (e.g. {ref: ...} with no default) or fine (e.g. predicate
-// guarding).
+// The classification is read off the parsed *schema.Doc — never cached on
+// the scope. The validator guarantees no field falls in more than one
+// classification, so per-drain-scratch and persistent membership are
+// disjoint sets in any document that passed schema.Validate.
+func classifyStateField(doc *schema.Doc, name string) (fieldLifetime, bool) {
+	if _, declared := doc.State[name]; !declared {
+		return 0, false
+	}
+	if _, ok := perDrainScratchFields(doc)[name]; ok {
+		return lifetimePerDrainScratch, true
+	}
+	if _, ok := persistentStateFields(doc)[name]; ok {
+		return lifetimePersistent, true
+	}
+	return lifetimeOperatorConfig, true
+}
+
+// perDrainScratchFields returns the set of state field names whose
+// lifetime is per-drain scratch. A field qualifies when it appears as the
+// to: of any pagination write (cursor_token, next_url, counter, or every
+// entry of custom.advance).
+func perDrainScratchFields(doc *schema.Doc) map[string]struct{} {
+	out := map[string]struct{}{}
+	add := func(p schema.Path) {
+		if name, ok := stateFieldName(p); ok {
+			out[name] = struct{}{}
+		}
+	}
+	switch {
+	case doc.Pagination.CursorToken != nil:
+		add(doc.Pagination.CursorToken.To)
+	case doc.Pagination.NextURL != nil:
+		add(doc.Pagination.NextURL.To)
+	case doc.Pagination.Counter != nil:
+		add(doc.Pagination.Counter.To)
+	case doc.Pagination.Custom != nil:
+		for _, w := range doc.Pagination.Custom.Advance {
+			add(w.To)
+		}
+	}
+	return out
+}
+
+// persistentStateFields returns the set of state field names whose
+// lifetime is persistent. A field qualifies when it appears as the to: of
+// any progress write or an extract destination with to: state.<name>.
+func persistentStateFields(doc *schema.Doc) map[string]struct{} {
+	out := map[string]struct{}{}
+	add := func(p schema.Path) {
+		if name, ok := stateFieldName(p); ok {
+			out[name] = struct{}{}
+		}
+	}
+	for _, w := range doc.Progress {
+		add(w.To)
+	}
+	for _, req := range doc.Requests {
+		for _, ex := range req.Extract {
+			add(ex.To)
+		}
+	}
+	return out
+}
+
+// stateFieldName extracts the field-name suffix from a state.<name> Path.
+// Returns ok=false for any other shape.
+func stateFieldName(p schema.Path) (string, bool) {
+	if len(p.Parts) != 2 || p.Parts[0] != "state" {
+		return "", false
+	}
+	return p.Parts[1], true
+}
+
+// resolveNamespaceRef returns the value at path within s. The path's root
+// segment must be one of the closed namespace roots
+// (state | cache | events | extract | steps | response) or the
+// author-chosen fan_out.as binding name active in s.itemBinding (e.g.
+// "incident" while a step with `fan_out: {as: incident}` is iterating).
+//
+// Returns (nil, false, nil) for unresolved leaves; callers decide whether
+// the absence is fatal (e.g. {ref: ...} with no default) or acceptable
+// (e.g. a predicate guarding optional data).
+//
+// The closed root set mirrors schema.pathClosedRoots; any addition there
+// requires a matching arm here.
 func (s *scope) resolveNamespaceRef(p schema.Path) (any, bool, error) {
 	if p.IsEmpty() {
 		return nil, false, fmt.Errorf("empty path")
 	}
 	root, rest := p.Parts[0], p.Parts[1:]
 
-	// Author-chosen fan_out.as binding is matched before the static switch
-	// so that its name (whatever the operator wrote) takes precedence over
-	// the namespace-root vocabulary. The validator guarantees the binding
-	// name does not collide with a reserved root or any declared state /
-	// cursor / extract / step id.
+	// Author-chosen fan_out.as binding is matched before the static
+	// switch so its name takes precedence over the namespace-root
+	// vocabulary. The validator guarantees the binding does not collide
+	// with any closed root or with declared state / extract names or
+	// step ids.
 	if s.itemBinding != "" && root == s.itemBinding {
 		if s.item == nil {
 			return nil, false, nil
@@ -253,7 +339,6 @@ func (s *scope) resolveNamespaceRef(p schema.Path) (any, bool, error) {
 		return walk(s.item, rest)
 	}
 
-	var top any
 	switch root {
 	case "state":
 		if len(rest) < 1 {
@@ -264,15 +349,17 @@ func (s *scope) resolveNamespaceRef(p schema.Path) (any, bool, error) {
 			return nil, false, nil
 		}
 		return walk(v, rest[1:])
-	case "cursor":
+	case "cache":
 		if len(rest) < 1 {
-			return nil, false, fmt.Errorf("cursor ref requires a field name")
+			return nil, false, fmt.Errorf("cache ref requires a slot name")
 		}
-		v, ok := s.cursor[rest[0]]
+		v, ok := s.cache[rest[0]]
 		if !ok {
 			return nil, false, nil
 		}
 		return walk(v, rest[1:])
+	case "events":
+		return s.resolveEvents(rest)
 	case "extract":
 		if len(rest) < 1 {
 			return nil, false, fmt.Errorf("extract ref requires a name")
@@ -283,8 +370,6 @@ func (s *scope) resolveNamespaceRef(p schema.Path) (any, bool, error) {
 		}
 		return walk(v, rest[1:])
 	case "steps":
-		// steps.<id>.body.<path>  → decoded response body
-		// steps.<id>.header.<name> → response header value (first match)
 		if len(rest) < 2 {
 			return nil, false, fmt.Errorf("steps ref must be steps.<id>.body[.<path>] or steps.<id>.header.<name>")
 		}
@@ -295,8 +380,7 @@ func (s *scope) resolveNamespaceRef(p schema.Path) (any, bool, error) {
 			if !ok {
 				return nil, false, nil
 			}
-			top = body
-			return walk(top, rest[2:])
+			return walk(body, rest[2:])
 		case "header":
 			if len(rest) < 3 {
 				return nil, false, fmt.Errorf("steps.<id>.header ref requires a header name")
@@ -310,11 +394,6 @@ func (s *scope) resolveNamespaceRef(p schema.Path) (any, bool, error) {
 			return nil, false, fmt.Errorf("steps ref must be steps.<id>.body[.<path>] or steps.<id>.header.<name>")
 		}
 	case "response":
-		// response.body.<path>    → s.body (the active response context;
-		//                          uses lookupBodyPath so list indexing
-		//                          matches the body-walk used everywhere
-		//                          else in the runtime)
-		// response.header.<name>  → s.responseHeaders[name] (first value, case-insensitive)
 		if len(rest) < 1 {
 			return nil, false, fmt.Errorf("response ref requires a kind segment: response.body[.<path>] or response.header.<name>")
 		}
@@ -340,10 +419,97 @@ func (s *scope) resolveNamespaceRef(p schema.Path) (any, bool, error) {
 	}
 }
 
-// headerLookup returns the first value for header `name` in h. The lookup is
-// case-insensitive via http.Header.Get (which canonicalises the key). Returns
-// (nil, false, nil) when the header is absent — callers decide whether that
-// counts as unresolved.
+// resolveEvents walks the events sub-path. The accepted shapes are:
+//
+//	events                 the active page's event list (absent when no
+//	                       page-response is bound).
+//	events.count           cardinality of the active page (int64).
+//	events.first[.field]   the first event (or its field).
+//	events.last[.field]    the last event (or its field).
+//	events.<int>[.field]   the event at the given zero-based index.
+//	events.*[.field]       projection across every event; the `*`
+//	                       segment is legal only at position 1 of an
+//	                       events ref.
+//
+// Unresolved leaves return (nil, false, nil): empty pages, out-of-bounds
+// indices, non-integer index segments, and missing fields all surface as
+// absent so predicate evaluation stays absent-tolerant. The single
+// exception is events.count, which resolves to 0 when no page is bound —
+// the counter pagination variant's default terminate_when predicate
+// reads it before the first response is decoded.
+func (s *scope) resolveEvents(rest []string) (any, bool, error) {
+	if len(rest) == 0 {
+		if s.events == nil {
+			return nil, false, nil
+		}
+		return s.events, true, nil
+	}
+	list, listOK := s.events.([]any)
+	if s.events == nil || !listOK {
+		if rest[0] == "count" && len(rest) == 1 {
+			return int64(0), true, nil
+		}
+		return nil, false, nil
+	}
+	switch rest[0] {
+	case "count":
+		if len(rest) != 1 {
+			return nil, false, fmt.Errorf("events.count takes no sub-path")
+		}
+		return int64(len(list)), true, nil
+	case "first":
+		if len(list) == 0 {
+			return nil, false, nil
+		}
+		return walk(list[0], rest[1:])
+	case "last":
+		if len(list) == 0 {
+			return nil, false, nil
+		}
+		return walk(list[len(list)-1], rest[1:])
+	case "*":
+		return projectEvents(list, rest[1:])
+	default:
+		idx, err := strconv.Atoi(rest[0])
+		if err != nil {
+			return nil, false, nil
+		}
+		if idx < 0 || idx >= len(list) {
+			return nil, false, nil
+		}
+		return walk(list[idx], rest[1:])
+	}
+}
+
+// projectEvents applies rest to every element of list and returns the
+// collected results. The shape mirrors what reducer arguments expect:
+// {ref: events.*.timestamp} feeds {max: ...} a list of timestamps.
+// Elements where the sub-path does not resolve contribute a nil entry,
+// preserving positional alignment with the source list.
+func projectEvents(list []any, rest []string) (any, bool, error) {
+	if len(rest) == 0 {
+		return list, true, nil
+	}
+	out := make([]any, 0, len(list))
+	for _, el := range list {
+		v, ok, err := walk(el, rest)
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			out = append(out, nil)
+			continue
+		}
+		out = append(out, v)
+	}
+	return out, true, nil
+}
+
+// headerLookup returns the first value for header `name` in h. The lookup
+// is case-insensitive via http.Header.Get (which canonicalises the key).
+// Returns (nil, false, nil) when the header is absent. An explicitly-empty
+// header value surfaces as ("", true, nil) so predicate evaluation can
+// distinguish "absent" from "present but empty".
 func headerLookup(h http.Header, name string) (any, bool, error) {
 	if h == nil {
 		return nil, false, nil
@@ -351,9 +517,6 @@ func headerLookup(h http.Header, name string) (any, bool, error) {
 	if v := h.Get(name); v != "" {
 		return v, true, nil
 	}
-	// An explicitly-empty header value is still "present" for predicate
-	// purposes. Distinguish "absent" (no key) from "present but empty"
-	// via the canonical-key map lookup.
 	canonical := http.CanonicalHeaderKey(name)
 	if vs, ok := h[canonical]; ok && len(vs) > 0 {
 		return vs[0], true, nil
@@ -361,11 +524,9 @@ func headerLookup(h http.Header, name string) (any, bool, error) {
 	return nil, false, nil
 }
 
-// walk descends rest steps into v, treating each step as a map key. NDJSON
-// arrays are walked by integer index — but the IR's namespace refs are
-// always map-rooted in practice (state.<name>, cursor.<name>), so the
-// integer-index branch is only exercised by body-relative paths (handled
-// separately in bodypath.go).
+// walk descends rest steps into v, treating each step as a map key. The
+// IR's namespace refs are map-rooted in practice; integer-indexed body
+// paths use lookupBodyPath instead (see bodypath.go).
 func walk(v any, rest []string) (any, bool, error) {
 	for _, seg := range rest {
 		m, ok := v.(map[string]any)
