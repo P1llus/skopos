@@ -2,74 +2,52 @@
 
 package schema
 
-import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-
-	"gopkg.in/yaml.v3"
-)
-
 // Doc is the top-level IR document.
 type Doc struct {
 	// IRVersion is the spec wire-format version. Must equal IRVersion.
 	IRVersion string `yaml:"ir_version" json:"ir_version"`
-	// State declares typed field bindings for operator-supplied configuration
-	// and runtime-mutated cursor fields. Optional.
-	State *State `yaml:"state,omitempty" json:"state,omitempty"`
-	// Defaults holds cross-cutting defaults that apply to all requests.
-	// Optional.
-	Defaults *Defaults `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	// State is the flat map of typed field declarations. Optional —
+	// authors with no state at all may omit the block.
+	State map[string]FieldDecl `yaml:"state,omitempty" json:"state,omitempty"`
 	// Auth is the discriminated-union auth block. Exactly one variant.
 	Auth Auth `yaml:"auth" json:"auth"`
-	// Requests is the ordered list of HTTP requests that make up the chain.
+	// Requests is the ordered list of HTTP requests run on every iteration.
 	Requests []Request `yaml:"requests" json:"requests"`
-	// Response describes how to decode the producer step's response body.
+	// Response describes how to decode the producer step's body and where
+	// the events list lives.
 	Response Response `yaml:"response" json:"response"`
-	// Pagination is the discriminated-union pagination block.
+	// Pagination is the discriminated-union pagination block. Exactly one
+	// variant.
 	Pagination Pagination `yaml:"pagination" json:"pagination"`
-	// Progress is the discriminated-union progress (cursor-advancement) block.
-	Progress Progress `yaml:"progress" json:"progress"`
-	// Error configures how HTTP errors are surfaced. Optional.
+	// Progress is the flat list of state writes evaluated after each
+	// accepted page-response. An empty list (or omitted block) means
+	// no progress tracking.
+	Progress Progress `yaml:"progress,omitempty" json:"progress,omitempty"`
+	// Error configures how non-success HTTP responses are surfaced.
+	// Optional.
 	Error *ErrorBlock `yaml:"error,omitempty" json:"error,omitempty"`
 }
 
 // ---- State ----
 
-// State holds typed field declarations for operator-supplied configuration
-// and runtime-mutated cursor fields that authors need to name explicitly.
-type State struct {
-	// Fields maps each state-field name to its declaration. The key is the
-	// name authors reference via {ref: state.<name>}.
-	Fields map[string]FieldDecl `yaml:"fields,omitempty" json:"fields,omitempty"`
-}
-
-// FieldDecl is the declaration for a single state field.
+// FieldDecl is the declaration for a single state field. A field's lifetime
+// (operator-config / per-drain scratch / persistent) is inferred from its
+// write sites; it is NOT carried on the declaration.
 type FieldDecl struct {
 	// Type is the field's declared shape. One of:
-	// string | int | bool | secret | duration | url | enum.
+	// string | int | bool | secret | duration | timestamp | url | enum.
 	Type string `yaml:"type" json:"type"`
-	// Default is the literal value used when the operator does not supply
-	// one. When set it must match Type.
-	Default interface{} `yaml:"default,omitempty" json:"default,omitempty"`
+	// Default is the Value used when no operator input is supplied. Any
+	// Value form, not just a literal — composing {now: true},
+	// {subtract: [...]}, {ref: ...}, etc. is permitted.
+	Default *Value `yaml:"default,omitempty" json:"default,omitempty"`
 	// Values is the allowed enumeration. Only valid when Type == "enum".
 	Values []string `yaml:"values,omitempty" json:"values,omitempty"`
-	// Mutability marks the field as "config" (operator-set; the default,
-	// not written back at runtime) or "runtime" (program-mutated; targets
-	// must persist the value across iterations, e.g. a token cached by an
-	// OAuth2 grant). Auto-registered runtime fields (the OAuth2
-	// cache.store_in slot, request-level cache.store_in slots) carry
-	// "runtime" implicitly.
-	Mutability string `yaml:"mutability,omitempty" json:"mutability,omitempty"`
-}
-
-// ---- Defaults ----
-
-// Defaults holds cross-cutting defaults that apply to all requests.
-type Defaults struct {
-	// BaseURL is prepended to each request's Path (ignored when a request
-	// uses URL instead).
-	BaseURL Value `yaml:"base_url" json:"base_url"`
+	// Format is the wire-format hint for Type == "timestamp" or
+	// Type == "duration". One of the closed-set verbs (rfc3339,
+	// rfc3339nano, unix_seconds, unix_millis) or a Go layout string.
+	// Ignored on other types.
+	Format string `yaml:"format,omitempty" json:"format,omitempty"`
 }
 
 // ---- Auth ----
@@ -77,7 +55,7 @@ type Defaults struct {
 // Auth is the discriminated-union auth block. Exactly one variant key must
 // be present.
 type Auth struct {
-	// None selects the no-auth variant. The empty struct marks the variant.
+	// None selects the no-auth variant.
 	None *struct{} `yaml:"none,omitempty" json:"none,omitempty"`
 	// Bearer selects the bearer-token variant.
 	Bearer *BearerAuth `yaml:"bearer,omitempty" json:"bearer,omitempty"`
@@ -87,9 +65,11 @@ type Auth struct {
 	APIKey *APIKeyAuth `yaml:"api_key,omitempty" json:"api_key,omitempty"`
 	// Custom selects the single-custom-header variant.
 	Custom *CustomAuth `yaml:"custom,omitempty" json:"custom,omitempty"`
-	// OAuth2 selects the OAuth2 variant (client_credentials / password_grant).
+	// OAuth2 selects the OAuth2 variant
+	// (client_credentials / password_grant).
 	OAuth2 *OAuth2Auth `yaml:"oauth2,omitempty" json:"oauth2,omitempty"`
-	// MultiMode dispatches between auth strategies at runtime via predicates.
+	// MultiMode dispatches between auth strategies at runtime via
+	// predicates.
 	MultiMode *MultiModeAuth `yaml:"multi_mode,omitempty" json:"multi_mode,omitempty"`
 }
 
@@ -107,7 +87,8 @@ type BasicAuth struct {
 	Password Value `yaml:"password" json:"password"`
 }
 
-// APIKeyAuth sends the key in a named header (or query param when InQuery is true).
+// APIKeyAuth sends the key in a named header (or query parameter when
+// InQuery is true).
 type APIKeyAuth struct {
 	// Header is the wire name of the header (or query parameter when
 	// InQuery is true) that carries the credential.
@@ -144,19 +125,19 @@ type ClientCredentialsGrant struct {
 	ClientID Value `yaml:"client_id" json:"client_id"`
 	// ClientSecret authenticates the client to the authorization server.
 	ClientSecret Value `yaml:"client_secret" json:"client_secret"`
-	// Scopes is the optional space-separated OAuth2 scope list sent in
-	// the token request (RFC 6749 §3.3).
+	// Scopes is the optional space-separated OAuth2 scope list (RFC 6749
+	// §3.3).
 	Scopes []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`
 	// Audience is the optional RFC 8693 audience claim sent in the token
 	// request.
 	Audience string `yaml:"audience,omitempty" json:"audience,omitempty"`
-	// Cache describes how the fetched token is cached across iterations.
-	Cache *TokenCache `yaml:"cache,omitempty" json:"cache,omitempty"`
+	// Cache, when set, writes the captured access token into a
+	// cache.<name> slot.
+	Cache *Cache `yaml:"cache,omitempty" json:"cache,omitempty"`
 }
 
 // PasswordGrant is the OAuth2 password grant (RFC 6749 §4.3): exchange a
-// username/password pair for a short-lived access token. The token is
-// cached the same way as client_credentials.
+// username/password pair for a short-lived access token.
 type PasswordGrant struct {
 	// TokenURL is the OAuth2 token endpoint.
 	TokenURL Value `yaml:"token_url" json:"token_url"`
@@ -165,39 +146,23 @@ type PasswordGrant struct {
 	// Password is the resource-owner password.
 	Password Value `yaml:"password" json:"password"`
 	// ClientID is optional because some servers authenticate the client
-	// via Basic auth on the token endpoint and do not require a
-	// form-encoded client_id alongside the user credentials.
+	// via Basic auth on the token endpoint.
 	ClientID *Value `yaml:"client_id,omitempty" json:"client_id,omitempty"`
 	// Scopes is the optional space-separated OAuth2 scope list.
 	Scopes []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`
-	// Cache describes how the fetched token is cached across iterations.
-	Cache *TokenCache `yaml:"cache,omitempty" json:"cache,omitempty"`
-}
-
-// TokenCache describes how the fetched OAuth2 token is cached across iterations.
-type TokenCache struct {
-	// StoreIn names the state key the cached token lives in
-	// (auto-registered as a runtime string field; not declared in
-	// state.fields).
-	StoreIn string `yaml:"store_in" json:"store_in"`
-	// ExpiryField is a namespace-rooted Path locating the response field
-	// that carries the token's lifetime. Must be rooted at
-	// response.body.<path> (the token endpoint's own response) or
-	// steps.<id>.body.<path> (a labelled prior step).
-	ExpiryField Path `yaml:"expiry_field" json:"expiry_field"`
-	// ExpiryBuffer is a Go-style duration; the runtime refreshes the
-	// cached token once the remaining lifetime drops below this buffer.
-	ExpiryBuffer string `yaml:"expiry_buffer" json:"expiry_buffer"`
+	// Cache, when set, writes the captured access token into a
+	// cache.<name> slot.
+	Cache *Cache `yaml:"cache,omitempty" json:"cache,omitempty"`
 }
 
 // MultiModeAuth dispatches between auth strategies at runtime based on a
-// state or cursor field.
+// Predicate over any namespace.
 type MultiModeAuth struct {
 	// Branches is the ordered list of (when, auth) arms. The first arm
 	// whose predicate is true wins.
 	Branches []AuthBranch `yaml:"branches" json:"branches"`
-	// Default is the fallback used when no branch matches.
-	Default AuthDefault `yaml:"default" json:"default"`
+	// Default is the bare Auth value applied when no branch matches.
+	Default Auth `yaml:"default" json:"default"`
 }
 
 // AuthBranch is one arm of a multi_mode auth dispatch.
@@ -208,27 +173,36 @@ type AuthBranch struct {
 	Auth Auth `yaml:"auth" json:"auth"`
 }
 
-// AuthDefault wraps the fallback Auth for a multi_mode dispatch.
-type AuthDefault struct {
-	// Auth is the variant applied when no branch matches.
-	Auth Auth `yaml:"auth" json:"auth"`
+// ---- Cache ----
+
+// Cache is the unified cache block shared by OAuth2 grants
+// (auth.oauth2.<grant>.cache) and step-level caches (requests[].cache). The
+// captured value lives in cache.<name>; the slot is process memory only and
+// is never persisted.
+type Cache struct {
+	// To is the cache.<name> destination slot. Reads use
+	// {ref: cache.<name>}.
+	To Path `yaml:"to" json:"to"`
+	// ExpiresAt is the Value resolving to a time.Time. Accepts a
+	// {ref: ..., default: ...} fallback for APIs that return no explicit
+	// expiry.
+	ExpiresAt Value `yaml:"expires_at" json:"expires_at"`
+	// Buffer is a Go-style duration. Re-fetch when the remaining
+	// lifetime falls below this.
+	Buffer string `yaml:"buffer" json:"buffer"`
 }
 
 // ---- Requests ----
 
 // Request describes a single HTTP request in the chain.
 type Request struct {
-	// ID is the optional step label. When set it joins the
-	// steps.<id>.body.<path> and steps.<id>.header.<name> namespaces and
-	// can be named as an async_job role step.
+	// ID is the optional step label. Required for steps.<id>.body.<path>
+	// references and for fan_out.
 	ID string `yaml:"id,omitempty" json:"id,omitempty"`
-	// Method is the HTTP verb (GET/POST/PUT/PATCH/DELETE/HEAD).
+	// Method is the HTTP verb (GET, POST, ...).
 	Method string `yaml:"method" json:"method"`
-	// Path is the request path; combined with defaults.base_url.
-	// Mutually exclusive with URL.
-	Path *Value `yaml:"path,omitempty" json:"path,omitempty"`
-	// URL is the absolute request URL. Mutually exclusive with Path.
-	URL *Value `yaml:"url,omitempty" json:"url,omitempty"`
+	// URL is the absolute request URL Value.
+	URL Value `yaml:"url" json:"url"`
 	// Query is the URL query map; each value resolves to a string.
 	Query map[string]Value `yaml:"query,omitempty" json:"query,omitempty"`
 	// Headers is the wire header map; each value resolves to a string.
@@ -238,81 +212,54 @@ type Request struct {
 	// Extract pulls named values out of the response body or headers.
 	Extract []ExtractVar `yaml:"extract,omitempty" json:"extract,omitempty"`
 	// FanOut lifts the step into a per-item iteration over a list Value.
+	// Mutually exclusive with Cache.
 	FanOut *FanOut `yaml:"fan_out,omitempty" json:"fan_out,omitempty"`
 	// ExpectStatus is the set of status codes the runner treats as
 	// successful. Defaults to {200} when empty.
 	ExpectStatus []int `yaml:"expect_status,omitempty" json:"expect_status,omitempty"`
-	// If is a predicate that gates execution of the step.
+	// If is the predicate that gates execution of the step.
 	If *Predicate `yaml:"if,omitempty" json:"if,omitempty"`
-	// OnStatus maps a specific HTTP status code to a per-step
-	// dispatcher verb (skip / fail / empty_events / invalidate_cache).
+	// TerminateWhen is the request-level loop primitive: while the
+	// predicate is false, the same request is re-fired; when true the
+	// runner advances to the next request.
+	TerminateWhen *Predicate `yaml:"terminate_when,omitempty" json:"terminate_when,omitempty"`
+	// OnStatus maps a specific HTTP status code to a per-step dispatcher
+	// verb (skip / fail / empty_events / invalidate_cache).
 	OnStatus map[int]string `yaml:"on_status,omitempty" json:"on_status,omitempty"`
-	// ProducesEvents marks the step whose decoded body the response
-	// block (decode + events_at + placeholder_event) applies to. At
-	// most one request in a chain may set this to true; when no
-	// request sets it explicitly, the last request is the implicit
-	// producer.
+	// ProducesEvents marks this step as the events producer. At most
+	// one in the chain; defaults to the last request.
 	ProducesEvents bool `yaml:"produces_events,omitempty" json:"produces_events,omitempty"`
-	// Cache wraps a non-OAuth2 token-style step (custom JSON logins,
-	// session-cookie refreshes, etc.) in a per-step expiry cache.
-	Cache *RequestCache `yaml:"cache,omitempty" json:"cache,omitempty"`
+	// Cache wraps the step in a generic step-level expiry cache.
+	// Mutually exclusive with FanOut.
+	Cache *Cache `yaml:"cache,omitempty" json:"cache,omitempty"`
 }
 
-// RequestCache is the generic step-level cache for non-OAuth2 token endpoints
-// (custom JSON logins, session-cookie refreshes, etc.). It mirrors the
-// contract of auth.oauth2.<grant>.cache: a successful response is captured
-// into a runtime-mutable state slot and re-used until expiry_field minus
-// expiry_buffer has passed.
-type RequestCache struct {
-	// StoreIn names the state slot (auto-registered as a runtime string
-	// field). Authors must NOT also declare this under state.fields.
-	StoreIn string `yaml:"store_in" json:"store_in"`
-	// ExpiryField is a namespace-rooted Path locating the response field
-	// that carries the value's lifetime (a Go duration string when
-	// ExpiryFormat is "duration", a numeric Unix-second timestamp when
-	// "unix_seconds", etc.). Must be rooted at response.body.<path> (the
-	// cached step's own response) or steps.<id>.body.<path> (a labelled
-	// prior step).
-	ExpiryField Path `yaml:"expiry_field" json:"expiry_field"`
-	// ExpiryBuffer is a Go-style duration; the runtime re-runs the step
-	// once the remaining lifetime drops below this buffer.
-	ExpiryBuffer string `yaml:"expiry_buffer" json:"expiry_buffer"`
-	// ExpiryFormat is one of the format verbs; defaults to "duration".
-	ExpiryFormat string `yaml:"expiry_format,omitempty" json:"expiry_format,omitempty"`
-}
-
-// ExtractVar names a value to pull from a response.
+// ExtractVar names a value to pull from a response into the state or
+// extract namespace.
 type ExtractVar struct {
-	// Name is the destination key in the extract / cursor namespace.
-	Name string `yaml:"name" json:"name"`
+	// To is the destination slot: either state.<name> (persistent —
+	// must be declared under state:) or extract.<name> (per-iteration,
+	// no declaration needed). The namespace prefix decides persistence.
+	To Path `yaml:"to" json:"to"`
 	// From is the namespace-rooted Path locating the value to capture.
-	// Accepted roots:
-	//   - response.body.<path>     the active step's response body
-	//   - response.header.<name>   the active step's response headers
-	//   - steps.<id>.body.<path>   a labelled prior step's response body
-	//   - steps.<id>.header.<name> a labelled prior step's response headers
-	// The runtime dispatches body-walk vs header-lookup based on the
-	// matched root rather than a side-channel discriminator.
+	// One of response.body.<path>, response.header.<name>,
+	// steps.<id>.body.<path>, steps.<id>.header.<name>.
 	From Path `yaml:"from" json:"from"`
-	// Coerce, when set, applies a format verb (rfc3339, unix_seconds, ...)
-	// to the extracted value before storing it.
+	// Coerce, when set, applies a format verb to the extracted value
+	// before storing it.
 	Coerce string `yaml:"coerce,omitempty" json:"coerce,omitempty"`
-	// Target controls which namespace the extracted value lands in:
-	// "extract" (default) → extract.<name>, visible to subsequent steps
-	// in the same iteration and lost between iterations; "cursor" →
-	// cursor.<name>, auto-registers a cursor field that persists across
-	// iterations (use for multi-field cursors: worklists, freeze flags,
-	// rolling-max timestamps).
-	Target string `yaml:"target,omitempty" json:"target,omitempty"`
+	// Regex is an optional regular expression applied to the resolved
+	// string before writing.
+	Regex string `yaml:"regex,omitempty" json:"regex,omitempty"`
 }
 
 // FanOut lifts a step into a per-item iteration over a list.
 type FanOut struct {
-	// Over resolves to the list to iterate; must be a list-shaped Value
-	// at evaluation time.
+	// Over resolves to the list to iterate; must be list-shaped at
+	// evaluation time.
 	Over Value `yaml:"over" json:"over"`
-	// As is the per-item binding name introduced into the scope for the
-	// duration of the iteration.
+	// As is the author-chosen per-item binding name; refs inside the
+	// step use {ref: <as>.<path>}.
 	As string `yaml:"as" json:"as"`
 	// Merge controls how the per-iteration outputs combine: "flatten"
 	// (default) or "wrap".
@@ -321,288 +268,172 @@ type FanOut struct {
 
 // ---- Body ----
 
-// Body is the discriminated-union request body. Exactly one variant key must
-// be present.
+// Body is the discriminated-union request body. Exactly one variant key
+// must be present.
 type Body struct {
-	// JSON selects the application/json variant; values resolve and
-	// marshal as a JSON object.
+	// JSON selects the application/json variant.
 	JSON map[string]Value `yaml:"json,omitempty" json:"json,omitempty"`
 	// Form selects the application/x-www-form-urlencoded variant.
 	Form map[string]Value `yaml:"form,omitempty" json:"form,omitempty"`
-	// Raw selects the literal-body variant; the resolved string is sent
-	// as the request body.
+	// Raw selects the literal-body variant.
 	Raw *Value `yaml:"raw,omitempty" json:"raw,omitempty"`
 }
 
 // ---- Response ----
 
-// Response describes how to decode the response body and locate events.
+// Response describes how to decode the producer step's body and locate the
+// events list.
 type Response struct {
 	// Decode is the body decoder verb: "json" or "ndjson".
 	Decode string `yaml:"decode" json:"decode"`
-	// EventsAt is a namespace-rooted Path locating the events list,
-	// rooted at response.body.<path> (the active producer step) or
-	// steps.<id>.body.<path> (a labelled prior step). The zero Path
-	// (empty / unset) means "body root": the entire decoded body IS the
-	// events list, with no nesting to traverse.
+	// EventsAt is the namespace-rooted Path locating the events list,
+	// rooted at response.body.<path> or steps.<id>.body.<path>. The zero
+	// (empty) Path means "the body root IS the events list".
 	EventsAt Path `yaml:"events_at" json:"events_at"`
-	// PlaceholderEvent is the Value emitted in place of an empty page
-	// when the prior iteration produced zero events and pagination
-	// advanced. Optional.
-	PlaceholderEvent *Value `yaml:"placeholder_event,omitempty" json:"placeholder_event,omitempty"`
 }
 
 // ---- Pagination ----
 
-// Pagination is the discriminated-union pagination block. Exactly one variant
-// key must be present.
+// Pagination is the discriminated-union pagination block. Exactly one
+// variant key must be present.
 type Pagination struct {
 	// None disables pagination — exactly one page is fetched per drain.
 	None *struct{} `yaml:"none,omitempty" json:"none,omitempty"`
-	// CursorToken advances via an opaque cursor token in the response body.
+	// CursorToken advances via a next-cursor token returned in the body
+	// or a header.
 	CursorToken *CursorTokenPagination `yaml:"cursor_token,omitempty" json:"cursor_token,omitempty"`
-	// PageNumber advances by incrementing a page-number query param.
-	PageNumber *PageNumberPagination `yaml:"page_number,omitempty" json:"page_number,omitempty"`
-	// Offset advances by adding batch_size to an offset query param.
-	Offset *OffsetPagination `yaml:"offset,omitempty" json:"offset,omitempty"`
-	// LinkHeader follows RFC 5988 Link: <url>; rel="next" headers.
-	LinkHeader *LinkHeaderPagination `yaml:"link_header,omitempty" json:"link_header,omitempty"`
-	// NextURLInBody reads a fully-formed next-page URL from the body.
-	NextURLInBody *NextURLInBodyPagination `yaml:"next_url_in_body,omitempty" json:"next_url_in_body,omitempty"`
-	// ScrollID maintains a server-side scroll session.
-	ScrollID *ScrollIDPagination `yaml:"scroll_id,omitempty" json:"scroll_id,omitempty"`
-	// GraphQLRelay follows GraphQL Relay-style cursor pagination.
-	GraphQLRelay *GraphQLRelayPagination `yaml:"graphql_relay,omitempty" json:"graphql_relay,omitempty"`
+	// NextURL advances via a fully-formed next-page URL returned in the
+	// body or a header (e.g. Link: <url>; rel="next").
+	NextURL *NextURLPagination `yaml:"next_url,omitempty" json:"next_url,omitempty"`
+	// Counter advances via a client-incremented counter (page number or
+	// offset).
+	Counter *CounterPagination `yaml:"counter,omitempty" json:"counter,omitempty"`
+	// Custom exposes the primitive form: an author-supplied list of
+	// advance writes plus an author-supplied terminate_when predicate.
+	Custom *CustomPagination `yaml:"custom,omitempty" json:"custom,omitempty"`
 }
 
-// CursorTokenPagination advances via an opaque cursor token in the response body.
+// CursorTokenPagination advances via a next-cursor token returned by the
+// server.
 type CursorTokenPagination struct {
-	// TokenAt is a namespace-rooted Path locating the next-page cursor.
-	// Must be rooted at response.body.<path> (the producer step) or
-	// steps.<id>.body.<path> (a labelled prior step).
-	TokenAt Path `yaml:"token_at" json:"token_at"`
-}
-
-// PageNumberPagination advances by incrementing a page number query param.
-type PageNumberPagination struct {
-	// PageParam is the URL query parameter that carries the page number.
-	PageParam string `yaml:"page_param" json:"page_param"`
-	// HasMoreAt is the optional namespace-rooted Path to a boolean
-	// has-more flag, rooted at response.body.<path> or
-	// steps.<id>.body.<path>. When unset, pagination terminates when an
-	// empty page arrives.
-	HasMoreAt Path `yaml:"has_more_at,omitempty" json:"has_more_at,omitempty"`
-	// BatchSize is the optional per-page size value.
-	BatchSize *Value `yaml:"batch_size,omitempty" json:"batch_size,omitempty"`
-}
-
-// OffsetPagination advances by adding batch_size to an offset query param.
-type OffsetPagination struct {
-	// OffsetParam is the URL query parameter that carries the offset.
-	OffsetParam string `yaml:"offset_param" json:"offset_param"`
-	// BatchSize is the optional batch size. Defaults to the number of
-	// events observed on the prior page when unset.
-	BatchSize *Value `yaml:"batch_size,omitempty" json:"batch_size,omitempty"`
-}
-
-// LinkHeaderPagination follows RFC 5988 Link: <url>; rel="next" headers.
-type LinkHeaderPagination struct {
-	// Pattern is an optional URL-template filter; when set, only Link
-	// targets matching the pattern continue pagination.
-	Pattern string `yaml:"pattern,omitempty" json:"pattern,omitempty"`
-}
-
-// NextURLInBodyPagination reads a fully-formed next-page URL from the body.
-type NextURLInBodyPagination struct {
-	// NextURLAt is a namespace-rooted Path to the next-page URL.
-	// Must be rooted at response.body.<path> (the producer step) or
-	// steps.<id>.body.<path> (a labelled prior step).
-	NextURLAt Path `yaml:"next_url_at" json:"next_url_at"`
-}
-
-// ScrollIDPagination maintains a server-side scroll session.
-type ScrollIDPagination struct {
-	// ScrollIDAt is a namespace-rooted Path locating the server-supplied
-	// scroll id. Must be rooted at response.body.<path> (the producer
-	// step) or steps.<id>.body.<path> (a labelled prior step).
-	ScrollIDAt Path `yaml:"scroll_id_at" json:"scroll_id_at"`
-	// CompleteWhen is an optional predicate evaluated against the
-	// producer body that terminates the scroll early.
-	CompleteWhen *Predicate `yaml:"complete_when,omitempty" json:"complete_when,omitempty"`
-}
-
-// GraphQLRelayPagination follows GraphQL Relay-style cursor pagination.
-type GraphQLRelayPagination struct {
-	// HasNextPageAt is a namespace-rooted Path to the boolean
-	// has-next-page flag, rooted at response.body.<path> or
+	// From is the Path to the next-cursor field, rooted at
+	// response.body.<path>, response.header.<name>, or
 	// steps.<id>.body.<path>.
-	HasNextPageAt Path `yaml:"has_next_page_at" json:"has_next_page_at"`
-	// EndCursorAt is a namespace-rooted Path to the endCursor string,
-	// rooted at response.body.<path> or steps.<id>.body.<path>.
-	EndCursorAt Path `yaml:"end_cursor_at" json:"end_cursor_at"`
-	// CursorVar is the author-chosen GraphQL variable name that carries
-	// endCursor on the next request (typically "after").
-	CursorVar string `yaml:"cursor_var" json:"cursor_var"`
+	From Path `yaml:"from" json:"from"`
+	// To is the state.<name> destination (per-drain).
+	To Path `yaml:"to" json:"to"`
+	// TerminateWhen overrides the default termination predicate
+	// ({not: {present: <from>}}).
+	TerminateWhen *Predicate `yaml:"terminate_when,omitempty" json:"terminate_when,omitempty"`
+}
+
+// NextURLPagination advances via a fully-formed next-page URL.
+type NextURLPagination struct {
+	// From is the Path to the next-URL field, rooted at
+	// response.body.<path>, response.header.<name>, or
+	// steps.<id>.body.<path>.
+	From Path `yaml:"from" json:"from"`
+	// To is the state.<name> destination (per-drain, typed url).
+	To Path `yaml:"to" json:"to"`
+	// Regex is the optional regular expression applied to the resolved
+	// string before writing — used for parsing
+	// `Link: <url>; rel="next"` and similar.
+	Regex string `yaml:"regex,omitempty" json:"regex,omitempty"`
+	// Capture is the optional capture-group index for Regex (1-based).
+	Capture int `yaml:"capture,omitempty" json:"capture,omitempty"`
+	// TerminateWhen overrides the default termination predicate
+	// ({not: {present: <from>}}).
+	TerminateWhen *Predicate `yaml:"terminate_when,omitempty" json:"terminate_when,omitempty"`
+}
+
+// CounterPagination advances via a client-incremented counter.
+type CounterPagination struct {
+	// To is the state.<name> destination (per-drain, typed int).
+	To Path `yaml:"to" json:"to"`
+	// Start is the optional starting Value. Defaults to 1 (page number);
+	// use 0 for offset-style pagination.
+	Start *Value `yaml:"start,omitempty" json:"start,omitempty"`
+	// Step is the optional increment per accepted page. Defaults to 1.
+	// For offset-style pagination, set to {ref: state.page_size}.
+	Step *Value `yaml:"step,omitempty" json:"step,omitempty"`
+	// TerminateWhen overrides the default termination predicate
+	// (short-page detection: events.count < step).
+	TerminateWhen *Predicate `yaml:"terminate_when,omitempty" json:"terminate_when,omitempty"`
+}
+
+// CustomPagination is the author-controlled primitive form for APIs that
+// don't fit the named variants.
+type CustomPagination struct {
+	// Advance is the ordered list of writes that run when
+	// TerminateWhen evaluates false.
+	Advance []AdvanceWrite `yaml:"advance" json:"advance"`
+	// TerminateWhen is required for custom pagination — it states the
+	// termination condition explicitly.
+	TerminateWhen Predicate `yaml:"terminate_when" json:"terminate_when"`
+}
+
+// AdvanceWrite is one entry in CustomPagination.Advance — a {to, from,
+// regex?, coerce?} write evaluated and applied per-page.
+type AdvanceWrite struct {
+	// To is the state.<name> destination (per-drain).
+	To Path `yaml:"to" json:"to"`
+	// From is the Value to resolve and write.
+	From Value `yaml:"from" json:"from"`
+	// Coerce, when set, applies a format verb to the resolved value
+	// before writing.
+	Coerce string `yaml:"coerce,omitempty" json:"coerce,omitempty"`
+	// Regex is the optional regular expression applied to the resolved
+	// string before writing.
+	Regex string `yaml:"regex,omitempty" json:"regex,omitempty"`
 }
 
 // ---- Progress ----
 
-// Progress is the discriminated-union cursor-advancement block. Exactly one
-// variant key must be present.
-type Progress struct {
-	// Stateless does not advance the cursor — every drain pulls the
-	// full page set.
-	Stateless *struct{} `yaml:"stateless,omitempty" json:"stateless,omitempty"`
-	// LatestEventTimestamp advances cursor.last_timestamp to the max of
-	// the per-event timestamps in the current drain.
-	LatestEventTimestamp *TimestampProgress `yaml:"latest_event_timestamp,omitempty" json:"latest_event_timestamp,omitempty"`
-	// MaxEventField advances cursor.last_timestamp via the same max walk
-	// as LatestEventTimestamp; spelled differently for templates that
-	// already use "max event field" wording.
-	MaxEventField *TimestampProgress `yaml:"max_event_field,omitempty" json:"max_event_field,omitempty"`
-	// UseNow advances cursor.last_timestamp to now() on every drain.
-	UseNow *UseNowProgress `yaml:"use_now,omitempty" json:"use_now,omitempty"`
-	// TimeWindow slides a start/end window after each drain.
-	TimeWindow *TimeWindowProgress `yaml:"time_window,omitempty" json:"time_window,omitempty"`
-	// AsyncJob models a three-phase async job loop (submit → poll → fetch).
-	AsyncJob *AsyncJobProgress `yaml:"async_job,omitempty" json:"async_job,omitempty"`
+// Progress is the flat list of state writes evaluated after each accepted
+// page-response. An empty (or omitted) Progress means no progress
+// tracking.
+type Progress []ProgressWrite
+
+// ProgressWrite is one entry in Progress — a {to, from, coerce?, regex?}
+// write evaluated per accepted page-response.
+type ProgressWrite struct {
+	// To is the state.<name> destination (persistent — must be declared
+	// under state:).
+	To Path `yaml:"to" json:"to"`
+	// From is the Value to resolve and write. Has access to every
+	// namespace the request scope has (state, cache, events,
+	// response.body/header, steps.<id>.body/header).
+	From Value `yaml:"from" json:"from"`
+	// Coerce, when set, applies a format verb to the resolved value
+	// before writing.
+	Coerce string `yaml:"coerce,omitempty" json:"coerce,omitempty"`
+	// Regex is the optional regular expression applied to the resolved
+	// string before writing.
+	Regex string `yaml:"regex,omitempty" json:"regex,omitempty"`
 }
 
-// TimestampProgress is the shared config for latest_event_timestamp and max_event_field.
-type TimestampProgress struct {
-	// EventTime holds the body path to the per-event timestamp field.
-	EventTime EventTime `yaml:"event_time" json:"event_time"`
-	// Initial holds the lookback duration applied on the first drain
-	// (when no prior cursor.last_timestamp exists).
-	Initial *Initial `yaml:"initial,omitempty" json:"initial,omitempty"`
-	// Lookback is a duration Value subtracted from the chosen reference
-	// on EVERY iteration (not just the first run). Pairs with
-	// Initial.Lookback for time cursors that need both a first-run
-	// lookback and an every-iteration lag.
-	Lookback *Value `yaml:"lookback,omitempty" json:"lookback,omitempty"`
-}
+// ---- Error ----
 
-// UseNowProgress advances cursor.last_timestamp to now() on every iteration.
-type UseNowProgress struct {
-	// Lookback is a duration Value subtracted from now() on every
-	// advance — the common "advance cursor to now() - lag so late
-	// events still land on the next iteration" pattern.
-	Lookback *Value `yaml:"lookback,omitempty" json:"lookback,omitempty"`
-}
-
-// EventTime holds the body path to the per-event timestamp field.
-type EventTime struct {
-	// Path is the body-relative locator inside the per-event object.
-	Path Path `yaml:"path" json:"path"`
-}
-
-// Initial holds the lookback duration for the first run.
-type Initial struct {
-	// Lookback is the duration Value subtracted from now() on the first
-	// drain when cursor.last_timestamp is unset.
-	Lookback Value `yaml:"lookback" json:"lookback"`
-}
-
-// TimeWindowProgress advances a start/end time window after each drain.
-type TimeWindowProgress struct {
-	// InitialOffset is the duration Value subtracted from now() to seed
-	// window_start on the first drain.
-	InitialOffset Value `yaml:"initial_offset" json:"initial_offset"`
-	// Format is the format verb applied to window_start / window_end
-	// when serialised into requests. Defaults to "rfc3339" when empty.
-	Format string `yaml:"format,omitempty" json:"format,omitempty"`
-}
-
-// AsyncJobProgress models a three-phase async job loop (submit → poll → fetch).
-type AsyncJobProgress struct {
-	// Submit names the submit step and its post-submit cursor extractions.
-	Submit *AsyncSubmitStep `yaml:"submit,omitempty" json:"submit,omitempty"`
-	// Poll names the poll step, its completion predicate, and post-poll
-	// cursor extractions.
-	Poll *AsyncPollStep `yaml:"poll,omitempty" json:"poll,omitempty"`
-	// Fetch names the fetch step (the one that emits events).
-	Fetch *AsyncFetchStep `yaml:"fetch,omitempty" json:"fetch,omitempty"`
-	// OnComplete describes how the cursor advances after a completed
-	// async fetch.
-	OnComplete *AsyncOnComplete `yaml:"on_complete,omitempty" json:"on_complete,omitempty"`
-}
-
-// AsyncSubmitStep names the submit step and its extractions.
-type AsyncSubmitStep struct {
-	// Step is the request id of the submit phase.
-	Step string `yaml:"step" json:"step"`
-	// Extract pulls fields out of the submit response into the cursor.
-	Extract map[string]AsyncExtract `yaml:"extract,omitempty" json:"extract,omitempty"`
-}
-
-// AsyncPollStep names the poll step, its completion predicate, and extractions.
-type AsyncPollStep struct {
-	// Step is the request id of the poll phase.
-	Step string `yaml:"step" json:"step"`
-	// CompleteWhen is the predicate (evaluated against the poll body)
-	// that terminates the poll loop.
-	CompleteWhen *Predicate `yaml:"complete_when,omitempty" json:"complete_when,omitempty"`
-	// Extract pulls fields out of the poll response into the cursor.
-	Extract map[string]AsyncExtract `yaml:"extract,omitempty" json:"extract,omitempty"`
-}
-
-// AsyncFetchStep names the fetch step.
-type AsyncFetchStep struct {
-	// Step is the request id of the fetch phase.
-	Step string `yaml:"step" json:"step"`
-}
-
-// AsyncExtract extracts a single field from a step's decoded body into the cursor.
-type AsyncExtract struct {
-	// From is the namespace-rooted Path locating the value to capture.
-	// Accepted roots: response.body.<path> (the named role step's
-	// response) and steps.<id>.body.<path> (a labelled prior step's
-	// response). The runner walks the named body at the trailing path
-	// segments and writes the result to cursor.<name>.
-	From Path `yaml:"from" json:"from"`
-}
-
-// AsyncOnComplete describes cursor advancement after a completed async fetch.
-type AsyncOnComplete struct {
-	// CursorUpdate is the structured cursor-advance directive
-	// {kind, lookback?, event_time?}. The codec rejects the scalar
-	// shorthand (cursor_update: use_now); authors must use the map
-	// form (cursor_update: {kind: use_now}).
-	CursorUpdate *CursorUpdateDirective `yaml:"cursor_update,omitempty" json:"cursor_update,omitempty"`
-}
-
-// CursorUpdateDirective is the structured cursor-advance directive on
-// async_job.on_complete.
-type CursorUpdateDirective struct {
-	// Kind selects the reference time the cursor advances to. One of:
-	// use_now | latest_event_timestamp | stateless.
-	Kind string `yaml:"kind" json:"kind"`
-	// Lookback, when set, is a duration Value subtracted from the
-	// chosen reference (e.g. "advance cursor to now() − 5m so late
-	// events still land").
-	Lookback *Value `yaml:"lookback,omitempty" json:"lookback,omitempty"`
-	// EventTime is required when Kind is latest_event_timestamp: it
-	// names the body path to the per-event timestamp field inside the
-	// events list located by response.events_at. The validator rejects
-	// EventTime for the other kinds (use_now / stateless) — it has no
-	// meaning there.
-	EventTime *EventTime `yaml:"event_time,omitempty" json:"event_time,omitempty"`
+// ErrorBlock configures how non-success HTTP responses (and network /
+// decode failures) are surfaced.
+type ErrorBlock struct {
+	// Mode is the document-level dispatcher: "standard" (default),
+	// "warn", or "fail".
+	Mode string `yaml:"mode" json:"mode"`
+	// IncludeBody, when true, includes the response body in the
+	// surfaced error message. Off by default.
+	IncludeBody bool `yaml:"include_body,omitempty" json:"include_body,omitempty"`
 }
 
 // ---- Union helpers ----
 //
-// Every union type (Auth, Body, Pagination, Progress, Value, Predicate)
-// exposes:
-//
-//   - Variant() (name string, payload any) — the active variant. Returns
-//     ("", nil) when zero or multiple variants are set; targets that emit
-//     code from a parsed Doc should call schema.Validate first.
-//   - VariantNames() []string — the names of every set variant (in the
-//     declaration order of the union's fields). Used by the validator's
-//     exactly-one-variant check.
+// Each discriminated-union type exposes a Variant() (name, payload) helper
+// and a VariantNames() slice. The validator's exactly-one-variant check
+// reads VariantNames; downstream slices read Variant() to dispatch on the
+// active arm.
 
-// authVariants returns the (name, payload) pairs for every Auth variant that
-// is currently set, in declaration order.
+// authVariants returns the (name, payload) pairs for every Auth variant
+// that is currently set, in declaration order.
 func authVariants(a Auth) (names []string, payloads []any) {
 	add := func(name string, payload any, set bool) {
 		if set {
@@ -620,8 +451,8 @@ func authVariants(a Auth) (names []string, payloads []any) {
 	return names, payloads
 }
 
-// Variant returns the active Auth variant name and payload. Returns ("", nil)
-// when zero or more than one variant is set.
+// Variant returns the active Auth variant name and payload. Returns
+// ("", nil) when zero or more than one variant is set.
 func (a Auth) Variant() (string, any) {
 	names, payloads := authVariants(a)
 	if len(names) == 1 {
@@ -636,7 +467,36 @@ func (a Auth) VariantNames() []string {
 	return names
 }
 
-// bodyVariants returns the (name, payload) pairs for every Body variant set.
+// oauth2Variants returns the (name, payload) pairs for every OAuth2 grant
+// that is currently set.
+func oauth2Variants(o OAuth2Auth) (names []string, payloads []any) {
+	if o.ClientCredentials != nil {
+		names, payloads = append(names, "client_credentials"), append(payloads, o.ClientCredentials)
+	}
+	if o.PasswordGrant != nil {
+		names, payloads = append(names, "password_grant"), append(payloads, o.PasswordGrant)
+	}
+	return names, payloads
+}
+
+// Variant returns the active OAuth2 grant name and payload. Returns
+// ("", nil) when zero or more than one grant is set.
+func (o OAuth2Auth) Variant() (string, any) {
+	names, payloads := oauth2Variants(o)
+	if len(names) == 1 {
+		return names[0], payloads[0]
+	}
+	return "", nil
+}
+
+// VariantNames returns the names of every set OAuth2 grant.
+func (o OAuth2Auth) VariantNames() []string {
+	names, _ := oauth2Variants(o)
+	return names
+}
+
+// bodyVariants returns the (name, payload) pairs for every Body variant
+// set.
 func bodyVariants(b Body) (names []string, payloads []any) {
 	if b.JSON != nil {
 		names, payloads = append(names, "json"), append(payloads, b.JSON)
@@ -665,8 +525,8 @@ func (b Body) VariantNames() []string {
 	return names
 }
 
-// paginationVariants returns the (name, payload) pairs for every Pagination
-// variant set.
+// paginationVariants returns the (name, payload) pairs for every
+// Pagination variant set.
 func paginationVariants(p Pagination) (names []string, payloads []any) {
 	add := func(name string, payload any, set bool) {
 		if set {
@@ -676,12 +536,9 @@ func paginationVariants(p Pagination) (names []string, payloads []any) {
 	}
 	add("none", p.None, p.None != nil)
 	add("cursor_token", p.CursorToken, p.CursorToken != nil)
-	add("page_number", p.PageNumber, p.PageNumber != nil)
-	add("offset", p.Offset, p.Offset != nil)
-	add("link_header", p.LinkHeader, p.LinkHeader != nil)
-	add("next_url_in_body", p.NextURLInBody, p.NextURLInBody != nil)
-	add("scroll_id", p.ScrollID, p.ScrollID != nil)
-	add("graphql_relay", p.GraphQLRelay, p.GraphQLRelay != nil)
+	add("next_url", p.NextURL, p.NextURL != nil)
+	add("counter", p.Counter, p.Counter != nil)
+	add("custom", p.Custom, p.Custom != nil)
 	return names, payloads
 }
 
@@ -698,281 +555,4 @@ func (p Pagination) Variant() (string, any) {
 func (p Pagination) VariantNames() []string {
 	names, _ := paginationVariants(p)
 	return names
-}
-
-// progressVariants returns the (name, payload) pairs for every Progress
-// variant set.
-func progressVariants(p Progress) (names []string, payloads []any) {
-	add := func(name string, payload any, set bool) {
-		if set {
-			names = append(names, name)
-			payloads = append(payloads, payload)
-		}
-	}
-	add("stateless", p.Stateless, p.Stateless != nil)
-	add("latest_event_timestamp", p.LatestEventTimestamp, p.LatestEventTimestamp != nil)
-	add("max_event_field", p.MaxEventField, p.MaxEventField != nil)
-	add("use_now", p.UseNow, p.UseNow != nil)
-	add("time_window", p.TimeWindow, p.TimeWindow != nil)
-	add("async_job", p.AsyncJob, p.AsyncJob != nil)
-	return names, payloads
-}
-
-// Variant returns the active Progress variant name and payload.
-func (p Progress) Variant() (string, any) {
-	names, payloads := progressVariants(p)
-	if len(names) == 1 {
-		return names[0], payloads[0]
-	}
-	return "", nil
-}
-
-// VariantNames returns the names of every set Progress variant.
-func (p Progress) VariantNames() []string {
-	names, _ := progressVariants(p)
-	return names
-}
-
-// ---- Error ----
-
-// ErrorBlock configures how HTTP errors are surfaced.
-type ErrorBlock struct {
-	// Mode is the document-level dispatcher: "standard" (default),
-	// "warn", or "fail". See the client.Runner package docs for the
-	// precise dispatch order.
-	Mode string `yaml:"mode" json:"mode"`
-	// IncludeBody, when true, includes the failing response body in the
-	// surfaced error/log line. Off by default to avoid leaking secrets
-	// from token-exchange responses.
-	IncludeBody bool `yaml:"include_body,omitempty" json:"include_body,omitempty"`
-}
-
-// ---- CursorUpdateDirective codec ----
-//
-// The structured directive is map-only. Scalar shorthand (cursor_update: use_now)
-// is rejected at parse time with a hint that points to the {kind: ...} form.
-
-// cursorUpdateRaw mirrors CursorUpdateDirective but exists as a separate type
-// so the custom unmarshaler can defer to the default decode without recursion.
-type cursorUpdateRaw struct {
-	Kind      string     `yaml:"kind"                  json:"kind"`
-	Lookback  *Value     `yaml:"lookback,omitempty"    json:"lookback,omitempty"`
-	EventTime *EventTime `yaml:"event_time,omitempty"  json:"event_time,omitempty"`
-}
-
-// UnmarshalYAML implements yaml.Unmarshaler. Only MappingNode is accepted.
-func (c *CursorUpdateDirective) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("schema.CursorUpdateDirective at line %d: cursor_update requires the map form {kind: ..., lookback: ...}; scalar shorthand is not accepted", node.Line)
-	}
-	var raw cursorUpdateRaw
-	if err := node.Decode(&raw); err != nil {
-		return fmt.Errorf("schema.CursorUpdateDirective at line %d: %w", node.Line, err)
-	}
-	c.Kind = raw.Kind
-	c.Lookback = raw.Lookback
-	c.EventTime = raw.EventTime
-	return nil
-}
-
-// UnmarshalJSON implements json.Unmarshaler. Only JSON objects are accepted.
-func (c *CursorUpdateDirective) UnmarshalJSON(data []byte) error {
-	trimmed := bytes.TrimSpace(data)
-	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return fmt.Errorf("schema.CursorUpdateDirective: cursor_update requires the map form {kind: ..., lookback: ...}; scalar shorthand is not accepted")
-	}
-	var raw cursorUpdateRaw
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("schema.CursorUpdateDirective: %w", err)
-	}
-	c.Kind = raw.Kind
-	c.Lookback = raw.Lookback
-	c.EventTime = raw.EventTime
-	return nil
-}
-
-// ---- ExtractVar codec ----
-//
-// Slice 3 collapsed the old (path | source/header) discriminator into one
-// namespace-rooted from: Path. Custom unmarshalers exist solely to surface a
-// precise parse-time error when an author leaves a deleted key behind —
-// without them, the lenient default decode silently drops the unknown key
-// and the validator surfaces a less useful "from is required" error.
-
-// extractVarRaw mirrors ExtractVar so the custom unmarshaler can defer to the
-// default decode without recursion.
-type extractVarRaw struct {
-	Name   string `yaml:"name"             json:"name"`
-	From   Path   `yaml:"from"             json:"from"`
-	Coerce string `yaml:"coerce,omitempty" json:"coerce,omitempty"`
-	Target string `yaml:"target,omitempty" json:"target,omitempty"`
-}
-
-// UnmarshalYAML implements yaml.Unmarshaler. Only MappingNode is accepted.
-// The legacy keys path / source / header are rejected with a hint pointing
-// at the new from: form.
-func (e *ExtractVar) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("schema.ExtractVar at line %d: extract entry must be a map (name + from)", node.Line)
-	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		key := node.Content[i]
-		switch key.Value {
-		case "path":
-			return fmt.Errorf("schema.ExtractVar at line %d: extract.path was removed; use from: response.body.<path> (or response.header.<name>, or steps.<id>.{body|header}.<...> for a labelled prior step)", key.Line)
-		case "source":
-			return fmt.Errorf("schema.ExtractVar at line %d: extract.source was removed; use from: response.body.<path> for body extracts and from: response.header.<name> for header extracts", key.Line)
-		case "header":
-			return fmt.Errorf("schema.ExtractVar at line %d: extract.header was removed; use from: response.header.<name> (the header source is now encoded in the path root)", key.Line)
-		}
-	}
-	var raw extractVarRaw
-	if err := node.Decode(&raw); err != nil {
-		return fmt.Errorf("schema.ExtractVar at line %d: %w", node.Line, err)
-	}
-	e.Name = raw.Name
-	e.From = raw.From
-	e.Coerce = raw.Coerce
-	e.Target = raw.Target
-	return nil
-}
-
-// UnmarshalJSON implements json.Unmarshaler. The legacy keys path / source /
-// header are rejected with a hint pointing at the new from: form.
-func (e *ExtractVar) UnmarshalJSON(data []byte) error {
-	trimmed := bytes.TrimSpace(data)
-	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return fmt.Errorf("schema.ExtractVar: extract entry must be a JSON object")
-	}
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return fmt.Errorf("schema.ExtractVar: %w", err)
-	}
-	if _, ok := probe["path"]; ok {
-		return fmt.Errorf("schema.ExtractVar: extract.path was removed; use from: response.body.<path> (or response.header.<name>, or steps.<id>.{body|header}.<...> for a labelled prior step)")
-	}
-	if _, ok := probe["source"]; ok {
-		return fmt.Errorf("schema.ExtractVar: extract.source was removed; use from: response.body.<path> for body extracts and from: response.header.<name> for header extracts")
-	}
-	if _, ok := probe["header"]; ok {
-		return fmt.Errorf("schema.ExtractVar: extract.header was removed; use from: response.header.<name> (the header source is now encoded in the path root)")
-	}
-	var raw extractVarRaw
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("schema.ExtractVar: %w", err)
-	}
-	e.Name = raw.Name
-	e.From = raw.From
-	e.Coerce = raw.Coerce
-	e.Target = raw.Target
-	return nil
-}
-
-// ---- CursorTokenPagination codec ----
-//
-// Slice 5 deleted the implicit `send_as` auto-injector. Custom unmarshalers
-// surface a precise parse-time error when an author leaves a deleted send_as
-// key behind — the default decode would silently drop the unknown field and
-// the runtime would quietly forget to wire the cursor.
-
-type cursorTokenPaginationRaw struct {
-	TokenAt Path `yaml:"token_at" json:"token_at"`
-}
-
-// UnmarshalYAML implements yaml.Unmarshaler. Only MappingNode is accepted.
-// The legacy send_as key is rejected with a hint pointing at the explicit
-// {ref: cursor.token} request-slot form.
-func (c *CursorTokenPagination) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("schema.CursorTokenPagination at line %d: cursor_token requires the map form {token_at: ...}", node.Line)
-	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		key := node.Content[i]
-		if key.Value == "send_as" {
-			return fmt.Errorf("schema.CursorTokenPagination at line %d: pagination.cursor_token.send_as was removed; wire the cursor explicitly in your request (e.g. query: {cursor: {ref: cursor.token, default: \"\"}})", key.Line)
-		}
-	}
-	var raw cursorTokenPaginationRaw
-	if err := node.Decode(&raw); err != nil {
-		return fmt.Errorf("schema.CursorTokenPagination at line %d: %w", node.Line, err)
-	}
-	c.TokenAt = raw.TokenAt
-	return nil
-}
-
-// UnmarshalJSON implements json.Unmarshaler. The legacy send_as key is
-// rejected with the same hint as the YAML form.
-func (c *CursorTokenPagination) UnmarshalJSON(data []byte) error {
-	trimmed := bytes.TrimSpace(data)
-	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return fmt.Errorf("schema.CursorTokenPagination: cursor_token requires the map form {token_at: ...}")
-	}
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return fmt.Errorf("schema.CursorTokenPagination: %w", err)
-	}
-	if _, ok := probe["send_as"]; ok {
-		return fmt.Errorf("schema.CursorTokenPagination: pagination.cursor_token.send_as was removed; wire the cursor explicitly in your request (e.g. query: {cursor: {ref: cursor.token, default: \"\"}})")
-	}
-	var raw cursorTokenPaginationRaw
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("schema.CursorTokenPagination: %w", err)
-	}
-	c.TokenAt = raw.TokenAt
-	return nil
-}
-
-// ---- ScrollIDPagination codec ----
-//
-// Mirror of CursorTokenPagination: slice 5 deleted the send_as auto-injector
-// and the codec rejects the legacy key at parse time with a migration hint.
-
-type scrollIDPaginationRaw struct {
-	ScrollIDAt   Path       `yaml:"scroll_id_at"             json:"scroll_id_at"`
-	CompleteWhen *Predicate `yaml:"complete_when,omitempty"  json:"complete_when,omitempty"`
-}
-
-// UnmarshalYAML implements yaml.Unmarshaler. Only MappingNode is accepted.
-// The legacy send_as key is rejected with a hint pointing at the explicit
-// {ref: cursor.scroll_id} request-slot form.
-func (s *ScrollIDPagination) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("schema.ScrollIDPagination at line %d: scroll_id requires the map form {scroll_id_at: ...}", node.Line)
-	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		key := node.Content[i]
-		if key.Value == "send_as" {
-			return fmt.Errorf("schema.ScrollIDPagination at line %d: pagination.scroll_id.send_as was removed; wire the cursor explicitly in your request (e.g. query: {scroll: {ref: cursor.scroll_id}} — omit default so the bootstrap iteration opens a fresh scroll)", key.Line)
-		}
-	}
-	var raw scrollIDPaginationRaw
-	if err := node.Decode(&raw); err != nil {
-		return fmt.Errorf("schema.ScrollIDPagination at line %d: %w", node.Line, err)
-	}
-	s.ScrollIDAt = raw.ScrollIDAt
-	s.CompleteWhen = raw.CompleteWhen
-	return nil
-}
-
-// UnmarshalJSON implements json.Unmarshaler. The legacy send_as key is
-// rejected with the same hint as the YAML form.
-func (s *ScrollIDPagination) UnmarshalJSON(data []byte) error {
-	trimmed := bytes.TrimSpace(data)
-	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return fmt.Errorf("schema.ScrollIDPagination: scroll_id requires the map form {scroll_id_at: ...}")
-	}
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return fmt.Errorf("schema.ScrollIDPagination: %w", err)
-	}
-	if _, ok := probe["send_as"]; ok {
-		return fmt.Errorf("schema.ScrollIDPagination: pagination.scroll_id.send_as was removed; wire the cursor explicitly in your request (e.g. query: {scroll: {ref: cursor.scroll_id}} — omit default so the bootstrap iteration opens a fresh scroll)")
-	}
-	var raw scrollIDPaginationRaw
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("schema.ScrollIDPagination: %w", err)
-	}
-	s.ScrollIDAt = raw.ScrollIDAt
-	s.CompleteWhen = raw.CompleteWhen
-	return nil
 }

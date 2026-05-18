@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Load parses an schema.Doc from r, which may contain YAML or JSON.
+// Load parses a schema.Doc from r, which may contain YAML or JSON.
 //
 // JSON is detected by the presence of a leading '{' byte (after trimming
 // whitespace). All other input is treated as YAML.
@@ -28,7 +28,7 @@ func Load(r io.Reader) (*Doc, error) {
 	return Parse(data)
 }
 
-// Parse parses an schema.Doc from a byte slice (YAML or JSON).
+// Parse parses a schema.Doc from a byte slice (YAML or JSON).
 //
 // See Load for format-detection and version-check semantics.
 func Parse(data []byte) (*Doc, error) {
