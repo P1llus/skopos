@@ -1,13 +1,14 @@
 # API method reference
 
-The canonical list of API-communication shapes the runner can express,
-grouped by concern (authentication, pagination, request body, response
-parsing, cursor state, cross-cutting). Each entry names the shape,
-gives a one-paragraph description, and names the IR knobs that express
-it. The IR vocabulary itself lives in [`schema.md`](schema.md); the
-generated per-field reference lives in
-[`schema-reference.md`](schema-reference.md); the runtime contract
-lives in [`runtime.md`](runtime.md).
+The canonical catalogue of API-communication shapes the runner can
+express, grouped by concern (authentication, pagination, request shapes,
+response parsing, state checkpointing, the async-job pattern, loop
+primitives, cross-cutting). Each entry names the shape, gives a
+one-paragraph description, and shows the IR knobs that express it. The
+per-field reference lives in [`schema.md`](schema.md); the runtime
+contract lives in [`runtime.md`](runtime.md); state and cache
+persistence are in [`stores.md`](stores.md); end-to-end walkthroughs are
+in [`usage.md`](usage.md).
 
 Entries fall into three buckets:
 
@@ -28,9 +29,9 @@ shape, write it down here" surface.
 
 ### 1.1 No auth (`auth.none`)
 
-**What it does:** No `Authorization` header or query credential is added by
-the runner. Use for public feeds, demo integrations, or APIs whose credentials
-live entirely in `request.query:` / `request.headers:`.
+**What it does:** No `Authorization` header or query credential is added
+by the runner. Use for public feeds, demo integrations, or APIs whose
+credentials live entirely in `requests[].query` / `requests[].headers`.
 
 **IR shape:**
 
@@ -41,9 +42,9 @@ auth:
 
 ### 1.2 Bearer token (`auth.bearer`)
 
-**What it does:** Sends `Authorization: Bearer <token>` where the token is a
-`Value` (typically a `{ref: state.<name>}` to a secret-typed field, or an
-`{ref: extract.<name>}` captured by a prior step).
+**What it does:** Sends `Authorization: Bearer <token>` where the token
+is a `Value` (typically a `{ref: state.<name>}` against a `secret`-typed
+state field, or a `{ref: extract.<name>}` captured by a prior step).
 
 **IR shape:**
 
@@ -55,15 +56,21 @@ auth:
 
 **Variants:**
 
-- *Static from state* — the token is declared as a `secret`-typed state
-  field and supplied by the operator.
-- *From a prior step* — an earlier step in `requests:` POSTs to a token
-  endpoint and pulls the access token via `extract:`. The main request
-  references it as `{ref: extract.<name>}`. (When the login step has its
-  own expiry, wrap it with `requests[].cache` — see §3.10.)
-- *Raw-token / non-`Bearer` prefix schemes* — APIs that read the value as
-  the literal `Authorization` header value, or that demand a non-`Bearer`
-  prefix, are expressed via `auth.custom` (§1.5), not `auth.bearer`.
+- *Operator-supplied bearer.* The token is a `secret`-typed state field
+  with a `default:` (development) or supplied at runtime.
+- *Long-lived refresh token.* A refresh token a user has pasted in is
+  the same shape as an operator-supplied bearer — just a `secret`-typed
+  `state.<name>` fed into `auth.bearer.token`. Interactive grants
+  (`authorization_code`, `device_code`, PKCE) that require a browser
+  round-trip are **out of scope** (§1.13).
+- *Token captured from a prior step.* An earlier step in `requests:`
+  POSTs to a login endpoint and pulls the access token via `extract:`
+  with `to: extract.<name>`. The main request reads it as
+  `{ref: extract.<name>}`. When the login itself has its own expiry,
+  wrap it with `requests[].cache` (§3.7).
+- *Raw-token / non-`Bearer` prefix schemes.* APIs that read the value
+  as the literal `Authorization` header, or that demand a non-`Bearer`
+  prefix, use `auth.custom` (§1.5).
 
 ### 1.3 Basic auth (`auth.basic`)
 
@@ -79,36 +86,37 @@ auth:
     password: {ref: state.password}
 ```
 
-**Note:** Some APIs reuse the `Authorization: basic` header shape (lowercase
-`basic`) to carry an opaque session token rather than a base64 `user:pass`
-pair. Express that as `auth.custom` (§1.5) — the prefix is `basic ` but the
+APIs that reuse the lowercase `Authorization: basic` shape to carry an
+opaque session token (rather than a base64 `user:pass` pair) are
+expressed via `auth.custom` (§1.5) — the prefix is `basic ` but the
 content is not basic auth.
 
 ### 1.4 API key in a header or query parameter (`auth.api_key`)
 
-**What it does:** A static API key sent in a named header, or (with
-`in_query: true`) as a query parameter.
+**What it does:** A static API key sent in a named header, or — with
+`in_query: true` — as a query parameter.
 
 **IR shape:**
 
 ```yaml
 auth:
   api_key:
-    header: X-Api-Key             # or any vendor-specific header / query-param name
+    header: X-Api-Key
     value: {ref: state.api_key}
-    in_query: false               # set true to send via query param instead
+    in_query: false
 ```
 
 **Common variants:** mixed-case headers (`X-Api-Key`, `x-api-key`,
 `api-key`), vendor-specific names (`X-Auth-Token`, `X-RFToken`,
-`Private-Token`), compound formats (`accessKey=…;secretKey=…` as a single
-header value composed via a `{concat: [...]}` Value).
+`Private-Token`), compound formats (`accessKey=…;secretKey=…` as a
+single header value composed with `{concat: [...]}` or string
+interpolation; see §3.8).
 
 ### 1.5 Custom auth header / scheme (`auth.custom`)
 
-**What it does:** A single-header auth scheme that does not fit `bearer` /
-`basic` / `api_key`. Author supplies the header name and the full value
-`Value`.
+**What it does:** A single-header auth scheme that does not fit
+`bearer` / `basic` / `api_key`. The author supplies the header name and
+the full value Value.
 
 **IR shape:**
 
@@ -116,26 +124,23 @@ header value composed via a `{concat: [...]}` Value).
 auth:
   custom:
     header: Authorization
-    value:
-      concat:
-        - "ApiKey "
-        - {ref: state.api_token}
+    value: "ApiKey ${state.api_token}"
 ```
 
 **Use cases:** literal `Authorization: <token>` with no scheme prefix;
 non-standard `Authorization: ApiKey …` / `Authorization: Token …` /
 `Authorization: basic <opaque>` shapes; vendor-specific headers like
 `PS-Auth key=…;runas=…`. Additional non-auth headers ride on
-`request.headers:`.
+`requests[].headers`.
 
 ### 1.6 OAuth2 client-credentials grant (`auth.oauth2.client_credentials`)
 
-**What it does:** The runner POSTs `grant_type=client_credentials` to a
-configured `token_url` with HTTP Basic `client_id:client_secret`, plus
-optional `scopes=...` / `audience=...` parameters (RFC 6749 §2.3.1). The
-returned access token rides as `Authorization: Bearer <token>` on every
-IR-described request. Non-2xx token responses surface with body-classification
-metadata only — never the raw bytes.
+**What it does:** The runner POSTs `grant_type=client_credentials` to
+the configured `token_url` with HTTP Basic `client_id:client_secret`,
+plus optional `scopes=...` and `audience=...` parameters (RFC 6749
+§2.3.1). The returned access token rides as `Authorization: Bearer
+<token>` on every IR-described request. Non-2xx token responses surface
+with body-classification metadata only — never the raw bytes.
 
 **IR shape:**
 
@@ -146,16 +151,16 @@ auth:
       token_url: {ref: state.token_url}
       client_id: {ref: state.client_id}
       client_secret: {ref: state.client_secret}
-      scopes: [read:events, read:incidents]   # optional; joined with spaces
-      audience: "wiz-api"                     # optional; plain string
+      scopes: [read:events, read:incidents]
+      audience: "wiz-api"
 ```
 
 ### 1.7 OAuth2 password grant (`auth.oauth2.password_grant`)
 
-**What it does:** POSTs `grant_type=password` + `username` / `password` in
-the form body (RFC 6749 §4.3.2). `client_id` is optional and rides in the
-form body when set. Same Bearer-injection and token-fetch error contract as
-`client_credentials`.
+**What it does:** POSTs `grant_type=password` with `username` /
+`password` in the form body (RFC 6749 §4.3.2). `client_id` is optional
+and rides in the form body when set. Same Bearer-injection and
+token-fetch error contract as `client_credentials`.
 
 **IR shape:**
 
@@ -166,26 +171,32 @@ auth:
       token_url: {ref: state.token_url}
       username: {ref: state.username}
       password: {ref: state.password}
-      client_id: {ref: state.client_id}     # optional
-      scopes: [openid, profile]             # optional
+      client_id: {ref: state.client_id}
+      scopes: [openid, profile]
 ```
 
-### 1.8 OAuth2 token caching (`auth.oauth2.<grant>.cache`)
+### 1.8 Token caching with the unified `Cache` block
 
-**What it does:** Wraps the OAuth2 token fetch in a fresh-vs-cached
-conditional. `store_in` names the state key the cached token lands in;
-`expiry_field` is a `Path` rooted at `response.body.<path>` of the token
-endpoint's response carrying the TTL (RFC 6749 `expires_in`, integer
-seconds, with `string→int` and `string→Go-duration` fallbacks);
-`expiry_buffer` is the "don't cut it too close" margin. The `store_in`
-key is auto-registered as a runtime `string` state field — authors must
-NOT also declare it under `state.fields`. The paired expiry slot
-(`<store_in>_expires_at`) auto-registers the same way. Fresh fetch fires
-when `now + expiry_buffer >= cached_expires_at`. The expiry timestamp
-lives at `state.<store_in>_expires_at` as RFC 3339 (slice 7 moved this
-slot out of the cursor namespace).
+**What it does:** Both OAuth2 token fetches and bespoke login steps
+(§3.7) cache their captured value the same way: a `Cache` block writes
+into a named `cache.<name>` slot, records an `expires_at` Value, and
+re-fetches when the remaining lifetime drops below `buffer`. The cache
+namespace is process memory only — `cache.<name>` is cleared on runner
+restart and never persisted (see [`stores.md`](stores.md)).
 
-**IR shape:**
+There is one `Cache` struct, not two: the same fields appear under
+`auth.oauth2.<grant>.cache` and `requests[].cache`. Read the cached
+value from any other slot with `{ref: cache.<name>}`.
+
+**`Cache` fields:**
+
+| Field         | Required | Description |
+|---------------|----------|-------------|
+| `to`          | yes      | `cache.<name>` slot. Authors do not declare it under `state:`; the runner allocates the slot. |
+| `expires_at`  | yes      | [Value](schema.md#values) resolving to a `time.Time`. Accepts a `default:` for APIs that return no explicit expiry — e.g. `{ref: response.body.expires_in, default: "1h"}`. |
+| `buffer`      | yes      | Go-style duration. Re-fetch when the remaining lifetime falls below this. |
+
+**IR shape (OAuth2 token caching):**
 
 ```yaml
 auth:
@@ -195,25 +206,23 @@ auth:
       client_id: {ref: state.client_id}
       client_secret: {ref: state.client_secret}
       cache:
-        store_in: token
-        expiry_field: response.body.expires_in
-        expiry_buffer: 60s
+        to: cache.access_token
+        expires_at: {ref: response.body.expires_in, default: "1h"}
+        buffer: 60s
 ```
 
-**Cache invalidation:** A request step that declares
-`on_status: {401: invalidate_cache}` drops every reachable OAuth2 cache
-slot (including each branch of an `auth.multi_mode` dispatch) and every
-`requests[].cache` step-cache slot, then advances as if the page came
-back empty. The next request misses the cache and forces a fresh token
-fetch. When the active auth has no cache (and no step-cache is reachable)
-the verb degrades to `empty_events` with a log line.
+**Cache invalidation.** A request step that declares
+`on_status: {401: invalidate_cache}` drops every reachable `cache.*`
+slot (the active auth's cache and every `requests[].cache` slot — see
+§3.5), then advances as if the page came back empty. The next request
+misses the cache and forces a fresh fetch.
 
 ### 1.9 Multi-mode auth (`auth.multi_mode`)
 
 **What it does:** Selects an auth strategy at runtime by walking
 `branches[].when` predicates in declaration order — first match wins;
-`default.auth` fires when no branch matches. Common shape: a state flag picks
-between Bearer, API key, and Custom.
+`default:` fires when no branch matches. Common shape: a state flag
+picks between Bearer, API key, and Custom.
 
 **IR shape:**
 
@@ -221,447 +230,512 @@ between Bearer, API key, and Custom.
 auth:
   multi_mode:
     branches:
-      - when:
-          eq:
-            path: state.auth_mode
-            value: bearer
-        auth:
-          bearer:
-            token: {ref: state.api_token}
-      - when:
-          eq:
-            path: state.auth_mode
-            value: basic
+      - when: {eq: {path: state.auth_mode, value: bearer}}
+        auth: {bearer: {token: {ref: state.api_token}}}
+      - when: {eq: {path: state.auth_mode, value: basic}}
         auth:
           basic:
             username: {ref: state.username}
             password: {ref: state.password}
     default:
-      auth:
-        api_key:
-          header: X-Api-Key
-          value: {ref: state.api_key}
+      api_key:
+        header: X-Api-Key
+        value: {ref: state.api_key}
 ```
 
-Nested `multi_mode` is forbidden by the validator (recursion is unsafe).
-The default arm's `auth` may itself be `none: {}` when the operator wants
-unauthenticated fallthrough.
+`multi_mode.default` is a bare `Auth` value (same shape as
+`branches[].auth`). It may itself be `none: {}` when the operator wants
+unauthenticated fallthrough. Nested `multi_mode` is forbidden by the
+validator.
 
 ### 1.10 Session cookie via POST login
 
-**What it does:** A login step POSTs credentials to a session endpoint; the
-main step reads the resulting `Set-Cookie` and rides it as a request header.
-
-The simple two-step shape is supported — express as a multi-step
-`requests:` chain. The login step extracts the cookie via
-`from: response.header.Set-Cookie`; the main step rides it as a
-`request.headers:` entry via `{ref: extract.<name>}`.
+**What it does:** A login step POSTs credentials to a session endpoint;
+the main step reads the resulting `Set-Cookie` and rides it as a
+request header. Express as a multi-step `requests:` chain. The login
+step extracts the cookie via `from: response.header.Set-Cookie` into
+`extract.<name>`; the main step rides it as a `requests[].headers`
+entry via `{ref: extract.<name>}`.
 
 ```yaml
 requests:
   - id: login
     method: POST
-    path: /session/login
+    url: "${state.url}/session/login"
     body:
       json:
         username: {ref: state.username}
         password: {ref: state.password}
     extract:
-      - name: session_cookie
-        from: response.header.Set-Cookie
+      - {to: extract.session_cookie, from: response.header.Set-Cookie}
 
   - id: data
     method: GET
-    path: /api/data
+    url: "${state.url}/api/data"
     headers:
       Cookie: {ref: extract.session_cookie}
 ```
 
-When the login itself has its own expiry, wrap it with `requests[].cache`
-(§3.10) so the round-trip is paid once and skipped on subsequent drains.
+When the login endpoint advertises its own expiry, wrap it with
+`requests[].cache` (§3.7) so the round-trip is paid once and skipped on
+subsequent drains.
 
 **Out of scope:** redirect-following for cookie extraction
-(`resp.Request.Response.Header` chain across redirect hops). No
-escape hatch.
+(`resp.Request.Response.Header` chain across redirect hops). No escape
+hatch.
 
-### 1.11 HMAC / SigV4 / OAuth1 signing
+### 1.11 Refresh-token-as-state-field
 
-**What it does:** Computes a request signature at send-time (HMAC-SHA1,
-HMAC-SHA256, AWS SigV4, vendor-proprietary canonical-string schemes).
+**What it does:** Long-lived OAuth2 refresh tokens that a user has
+already pasted in are NOT a separate auth variant. They are a
+`secret`-typed state field that feeds `auth.bearer.token`:
+
+```yaml
+state:
+  refresh_token:
+    type: secret
+auth:
+  bearer:
+    token: {ref: state.refresh_token}
+```
+
+The grant-exchange itself — swapping a refresh token for a fresh access
+token — is **not** modelled as an auth variant. When such an exchange
+is needed, it lives as a regular request step that hits the token
+endpoint and writes the access token to `state.<name>` (or to a
+`cache.<name>` slot via `requests[].cache`).
+
+### 1.12 HMAC / SigV4 / OAuth1 signing
 
 **Out of scope.** The IR has no canonical-string builder, no body-hash
 construction, and no signing-header assembly. A structural signing form
 lands when a concrete template motivates the shape; until then there is
 no escape hatch.
 
-### 1.12 OAuth2 grants requiring an interactive user
+### 1.13 OAuth2 grants requiring an interactive user
 
-**What it does:** `authorization_code`, `device_code`, and PKCE flows.
-
-**Out of scope.** The pull-loop runtime has no browser-roundtrip surface.
-Long-lived refresh tokens that a user has already pasted in are just a
-`secret`-typed state field fed into `auth.bearer.token` via
-`{ref: state.<name>}`.
+**Out of scope.** `authorization_code`, `device_code`, and PKCE flows
+all require a browser round-trip; the pull-loop runtime has no
+interactive surface. Refresh tokens that a user has already obtained
+externally feed `auth.bearer.token` via §1.11.
 
 ---
 
 ## 2. Pagination
 
+The runner expresses pagination as a discriminated union: exactly one
+variant key per spec. The named variants (`none`, `cursor_token`,
+`next_url`, `counter`) cover the common 80%; `custom` is the escape
+hatch.
+
+Every variant writes its active value into a **per-drain** `state.<name>`
+slot (lifetime inferred from the pagination write site; see
+[schema.md §state](schema.md#state)). Per-drain state is wiped at the
+start of every drain — a drain that fails mid-page re-bootstraps
+pagination on the next start. Recovery across drains is the author's
+responsibility via persistent `state.*` writes from `progress:`
+(§5).
+
+The request reads the per-drain value back with an explicit
+`{ref: state.<name>}` Value placed wherever the API expects it
+(`query:`, `headers:`, the request's `url:`, the JSON body). There is
+no auto-injection.
+
 ### 2.1 No pagination (`pagination.none`)
 
-**What it does:** Each iteration fetches all available data in one request.
-May still combine with a progress strategy (e.g. a time cursor) for
-incremental fetching across iterations.
+**What it does:** Each iteration fetches all available data in one
+request. May still combine with a progress strategy (e.g. a high-water
+timestamp) for incremental fetching across iterations.
 
 ```yaml
-pagination:
-  none: {}
+pagination: {none: {}}
 ```
 
-### 2.2 Page number (`pagination.page_number`)
+### 2.2 Cursor token (`pagination.cursor_token`)
 
-**What it does:** Increment a page counter each iteration; stop on an
-explicit has-next signal or when the returned page is shorter than
-`batch_size`.
+**What it does:** The server returns a next-page token in the response
+body or a response header; the runner captures it into the per-drain
+state slot. The next request reads it back with `{ref: state.<name>}`.
+Default termination fires when the token's source path resolves to
+absent.
 
-**IR shape:**
+Covers opaque cursors, GraphQL Relay end cursors (`pageInfo.endCursor`
+paired with `pageInfo.hasNextPage`), session / scroll IDs, and
+"next-page-number-from-body" patterns where the server hands back the
+next page number rather than a token.
 
-```yaml
-pagination:
-  page_number:
-    page_param: page                          # just the param name (no "query." prefix)
-    has_more_at: response.body.meta.has_next  # optional; namespace-rooted Path to a boolean
-    batch_size: {ref: state.page_size}        # optional; short page also terminates
-```
-
-The page number is read by the request via `{ref: cursor.page}` —
-placement (query vs body) follows where the author writes that Value.
-
-**Variants observed in the wild:** `body.has_more` boolean,
-`body.pagination.next != 0` integer signal, `page < total_pages`
-arithmetic, page-fills-result heuristic (no `has_more_at`). All
-expressible through the `has_more_at` predicate or by relying on the
-short-page termination.
-
-### 2.3 Offset (`pagination.offset`)
-
-**What it does:** Increment `offset` / `skip` by `batch_size` each
-iteration; terminate when the returned page is shorter than `batch_size`.
-The cursor field is `cursor.offset`. When `batch_size` is set, an
-`offset_end` role (the exclusive end of the page) is also available for
-APIs that want both bounds.
-
-**IR shape:**
+**IR shape (opaque cursor in body):**
 
 ```yaml
-pagination:
-  offset:
-    offset_param: offset          # just the param name
-    batch_size: {ref: state.page_size}
-```
+state:
+  next_token:
+    type: string
 
-Place the offset in the request via `{ref: cursor.offset}` (query,
-header, or body slot). Numeric coercion to string for a query slot uses
-`{format: string, value: {ref: cursor.offset}}`.
-
-**Variants:** OData `$skip`/`$top`, body-slot offsets (`start`,
-`search_from`), ID-based "start-after" offsets (express by binding the
-next offset to a state extract via `target: cursor`).
-
-### 2.4 Cursor token (`pagination.cursor_token`)
-
-**What it does:** Server returns an opaque token in the response body; the
-runner captures it into `cursor.token`, and the request reads it back on
-the next iteration via an explicit `{ref: cursor.token, default: ""}`.
-Default completion fires when `{ref: response.body.<token_at>}` resolves
-to zero.
-
-**IR shape:**
-
-```yaml
 requests:
   - method: GET
-    path: /v1/events
+    url: "${state.url}/v1/events"
     query:
-      cursor: {ref: cursor.token, default: ""}   # explicit; default keeps
-                                                 # the bootstrap iteration's
-                                                 # wire shape (sends "cursor=").
+      cursor: {ref: state.next_token, default: ""}
 
 pagination:
   cursor_token:
-    token_at: response.body.next_cursor          # namespace-rooted Path to the next-page token
+    from: response.body.meta.next_token
+    to:   state.next_token
 ```
 
-The token is no longer auto-injected — the request slot is declared
-explicitly. Use `default: ""` to keep the bootstrap iteration sending an
-empty value (rather than omitting the parameter entirely); omit `default`
-to skip the slot until the cursor populates.
+`default: ""` keeps the bootstrap iteration's wire shape (sends
+`?cursor=`). Omit `default` to skip the slot until the server-issued
+token populates it.
 
-**Header-based tokens:** when the next-page token rides on a response header
-rather than the body, capture it via
-`extract: [{from: response.header.<name>, name: <var>, target: cursor}]`
-on the step and feed it forward via `{ref: cursor.<var>}` on the next
-iteration.
-
-**Search-after subtype:** APIs that advance pages by passing the last seen
-sort value or ID (rather than an opaque server-issued token) model
-identically — `token_at` points at a sortable response field, and the
-client carries that field's value forward as the next-page cursor.
-
-### 2.5 Link header (`pagination.link_header`)
-
-**What it does:** Extract the next-page URL from a response header. RFC 5988
-`Link: <url>; rel="next"` is the default pattern; non-standard header
-names or formats override via `pattern:` (a regex whose first capture group
-is the next URL).
-
-The runner parses the header into `cursor.next_link` but does **not**
-substitute it into the request — wiring the URL back is the template's
-job. Read it in the request's `url` slot via
-`{ref: cursor.next_link, default: <bootstrap-url>}`: the first iteration
-falls through to the bootstrap URL, every later iteration follows the
-server's link. The drain ends when a response carries no `rel="next"`
-entry.
-
-**IR shape:**
-
-```yaml
-requests:
-  - method: GET
-    url:
-      ref: cursor.next_link
-      default:
-        concat:
-          - {ref: state.url}
-          - /v1/incidents
-
-pagination:
-  link_header:
-    pattern: '<([^>]+)>;\s*rel="next"'   # optional; default = RFC 5988
-```
-
-### 2.6 Next URL in body (`pagination.next_url_in_body`)
-
-**What it does:** Response body carries the full next-page URL at
-`next_url_at`. The runner parses it into `cursor.next_url` but — like
-`link_header` — does **not** substitute it into the request automatically.
-Read it back in the request's `url` slot via
-`{ref: cursor.next_url, default: <bootstrap-url>}`. A missing, non-string,
-or empty value terminates the drain.
-
-**IR shape:**
-
-```yaml
-requests:
-  - method: GET
-    url:
-      ref: cursor.next_url
-      default:
-        concat:
-          - {ref: state.url}
-          - /v1/alerts
-
-pagination:
-  next_url_in_body:
-    next_url_at: response.body.meta.next_page   # or response.body.links.next, etc.
-```
-
-When the source field name contains a literal `.` (e.g. OData's
-`@odata.nextLink`), use the segment-escape form so the dotted parser does
-not split inside the field name:
+**Header-borne token:** point `from:` at the response header.
 
 ```yaml
 pagination:
-  next_url_in_body:
-    next_url_at:
-      parts: [response, body, "@odata.nextLink"]
+  cursor_token:
+    from: response.header.x-next-page
+    to:   state.next_token
 ```
 
-**Encoded-token URL repair:** some APIs double-encode their next-page
-token inside the next-page URL. Express the decode-and-re-encode as a
-`Value` chain on the request URL, or accept the URL verbatim and let the
-target round-trip it. The runner does not silently repair the encoding.
-
-### 2.7 Scroll / session ID (`pagination.scroll_id`)
-
-**What it does:** First iteration leaves the slot unset (server opens a
-fresh session); later iterations replay the id captured at `scroll_id_at`
-into `cursor.scroll_id`, read back through an explicit
-`{ref: cursor.scroll_id}` on the request. When the id resolves to a zero
-`Value`, the drain terminates and the cursor slot is cleared so the next
-drain opens a fresh session. Optional `complete_when` predicate forces
-termination on a server signal — its predicate may reference
-`response.body.<path>` against the producer body.
-
-**IR shape:**
+**Session / scroll ID:** the bootstrap iteration omits the slot
+entirely so the server opens a fresh session; subsequent iterations
+replay the captured id. Default termination (`{not: {present:
+response.body.<from>}}`) already fires when the server stops returning
+the id; pair with `terminate_when:` for an explicit server-completion
+signal.
 
 ```yaml
-requests:
-  - method: GET
-    path: /v1/scroll
-    query:
-      scroll: {ref: cursor.scroll_id}      # no default — bootstrap omits the slot
-
-pagination:
+state:
   scroll_id:
-    scroll_id_at: response.body.request_metadata.scroll
-    complete_when:                         # optional
+    type: string
+
+requests:
+  - method: GET
+    url: "${state.url}/v1/scroll"
+    query:
+      scroll: {ref: state.scroll_id}      # no default — bootstrap omits
+
+pagination:
+  cursor_token:
+    from: response.body.request_metadata.scroll
+    to:   state.scroll_id
+    terminate_when:
       eq:
         path: response.body.request_metadata.complete
         value: "true"
 ```
 
-### 2.8 GraphQL relay cursor (`pagination.graphql_relay`)
-
-**What it does:** Relay-style pagination with `pageInfo.endCursor` and
-`pageInfo.hasNextPage`. The cursor variable name carries the cursor into
-GraphQL `variables:` on the next iteration; the runner reads from
-`cursor.<cursor_var>` and writes the new end cursor back. Read it inside
-the request via `{ref: cursor.<cursor_var>}` (e.g. `{ref: cursor.after}`).
-
-**IR shape:**
+**GraphQL Relay end cursor:** the cursor variable name is whatever the
+operator chooses for `to:`. Pair with `body.json` carrying `query` +
+a `variables` Object (§3.4); the variable inside the GraphQL document
+reads the cursor with `{ref: state.<name>}`.
 
 ```yaml
 pagination:
-  graphql_relay:
-    has_next_page_at: response.body.data.issues.pageInfo.hasNextPage
-    end_cursor_at: response.body.data.issues.pageInfo.endCursor
-    cursor_var: after
+  cursor_token:
+    from: response.body.data.issues.pageInfo.endCursor
+    to:   state.after
+    terminate_when:
+      eq:
+        path: response.body.data.issues.pageInfo.hasNextPage
+        value: false
 ```
 
-Pair with `body.json` carrying `query` + a `variables` Object (§3.4) —
-there is no separate `body.graphql` variant.
+### 2.3 Next URL (`pagination.next_url`)
 
-### 2.9 Async-job polling (202 → poll → fetch)
+**What it does:** The server returns a fully-formed next-page URL —
+either as a body field or inside a `Link` header. The runner captures
+the resolved URL into the per-drain state slot. The request reads it
+back as its `url:` with a bootstrap fallback that fires on the first
+iteration.
 
-**What it does:** The API returns 202 with a job/task ID; the runner polls
-until completion, then fetches results. Modelled at the progress layer, not
-the pagination layer, because the loop runs across iterations rather than
-within one.
+Covers both the body-borne next-page URL pattern (`response.body.meta.
+next_page`, `response.body.links.next`, OData's
+`@odata.nextLink`) and the RFC 5988 Link-header pattern (`Link: <url>;
+rel="next"`). For the header pattern, set `regex:` / `capture:` to peel
+the URL out of the header value.
 
-See §5.5 (`progress.async_job`).
+**IR shape (next URL in body):**
 
-### 2.10 Time-window pagination
+```yaml
+state:
+  next_url:
+    type: url
 
-**What it does:** Each drain covers a `[start_time, end_time]` window;
-after completion the window slides forward. Combines orthogonally with
-`pagination.offset` (offset paginates *within* the window). Modelled at
-the progress layer, not the pagination layer.
+requests:
+  - method: GET
+    url: {ref: state.next_url, default: "${state.url}/v1/alerts"}
 
-See §5.2 (`progress.time_window`).
+pagination:
+  next_url:
+    from: response.body.meta.next_page
+    to:   state.next_url
+```
 
-### 2.11 Export + blob download
+The `{ref: ..., default: ...}` form is the natural fit here: string
+interpolation cannot express "fall back to a composed URL only when
+the slot is unset," so use the explicit ref-with-default and let
+interpolation render the bootstrap path inside the default.
 
-**What it does:** A list step returns blob URLs; a dependent step GETs each
-blob in turn. When the export is asynchronous (submit → poll → fetch), the
-final fetch role is the blob download.
+**Link header (RFC 5988):**
+
+```yaml
+pagination:
+  next_url:
+    from:   response.header.link
+    to:     state.next_url
+    regex:  '<(.*?)>;\s*rel="next"'
+    capture: 1
+```
+
+When the source body field name contains a literal `.` (e.g. OData's
+`@odata.nextLink`), use the segment-escape form so the dotted parser
+does not split inside the field name:
+
+```yaml
+pagination:
+  next_url:
+    from:
+      parts: [response, body, "@odata.nextLink"]
+    to: state.next_url
+```
+
+The default termination predicate (`{not: {present: <from>}}`) handles
+both the "no next URL" body shape and the "no `rel=\"next\"` entry"
+header shape: when the source path resolves to absent (or the regex
+finds no match), the loop ends.
+
+### 2.4 Counter (`pagination.counter`)
+
+**What it does:** A client-incremented integer that the runner advances
+by `step:` after every accepted page. Covers both page-number
+pagination (`start: 1, step: 1`) and offset pagination (`start: 0,
+step: {ref: state.page_size}`).
+
+Default termination is short-page detection: when the page returned
+fewer events than `step:`, the loop ends. Override with a custom
+`terminate_when:` when the API surfaces an explicit has-more flag.
+
+**IR shape (page-number style):**
+
+```yaml
+state:
+  page:
+    type: int
+
+requests:
+  - method: GET
+    url: "${state.url}/v1/events"
+    query:
+      page:  "${state.page|1}"
+      limit: "${state.page_size}"
+
+pagination:
+  counter:
+    to:    state.page
+    start: 1
+    step:  1
+    terminate_when:
+      not: {present: response.body.meta.has_next}
+```
+
+`"${state.page|1}"` supplies the bootstrap value via the interpolation
+default — the very first iteration sees `state.page` unset and falls
+back to `1`. The runner then advances the counter every page.
+
+**IR shape (offset style):**
+
+```yaml
+state:
+  page_size:
+    type: int
+    default: 100
+  offset:
+    type: int
+
+requests:
+  - method: GET
+    url: "${state.url}/v1/events"
+    query:
+      offset: "${state.offset|0}"
+      limit:  "${state.page_size}"
+
+pagination:
+  counter:
+    to:    state.offset
+    start: 0
+    step:  {ref: state.page_size}
+```
+
+Default short-page termination is correct here: when the server returns
+a page shorter than `state.page_size`, the loop ends.
+
+### 2.5 Custom (`pagination.custom`)
+
+**What it does:** Author-controlled primitive form for APIs that don't
+fit the named variants. The author supplies a list of `{to, from, ...}`
+writes (each `to:` is a declared per-drain state field; each `from:`
+is any Value) plus an explicit `terminate_when:` predicate. The
+predicate reads `response.*` directly, so it observes pre-advance
+values; see [schema.md §pagination execution order](
+schema.md#execution-order-per-page).
+
+```yaml
+state:
+  next_token: {type: string}
+  reset_at:   {type: timestamp}
+
+pagination:
+  custom:
+    advance:
+      - to: state.next_token
+        from: {ref: response.body.cursor}
+      - to: state.reset_at
+        from: {ref: response.header.x-rate-limit-reset}
+    terminate_when:
+      or:
+        - {not: {present: response.body.cursor}}
+        - {lt: {path: response.body.remaining, value: 1}}
+```
+
+Use `custom` when the API needs to advance two or more state slots in
+lockstep, or when termination depends on a value that is not the
+pagination cursor itself (rate-limit headers, a separate
+`continue_token`, etc.).
+
+### 2.6 Async-job (submit → poll → fetch)
+
+**What it does:** The API returns a job/task ID on submission, the
+client polls until completion, then fetches results. This is a
+**request-level loop** (one request fires repeatedly via
+`requests[].terminate_when:`), not a pagination loop. See §6 for the
+full recipe.
+
+### 2.7 Time-window pagination
+
+**What it does:** Each drain covers a `[window_start, window_end)`
+window; after completion the window slides forward. Modelled at the
+progress layer (§5.4), not the pagination layer — the loop runs across
+iterations, not within one. Combines orthogonally with the pagination
+variants (the window bounds ride on `query:`; pagination iterates
+within the window).
+
+### 2.8 Export + blob download
+
+**What it does:** A list step returns blob URLs; a dependent step GETs
+each blob in turn. When the export is asynchronous (submit → poll →
+fetch), the final fetch role is the blob download.
 
 The list → per-blob shape is expressible via `requests:` + per-step
-`fan_out: {over, as, merge: flatten}` (§3.11). The async-export shape is
-supported via `progress.async_job`. MIME-decoding the downloaded blobs
-(gzip / CSV / NDJSON chains) is **out of scope** and is expected to live
-in the ingest pipeline.
+`fan_out:` (§3.10). The async-export shape is the request-level loop
+recipe in §6. MIME-decoding the downloaded blobs (gzip / CSV / NDJSON
+chains) is **out of scope** and is expected to live in the ingest
+pipeline.
 
-### 2.12 Worklist / multi-phase
+### 2.9 Worklist / multi-phase
 
 **What it does:** Same-iteration list → per-item detail fan-out, or
 cross-iteration worklist draining.
 
 Same-iteration `list → detail` is expressible via `requests:` with a
-per-step `fan_out: {over, as, merge: flatten}` (§3.11). Cross-iteration
-worklist draining (seed worklist, drain one per evaluation, LIFO/FIFO
-queues, retry budgets) is **out of scope**. No escape hatch.
-
-### 2.13 Wiring pagination signals into the request
-
-**What it does:** Every pagination strategy surfaces its active value
-through a plain `cursor.<name>` field; the author wires it into the
-request explicitly. There is no auto-injection — the slot the value
-rides in (query, header, body) is always wherever the author writes
-the ref.
-
-| Strategy             | Cursor field            | How to wire it back                                                |
-|----------------------|-------------------------|--------------------------------------------------------------------|
-| `cursor_token`       | `cursor.token`          | `{ref: cursor.token, default: ""}` in `query` / `headers` / body.  |
-| `page_number`        | `cursor.page`           | `{ref: cursor.page}` (typically as a `{format: string, ...}`).     |
-| `offset`             | `cursor.offset` (+ `cursor.offset_end` when `batch_size` is set) | `{ref: cursor.offset}` / `{ref: cursor.offset_end}`. |
-| `scroll_id`          | `cursor.scroll_id`      | `{ref: cursor.scroll_id}` (no default — bootstrap omits the slot). |
-| `graphql_relay`      | `cursor.<cursor_var>`   | `{ref: cursor.<cursor_var>}` inside the GraphQL `variables` object. |
-| `link_header`        | `cursor.next_link`      | `{ref: cursor.next_link, default: <bootstrap-url>}` in the `url` slot. |
-| `next_url_in_body`   | `cursor.next_url`       | `{ref: cursor.next_url, default: <bootstrap-url>}` in the `url` slot. |
-
-`default: ""` on `cursor.token` keeps the bootstrap iteration sending
-the slot with an empty value (preserves the historical
-`?cursor=` wire shape); omit `default` to skip the slot until the
-cursor populates. `scroll_id` typically omits `default` so the server
-opens a fresh session on the bootstrap iteration.
+per-step `fan_out:` (§3.10). Cross-iteration worklist draining (seed
+worklist, drain one per evaluation, LIFO/FIFO queues, retry budgets)
+is **out of scope**. No escape hatch.
 
 ---
 
-## 3. Request types
+## 3. Request shapes
 
-### 3.1 GET with query parameters
+### 3.1 URL composition
 
-**What it does:** Standard GET. Query slots accept any `Value`; each value
-must resolve to a string at request time (use `{format: string, value: ...}`
-to coerce a numeric `Value` to a query string).
+Every request declares an absolute `url:` Value. There is no
+spec-level URL prefix; templates compose URLs themselves.
 
-**IR shape:**
+The two idioms:
+
+**String interpolation** — preferred when the URL is made of literal
+text plus refs:
+
+```yaml
+requests:
+  - method: GET
+    url: "${state.url}/api/v1/events"
+```
+
+`${...}` segments resolve against any namespace; defaults use the
+`|` sigil — `"${state.region|us-east-1}"`. See
+[schema.md §string interpolation](schema.md#string-interpolation) for
+the full grammar.
+
+**`{ref: ..., default: ...}`** — preferred when an entire URL is read
+from a per-drain state slot with a bootstrap fallback. Pagination's
+`next_url` variant (§2.3) is the canonical example:
+
+```yaml
+requests:
+  - method: GET
+    url: {ref: state.next_url, default: "${state.url}/v1/alerts"}
+```
+
+`{concat: [...]}` is accepted everywhere interpolation is; reach for it
+when interpolation gets awkward (e.g. inside a nested Value where a
+quoted string is hard to read).
+
+### 3.2 GET with query parameters
+
+**What it does:** Standard GET. Query slots accept any Value; each
+value must resolve to a string at request time. Non-string Values are
+coerced as if wrapped in `{format: string, value: ...}`; the
+interpolation form (`"${state.page_size}"`) does the same coercion
+inline.
 
 ```yaml
 requests:
   - id: main
     method: GET
-    path: /v1/events
+    url: "${state.url}/v1/events"
     query:
-      since: {ref: cursor.window_start}
-      page: {format: string, value: {ref: cursor.page}}
-      type: {ref: state.event_type}
+      since: {ref: state.last_timestamp}
+      page:  "${state.page|1}"
+      type:  {ref: state.event_type}
 ```
-
-### 3.2 GET with no parameters
-
-**What it does:** Simple GET to a fixed or cursor-constructed URL. Express
-as a `path:` (relative to `defaults.base_url`) or a fully-qualified `url:`
-resolved from a `Value`. `path:` and `url:` are mutually exclusive on a
-single request.
 
 ### 3.3 POST with JSON body
 
-**What it does:** Body is a JSON object whose top-level keys are literal
-strings; each value is a `Value`. Nested object literals at any depth use
-the explicit `{object: {...}}` Value form (a bare YAML mapping at a
-`Value` position is rejected unless it carries a discriminator key).
-
-**IR shape:**
+**What it does:** The body is a JSON object whose top-level keys are
+literal strings; each value is a Value. Nested object literals at any
+depth use the explicit `{object: {...}}` Value form — a bare YAML
+mapping at a Value position is rejected unless it carries a
+discriminator key.
 
 ```yaml
 requests:
   - id: main
     method: POST
-    path: /api/search
+    url: "${state.url}/api/search"
     body:
       json:
         time_range:
           object:
-            start: {ref: cursor.window_start}
-            end:   {ref: cursor.window_end}
+            start: {ref: state.window_start}
+            end:   {ref: state.window_end}
         limit: 100
 ```
+
+The discriminator rule is "Values are discriminated unions." A literal
+map needs the `{object: ...}` wrapper so the YAML decoder does not try
+to interpret its keys as Value discriminator keys.
 
 ### 3.4 POST with GraphQL query
 
 **What it does:** GraphQL has no dedicated body variant — encode it as
 `body.json` with a `query` scalar and a `variables` Object. Pair with
-`pagination.graphql_relay` (§2.8) to drive the cursor variable.
-
-**IR shape:**
+`pagination.cursor_token` (§2.2) to drive the relay cursor variable.
 
 ```yaml
 requests:
   - id: main
     method: POST
-    path: /graphql
+    url: "${state.url}/graphql"
     body:
       json:
         query: |
@@ -673,208 +747,170 @@ requests:
           }
         variables:
           object:
-            after: {ref: cursor.after}
+            after: {ref: state.after}
             first: {ref: state.page_size}
 ```
 
 ### 3.5 POST with form-encoded body
 
-**What it does:** Body is serialised as `application/x-www-form-urlencoded`.
-Common for legacy APIs and for token endpoints expressed as plain
-requests (OAuth2 token endpoints handled by `auth.oauth2` set their own
-form body internally).
-
-**IR shape:**
+**What it does:** Body is serialised as
+`application/x-www-form-urlencoded`. Common for older APIs and for
+token endpoints expressed as plain requests (OAuth2 token endpoints
+handled by `auth.oauth2` set their own form body internally).
 
 ```yaml
 requests:
   - id: main
     method: POST
-    path: /api/events
+    url: "${state.url}/api/events"
     body:
       form:
-        since: {ref: cursor.last_timestamp}
-        limit: {format: string, value: {ref: state.page_size}}
+        since:  {ref: state.last_timestamp}
+        limit:  "${state.page_size}"
         format: json
 ```
 
 ### 3.6 POST with raw body
 
 **What it does:** Send an arbitrary opaque body. The resolved string is
-sent verbatim; no `Content-Type` is set automatically (the operator sets
+sent verbatim; no `Content-Type` is set automatically (operator sets
 one via `headers:` if required). Less common than JSON / form; reserved
-for APIs whose content type does not match the structured cases (NDJSON
-ingest endpoints, hand-tuned XML payloads, GraphQL-via-text/plain).
+for content types that don't match the structured cases (NDJSON
+ingest, hand-tuned XML, GraphQL-via-text/plain).
 
 ```yaml
 requests:
   - method: POST
-    path: /ingest
+    url: "${state.url}/ingest"
     headers:
       Content-Type: application/x-ndjson
     body:
-      raw:
-        concat:
-          - '{"tenant":"'
-          - {ref: state.tenant_id}
-          - '","event":"hello"}'
+      raw: |
+        {"tenant":"${state.tenant_id}","event":"hello"}
 ```
 
-### 3.7 Per-step `if:` gating
+### 3.7 Step-level cache (`requests[].cache`)
 
-**What it does:** Skip a step when its `if:` predicate is false. Combines
-with multi-step `requests:` chains to express conditional pre-fetches and
-cache short-circuits. Predicates use the discriminated map form:
-
-```yaml
-requests:
-  - id: data
-    method: GET
-    path: /events
-    if:
-      eq:
-        path: state.etag_check
-        value: true
-```
-
-When a step is skipped, `{ref: steps.<id>.body.<...>}` resolves to a zero
-`Value`; downstream `{select: ...}` branches should guard with
-`{present: steps.<id>.body.<...>}`.
-
-### 3.8 Per-step `on_status:`
-
-**What it does:** When a request returns a status outside `expect_status:`
-(default `[200]`), dispatch to one of: `skip`, `fail`, `empty_events`, or
-`invalidate_cache`. `invalidate_cache` is OAuth2-aware (see §1.8) and
-also drops `requests[].cache` slots; the other verbs are unconditional.
-
-`on_status:` is a `map[int]string` keyed by exact HTTP status code in
-`[100, 599]`. There is no `retry` verb until the retry/backoff contract
-lands.
-
-```yaml
-requests:
-  - id: main
-    method: GET
-    path: /events
-    on_status:
-      401: invalidate_cache
-      429: empty_events
-      304: skip
-```
-
-### 3.9 Sequential request chain (A → B → C)
-
-**What it does:** Multiple steps with `id:` per step. Later steps reference
-earlier bodies via `{ref: steps.<id>.body.<path>}` and earlier extracts via
-`{ref: extract.<name>}`. The producer step (the one whose decoded body
-`response.events_at` applies to) is the last request by default; set
-`produces_events: true` on a different step to override.
-
-**IR shape:**
+**What it does:** Wraps a token-style step (a custom JSON login, a
+session-key exchange) in a fresh-vs-cached conditional — the non-OAuth2
+counterpart of the OAuth2 token cache (§1.8). The same `Cache` struct
+is reused: it writes into a `cache.<name>` slot and re-runs the step
+when the remaining lifetime drops below `buffer`.
 
 ```yaml
 requests:
   - id: login
     method: POST
-    path: /auth/signin
+    url: "${state.url}/api/v1/login"
+    body:
+      json:
+        username: {ref: state.username}
+        password: {ref: state.password}
+    extract:
+      - {to: cache.session_token, from: response.body.token}
+    cache:
+      to: cache.session_token
+      expires_at: {ref: response.body.expires_in, default: "1h"}
+      buffer: 60s
+
+auth:
+  bearer:
+    token: {ref: cache.session_token, default: "pending"}
+```
+
+`default: "pending"` keeps auth resolution from failing on the very
+first drain (before the slot is populated) when the login endpoint
+itself ignores the `Authorization` header.
+
+`requests[].cache` and `fan_out` are mutually exclusive — cache stores
+one token-shaped value, fan-out runs the step N times, and combining
+them would race writes into one slot.
+
+Cache invalidation follows the same rule as §1.8: a downstream step
+that declares `on_status: {401: invalidate_cache}` drops every
+reachable `cache.*` slot.
+
+### 3.8 Headers and dynamic header values
+
+**What it does:** `requests[].headers` is a map of string → Value.
+Header values use the full Value language — string interpolation for
+composed strings, `{format: ...}` for typed coercions, `{ref: ...}`
+for refs, etc.
+
+```yaml
+requests:
+  - method: GET
+    url: "${state.url}/v1/data"
+    headers:
+      X-Trace-Id: "${state.run_id}"
+      X-API-Version: "2024-01-15"
+      If-None-Match: {ref: state.etag, default: ""}
+```
+
+The standard auth header (`Authorization`, plus whatever
+`auth.api_key.header` or `auth.custom.header` names) is injected by the
+auth pipeline; templates should not duplicate it under
+`requests[].headers`.
+
+### 3.9 Sequential request chain
+
+**What it does:** Multiple steps with `id:` per step. Later steps
+reference earlier bodies via `{ref: steps.<id>.body.<path>}` and
+earlier extracts via `{ref: extract.<name>}`. The producer step (the
+one whose decoded body `response.events_at` walks) is the last request
+by default; set `produces_events: true` on a different step to
+override.
+
+```yaml
+requests:
+  - id: login
+    method: POST
+    url: "${state.url}/auth/signin"
     body:
       json:
         user: {ref: state.username}
         pass: {ref: state.password}
     extract:
-      - name: session_cookie
-        from: response.header.Set-Cookie
+      - {to: extract.session_cookie, from: response.header.Set-Cookie}
 
   - id: main
     method: GET
-    path: /api/data
+    url: "${state.url}/api/data"
     headers:
       Cookie: {ref: extract.session_cookie}
 ```
 
 There is no separate `pre_fetch:` block — a single pre-flight step is
-just the first entry in `requests:`.
+just the first entry in `requests:`. There is also no separate `path:`
+field; every request uses `url:`.
 
-### 3.10 Step-level cache (`requests[].cache`)
+### 3.10 Per-item fan-out
 
-**What it does:** Wraps a token-style step (a custom JSON login, a
-session-key exchange) in a fresh-vs-cached conditional — the non-OAuth2
-counterpart of the OAuth2 token cache (§1.8). `store_in` names *both* the
-top-level response field captured *and* the state slot it lands in.
-`expiry_field` is a `Path` rooted at `response.body.<path>` of the cached
-step's own response carrying the lifetime; `expiry_buffer` is the "don't
-cut it too close" margin; `expiry_format` selects how `expiry_field` is
-read — `duration` (default: a remaining lifetime, integer seconds or a
-Go duration string, same as OAuth2 `expires_in`) or one of the
-absolute-instant formats (`unix_seconds`, `unix_millis`, `rfc3339`,
-`rfc3339nano`). The `store_in` key is auto-registered as a runtime
-`string` state field and survives across iterations; its paired
-`<store_in>_expires_at` slot auto-registers the same way. The step is
-re-run when `now + expiry_buffer >= cached_expires_at`; the expiry
-timestamp lives at `state.<store_in>_expires_at` as RFC 3339 (slice 7
-moved this slot out of the cursor namespace).
-
-**IR shape:**
-
-```yaml
-requests:
-  - id: login
-    method: POST
-    path: /api/v1/login
-    body:
-      json:
-        username: {ref: state.username}
-        password: {ref: state.password}
-    cache:
-      store_in: session_token
-      expiry_field: response.body.expires_in
-      expiry_buffer: 60s
-      expiry_format: duration
-
-auth:
-  bearer:
-    token: {ref: state.session_token, default: "pending"}
-```
-
-`default: "pending"` keeps auth resolution from failing on the very first
-drain (before the slot is populated) when the login endpoint itself
-ignores the `Authorization` header.
-
-**Cache invalidation:** A request step that declares
-`on_status: {401: invalidate_cache}` drops every step-cache slot
-(`state.<store_in>` + `state.<store_in>_expires_at`) alongside the
-OAuth2 cache slots (§1.8), then advances as if the page came back empty.
-The next drain misses the cache and re-runs the login step.
-
-### 3.11 Per-item fan-out
-
-**What it does:** A step iterates over a list `Value` (typically a prior
+**What it does:** A step iterates over a list Value (typically a prior
 step's body list); the runner runs the step once per item with the
 author-chosen `fan_out.as` name bound to the current value. `merge:
-flatten` concatenates per-item response bodies, which must each be JSON
-lists; `merge: wrap` returns the per-item bodies as elements of a list
-(use when each item's response is an object rather than a list). The
-merged body is what binds into `steps.<id>.body` and, when the fan-out
-step is the producer, what `events_at` walks at the end of the
-iteration.
+flatten` (default) concatenates per-item response bodies, which must
+each decode as JSON lists; `merge: wrap` returns the per-item bodies as
+elements of a list (use when each item's response is an object).
+The merged body is what binds into `steps.<id>.body` and, when the
+fan-out step is the producer, what `events_at` walks.
 
-**`fan_out.as` chooses the binding name.** Refs inside the step use that
-name as the namespace root — `{ref: incident.id}` when `as: incident`,
-`{ref: blob.url}` when `as: blob`, and so on. The name must not collide
-with a reserved root (`state`, `cursor`, `extract`, `steps`, `item`,
-`body`, `response`) or with any declared state field, inferred cursor
-field, or earlier-step id.
+**`fan_out.as` chooses the binding name.** Refs inside the step use
+that name as the namespace root — `{ref: incident.id}` when
+`as: incident`, `{ref: blob.url}` when `as: blob`. The name must not
+collide with a reserved root (`state`, `cache`, `events`, `extract`,
+`steps`, `response`) or with any declared state field or earlier-step
+id.
 
 **Error handling per item.** A non-success item runs through the same
 `on_status` / `error.mode` dispatch as a single-request step: `skip` /
-`empty_events` drop the item, `fail` aborts the drain, `invalidate_cache`
-clears the active auth + step caches and stops the fan-out early.
+`empty_events` drop the item, `fail` aborts the drain,
+`invalidate_cache` clears the active auth and step caches and stops the
+fan-out early.
 
-**`requests[].cache` and `fan_out` are mutually exclusive.** Cache stores
-one token-shaped value, fan-out runs the step N times — combining them
-would race writes into one state slot. The validator rejects the
-combination.
+**`requests[].cache` and `fan_out` are mutually exclusive.** Cache
+stores one token-shaped value, fan-out runs the step N times — the
+validator rejects the combination.
 
 **IR shape:**
 
@@ -882,58 +918,132 @@ combination.
 requests:
   - id: list
     method: GET
-    path: /incidents
+    url: "${state.url}/incidents"
 
   - id: detail
     method: GET
-    path:
-      concat:
-        - /incidents/
-        - {ref: incident.id}
+    url: "${state.url}/incidents/${incident.id}"
     fan_out:
       over: {ref: steps.list.body.incidents}
-      as: incident
+      as:   incident
       merge: flatten
 ```
+
+### 3.11 Per-step `if:` gating
+
+**What it does:** Skip a step when its `if:` predicate is false.
+Combines with multi-step `requests:` chains to express conditional
+pre-fetches and cache short-circuits.
+
+```yaml
+requests:
+  - id: data
+    method: GET
+    url: "${state.url}/events"
+    if:
+      eq:
+        path: state.etag_check
+        value: true
+```
+
+When a step is skipped, `{ref: steps.<id>.body.<...>}` resolves to a
+zero Value; downstream `{select: ...}` branches should guard with
+`{present: steps.<id>.body.<...>}`. Progress writes do NOT fire for a
+step skipped by `if:`.
+
+### 3.12 Per-step `on_status:`
+
+**What it does:** When a request returns a status outside
+`expect_status:` (default `[200]`), dispatch to one of the closed verb
+set: `skip`, `fail`, `empty_events`, or `invalidate_cache`.
+
+| Verb               | Semantics                                                                                          |
+|--------------------|----------------------------------------------------------------------------------------------------|
+| `skip`             | Drop the response, emit no events, advance progress as if successful. Canonical "304 Not Modified" handling. |
+| `fail`             | Non-success: emit no events and stop the iteration with an error.                                  |
+| `empty_events`     | Non-success: emit no events but DO fire `progress:` writes. Pattern: "429 with `ignore_api_errors`". |
+| `invalidate_cache` | Drop the cached value backing the active auth's `cache.<name>` slot AND every `requests[].cache` slot, then treat the response as a non-event "retry next iteration" signal. |
+
+`on_status` is a map keyed by exact HTTP status code in `[100, 599]`.
+There is no `retry` verb until the retry/backoff contract lands.
+
+```yaml
+requests:
+  - id: main
+    method: GET
+    url: "${state.url}/events"
+    on_status:
+      401: invalidate_cache
+      429: empty_events
+      304: skip
+```
+
+`error.mode` (`standard` / `warn` / `fail`) is the catch-all for
+statuses not named in `on_status:`. `requests[].on_status` takes
+precedence over `error.mode` for the statuses it lists.
+
+### 3.13 `extract:` captures
+
+**What it does:** Capture fields out of a step's response into either
+the persistent `state.*` namespace or the per-iteration `extract.*`
+namespace. The destination's namespace prefix decides persistence;
+there is no separate `target:` field.
+
+```yaml
+requests:
+  - id: data
+    method: GET
+    url: "${state.url}/events"
+    extract:
+      - {to: state.last_event_id, from: response.body.meta.last_id}
+      - {to: extract.request_id,  from: response.header.x-request-id}
+```
+
+| Destination     | Lifetime                                      | Notes                                                       |
+|-----------------|-----------------------------------------------|-------------------------------------------------------------|
+| `state.<name>`  | persistent (lifetime inferred from this write)| The field must be declared under `state:`.                  |
+| `extract.<name>`| per-iteration                                 | No declaration needed; reset at the top of every iteration. |
+
+`from:` is a namespace-rooted [Path](schema.md#paths):
+`response.body.<path>`, `response.header.<name>`,
+`steps.<id>.body.<path>`, or `steps.<id>.header.<name>`. Bare dotted
+strings without a namespace prefix are rejected.
 
 ---
 
 ## 4. Response parsing
 
-### 4.1 JSON, single object at root
+### 4.1 Decoder selection (`response.decode`)
 
-**What it does:** The response body is a single JSON object; the runner
-wraps it in a one-element list to produce one event. There is no
-`wrap_single` flag — the wrap is inferred from `events_at` being empty
-(body root) with a non-array body.
+**What it does:** Selects how the producer step's body is decoded.
+Closed enum:
 
-**IR shape:**
-
-```yaml
-response:
-  decode: json
-  events_at: ""
-```
-
-### 4.2 JSON array at root
-
-**What it does:** The response body *is* the JSON array.
-
-**IR shape:**
+| Verb     | Semantic                                                                       |
+|----------|--------------------------------------------------------------------------------|
+| `json`   | Decode the full body as a single JSON document.                                |
+| `ndjson` | Decode each non-empty line as one JSON value.                                  |
 
 ```yaml
 response:
   decode: json
-  events_at: ""
+  events_at: response.body.data.events
 ```
 
-### 4.3 JSON array at a nested path
+ZIP / gzip / CSV / MIME-chain decoding is **out of scope** by design —
+`response.decode` is a closed `json | ndjson` enum; MIME chaining is
+expected to live in the ingest pipeline.
 
-**What it does:** The body is an object; events live at a known dotted body
-Path (`data`, `value`, `result`, `items`, `resources`, `hits.hits`,
-`data.<queryName>.nodes`, etc.).
+### 4.2 Locating events (`response.events_at`)
 
-**IR shape:**
+**What it does:** A namespace-rooted [Path](schema.md#paths) telling
+the runner where the events list lives. Accepted roots:
+
+- `response.body.<path>` — the active (events-bearing) step's own body.
+- `steps.<id>.body.<path>` — a labelled prior step's body.
+
+The empty (zero) Path means "the body root IS the events list" — used
+for top-level arrays and top-level single objects (the runner wraps a
+single object in a one-element list).
 
 ```yaml
 response:
@@ -941,19 +1051,86 @@ response:
   events_at: response.body.data.items
 ```
 
-`events_at` is a [Path](schema.md#paths) rooted at
-`response.body.<path>` (or `steps.<id>.body.<path>` for a labelled
-prior step). The empty Path (`events_at: ""`) means "body root" — the
-whole decoded body IS the events list. The validator rejects bare
-dotted strings (`data.items`) and unknown roots.
+Bare dotted strings (`data.items` with no namespace prefix) are
+rejected at parse / validate time.
 
-### 4.4 NDJSON
+When `decode: ndjson` and `events_at` is empty, each decoded line IS
+one event. When `decode: ndjson` and `events_at` is non-empty, the
+trailing body segments below the namespace root are applied to EACH
+decoded line and the flattened sequence is the events list.
 
-**What it does:** The body is newline-delimited JSON, one object per line.
-The runner decodes each non-empty line. When `events_at` is empty, each
-decoded line IS one event; when `events_at` is non-empty, the Path is
-applied to EACH decoded line and the flattened sequence is the events
-list.
+### 4.3 JSON, single object at root
+
+**What it does:** The response body is a single JSON object; the
+runner wraps it in a one-element list to produce one event.
+
+```yaml
+response:
+  decode: json
+  events_at: ""
+```
+
+### 4.4 JSON array at root
+
+**What it does:** The response body IS the JSON array.
+
+```yaml
+response:
+  decode: json
+  events_at: ""
+```
+
+### 4.5 JSON array at a nested path
+
+```yaml
+response:
+  decode: json
+  events_at: response.body.data.items
+```
+
+Common nest patterns the field handles: `data`, `value`, `result`,
+`items`, `resources`, `hits.hits`,
+`data.<queryName>.nodes`. Path segments containing a literal `.`
+(e.g. OData's `@odata.nextLink`) use the segment-escape form
+(`{parts: [...]}`).
+
+### 4.6 Events list inside a prior step's body
+
+**What it does:** When a prior step has a labelled `id:` and that
+step's response carries the events list, `events_at` walks
+`steps.<id>.body.<path>` directly — the producer step does NOT have
+to be the same step whose body the events live in.
+
+```yaml
+requests:
+  - id: list
+    method: GET
+    url: "${state.url}/incidents"
+    fan_out:
+      over: {ref: state.tenants}
+      as:   tenant
+      merge: flatten
+
+  - id: detail
+    method: GET
+    url: "${state.url}/incidents/${tenant.id}"
+    fan_out:
+      over: {ref: steps.list.body}
+      as:   incident
+      merge: flatten
+    produces_events: true
+
+response:
+  decode: json
+  events_at: steps.detail.body
+```
+
+### 4.7 NDJSON
+
+**What it does:** The body is newline-delimited JSON, one object per
+line. Each non-empty line decodes to one event when `events_at` is
+empty; otherwise the path is applied per line and the flattened
+sequence is the events list.
 
 ```yaml
 response:
@@ -961,345 +1138,550 @@ response:
   events_at: ""
 ```
 
-`response.decode` is a closed enum (`json | ndjson`). Per-line custom
-decoding and bespoke empty-line filtering are out of scope.
+### 4.8 The `events.*` namespace
 
-### 4.5 Placeholder events (`response.placeholder_event`)
+**What it does:** Once `events_at` resolves, the decoded events list is
+exposed as the `events.*` namespace. This separates the events
+projection from response-body field access — even when a response body
+also has a top-level field literally named `events`. References:
 
-**What it does:** When a real-events list is empty AND pagination wants
-another iteration, the runner queues a synthetic event (typically an
-operator-supplied object literal expressed as `{object: {...}}`).
-Emission is confirmed at the start of the next iteration (after
-ctx-cancel and `MaxPages` checks have cleared). Three guarantees:
-variant-independent across all pagination strategies, wire-order matches
-drain order, conservative under early exit.
+| Form                       | Resolves to                                              |
+|----------------------------|----------------------------------------------------------|
+| `events.*.<field>`         | `<field>` projected across every event.                  |
+| `events.first.<field>`     | `<field>` from the first event in declared order.        |
+| `events.last.<field>`      | `<field>` from the last event in declared order.         |
+| `events.<int>.<field>`     | `<field>` from the event at position `<int>` (0-based).  |
+| `events.count`             | Number of events on the current page.                    |
 
-**IR shape:**
+The `events.*` namespace is per-iteration. The runner does not buffer
+events across pages; reducers (`max`, `min`, `first`, `last`, `count`)
+are streaming operations over the current page.
 
-```yaml
-response:
-  decode: json
-  events_at: response.body.results
-  placeholder_event:
-    object:
-      message: "retry"
-```
+### 4.9 Empty pages are valid
 
-The ingest-pipeline rule that filters the synthetic event lives outside the
-runner — that is operator-side configuration, not IR.
+**What it does:** An empty page (zero events) is still a valid accepted
+page-response when its status passes `expect_status:` and `on_status:`.
+The loop controls itself; an empty page simply triggers the next page
+fetch under the active pagination variant. There is no synthetic
+"placeholder" event needed — the page loop does not require a non-empty
+event list to advance.
 
-### 4.6 ZIP / gzip / CSV / MIME-chain decoding
-
-**What it does:** Decoding compressed or tabular response bodies, optionally
-chained (`gzip → CSV`, `gzip → NDJSON`, `zip → JSON`).
-
-**Out of scope.** `response.decode` is a closed `json | ndjson` enum by
-design; MIME chaining is expected to live in the ingest pipeline.
-
-> Note: there is no `response.success_condition` /
-> `response.success_status` field. The HTTP status-code success set is
-> configured per-step via `requests[].expect_status` (default `[200]`).
-> Per-status verbs (treat 429 as `empty_events`, 304 as `skip`, etc.)
-> live on `requests[].on_status` — see §3.8.
+Progress writes (§5) fire on empty pages too. Server-provided cursors,
+ingestion timestamps, and other response-body fields are persistable
+independently of event production.
 
 ---
 
-## 5. Cursor and progress
+## 5. State checkpointing (`progress:`)
 
-### 5.1 Stateless (`progress.stateless`)
+`progress:` is a flat list of state writes evaluated **once per
+accepted page-response** (including empty pages). There are no named
+variants — every recipe below is a list of `{to, from, ...}` entries.
 
-**What it does:** No cursor advance; every drain fetches the full dataset.
-Public feeds, demo integrations.
+The destination of every entry is a persistent `state.<name>` field
+(lifetime inferred from this write site). First-run seeding is the
+`default:` on the destination state field — there is no separate
+first-run mechanism.
+
+```yaml
+progress: []                            # no progress tracking
+```
+
+| Field    | Required | Description |
+|----------|----------|-------------|
+| `to`     | yes      | `state.<name>`. Persistent across drains. Must be declared under `state:`. |
+| `from`   | yes      | Any [Value](schema.md#values). Has access to `state.*`, `cache.*`, `events.*`, `response.body.*`, `response.header.*`, `steps.<id>.body.*`, `steps.<id>.header.*`. May use reducers (`max` / `min` / `first` / `last` / `count`) over `events.*`, arithmetic primitives, refs, etc. |
+| `coerce` | no       | Type coercion verb. |
+| `regex`  | no       | Optional regex transform. |
+
+See [schema.md §progress](schema.md#progress) for batch-semantics
+details (all `from:` expressions evaluate against the same pre-write
+snapshot of `state.*`).
+
+### 5.1 Stateless
+
+**What it does:** No cursor advance; every drain fetches the full
+dataset. Public feeds, demo integrations. Just omit `progress:` or set
+it to the empty list:
+
+```yaml
+progress: []
+```
+
+### 5.2 Max-of-events high-water mark
+
+**What it does:** After each accepted page, advance
+`state.last_timestamp` to the maximum event-time across the page,
+merged with the prior state value. The next drain reads `since` from
+`{ref: state.last_timestamp}`; first-run seeding comes from the state
+field's `default:`.
+
+The explicit `max` against the prior state value is the
+restart-safety idiom: it makes the write a no-op when an empty page
+arrives after a partial failure (so a transient drain cannot regress
+the cursor).
+
+```yaml
+state:
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}    # first-run lookback
+
+requests:
+  - method: GET
+    url: "${state.url}/v1/events"
+    query:
+      since: {ref: state.last_timestamp}
+
+response:
+  decode: json
+  events_at: response.body.events
+
+progress:
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}
+```
+
+For "max over an arbitrary monotonically-increasing field" (numeric id,
+sequence number), drop the `timestamp` connotation and project the
+desired field: `from: {max: [{ref: state.last_id}, {max: {ref:
+events.*.id}}]}`. The shape is identical.
+
+### 5.3 Clock-driven cursor
+
+**What it does:** Advance `state.last_timestamp` to `{now: true}` after
+every accepted page — no events walk. Suits APIs where the drain itself
+defines the cutoff (the next iteration is "everything since the last
+invocation").
 
 ```yaml
 progress:
-  stateless: {}
+  - to: state.last_timestamp
+    from: {now: true}
 ```
 
-### 5.2 Time-window cursor (`progress.time_window`)
+For a per-iteration lookback (overlap the window on every advance to
+guard against clock skew or late-arriving events):
 
-**What it does:** Each drain covers `[window_start, window_end]`. First
-drain runs over `[now() - initial_offset, now()]`; advance slides
-`window_start` to the just-finished `window_end`. `window_end` clamps to
-≥ `window_start` so a backwards-running clock cannot invert the window.
-Format choices: `rfc3339` (default), `rfc3339nano`, `unix_seconds`,
-`unix_millis`.
+```yaml
+progress:
+  - to: state.last_timestamp
+    from: {subtract: [{now: true}, "5m"]}
+```
+
+### 5.4 Sliding window
+
+**What it does:** Each drain covers `[window_start, window_end)`;
+after completion the window slides forward. Two progress entries
+advance the window in lockstep. The pre-write snapshot rule
+([schema.md §progress evaluation semantics](
+schema.md#evaluation-semantics)) makes declaration order irrelevant:
+when the new `window_start` reads `state.window_end`, it always sees
+the *old* `window_end` value.
+
+```yaml
+state:
+  window_start:
+    type: timestamp
+  window_end:
+    type: timestamp
+
+requests:
+  - method: GET
+    url: "${state.url}/v1/events"
+    query:
+      start: {ref: state.window_start}
+      end:   {ref: state.window_end}
+
+progress:
+  - to: state.window_start
+    from: {ref: state.window_end, default: {subtract: [{now: true}, "30d"]}}
+  - to: state.window_end
+    from: {now: true}
+```
+
+The first-run window is seeded by the `default:` on the
+`{ref: state.window_end}` inside the `state.window_start` entry — on
+the very first drain `state.window_end` is unset, so the default
+fires and seeds the start of the lookback window. The
+`state.window_end` entry then writes `{now: true}` to close the window.
+
+`state.window_end` clamps to ≥ `state.window_start` so a clock that
+moves the wrong way cannot invert the window — express this with an
+explicit `max` when needed:
+
+```yaml
+progress:
+  - to: state.window_start
+    from: {ref: state.window_end, default: {subtract: [{now: true}, "30d"]}}
+  - to: state.window_end
+    from: {max: [{ref: state.window_start}, {now: true}]}
+```
+
+### 5.5 Pinned-id checkpoint
+
+**What it does:** Persist the first event's id (or any positional
+field) into `state.*` for sort-order-resistant tracking. Useful when
+the API returns events in newest-first order and the consumer wants
+to remember the last "newest" id rather than a timestamp.
+
+```yaml
+progress:
+  - to: state.last_event_id
+    from: {ref: events.first.id}
+```
+
+`events.first` is a declared-order shortcut into the `events.*`
+namespace (§4.8). `events.last` is the symmetric form.
+
+### 5.6 First-write-wins / first-run seeding
+
+**What it does:** "Persist on the very first drain only" is just a
+`{ref: ...}` with a `default:` — when the destination is set, it
+writes itself back (no-op); when absent, the default kicks in.
+
+```yaml
+progress:
+  - to: state.created_at
+    from: {ref: state.created_at, default: {now: true}}
+```
+
+Equivalent at the declaration site: put the seed value as the
+destination's `default:` and have `progress:` write a richer value
+(e.g. a max merge). The `default:` accepts the full Value language,
+including `{subtract: [{now: true}, "720h"]}` for the canonical
+first-run lookback.
+
+```yaml
+state:
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
+```
+
+### 5.7 Per-page checkpointing on empty pages
+
+**What it does:** Progress fires once per accepted page-response — empty
+pages included. Server-provided cursors (`response.body.meta.next_token`
+on a page that returned no new events), ingestion timestamps
+(`response.body.meta.fetched_at`), and other body fields can be
+persisted to `state.*` independently of event production:
+
+```yaml
+progress:
+  - to: state.last_server_cursor
+    from: {ref: response.body.meta.next_token}
+  - to: state.last_ingest_at
+    from: {ref: response.body.meta.fetched_at}
+```
+
+Progress does NOT fire when a step is skipped by `if:`, aborted by
+`on_status: fail`, or errors out before a response was decoded.
+
+### 5.8 ETag / conditional fetch
+
+**What it does:** Skip the work when the upstream has not changed —
+store an `ETag` (or `Last-Modified`) in `state.*`, send `If-None-Match`
+on the next iteration, and treat 304 as "advance state without emitting
+events".
+
+```yaml
+state:
+  etag:
+    type: string
+
+requests:
+  - id: data
+    method: GET
+    url: "${state.url}/events"
+    headers:
+      If-None-Match: {ref: state.etag, default: ""}
+    extract:
+      - {to: state.etag, from: response.header.ETag}
+    on_status:
+      304: skip
+
+progress:
+  - to: state.last_seen_at
+    from: {now: true}
+```
+
+`on_status: {304: skip}` makes the 304 response a no-event accepted
+page — `progress:` still fires (so `state.last_seen_at` advances), the
+extracted ETag from a 200 response persists, and the next iteration
+sends `If-None-Match` against the latest known ETag.
+
+### 5.9 Cross-iteration state in `state.*`
+
+**What it does:** Values that need to survive across iterations but
+are not pagination state live in persistent `state.*` fields. The
+field is declared once; writes come from `progress:` or from
+`requests[].extract` with `to: state.<name>` (§3.13). There is no
+separate `state.passthrough:` mechanism.
+
+The runner persists every state field whose lifetime is inferred as
+"persistent" (written by `progress:` or `extract.to: state.*`) and
+every field that is operator-config (declared with `default:`, no
+writes). Per-drain scratch fields (written by `pagination:`) are wiped
+at drain start. See [`stores.md`](stores.md) for the persistence
+contract.
+
+### 5.10 Working recipes (side-by-side templates)
+
+Two end-to-end recipes assemble the pieces above against the two most
+common shapes.
+
+**Simple GET with timestamp progress** — single GET, single page,
+high-water timestamp from the events list:
+
+```yaml
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+  page_size:
+    type: int
+    default: 5
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  - method: GET
+    url: "${state.url}/bearer_simple/events"
+    query:
+      since: {ref: state.last_timestamp}
+      limit: "${state.page_size}"
+
+response:
+  decode: json
+  events_at: response.body.events
+
+pagination:
+  none: {}
+
+progress:
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}
+
+error:
+  mode: standard
+```
+
+**URL-from-body pagination with timestamp progress** — server returns
+the next-page URL inside the response body; the drain follows the
+chain until no `next_page` is present:
+
+```yaml
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+  page_size:
+    type: int
+    default: 5
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  next_url:
+    type: url
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  - method: GET
+    url: {ref: state.next_url, default: "${state.url}/v1/alerts"}
+    query:
+      since: {ref: state.last_timestamp}
+      limit: "${state.page_size}"
+
+response:
+  decode: json
+  events_at: response.body.alerts
+
+pagination:
+  next_url:
+    from: response.body.meta.next_page
+    to:   state.next_url
+
+progress:
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.created_at}}]}
+
+error:
+  mode: standard
+```
+
+---
+
+## 6. Async-job pattern (request-level loop)
+
+**What it does:** The API returns a job/task ID on submission; the
+client polls until completion; then fetches the results. The IR
+expresses this as **three plain requests** with `terminate_when:` on
+the poll step and ordinary `extract:` writes to `state.*`. There is
+no dedicated async-job variant, no submit/poll/fetch role machine, and
+no runner-allocated state slots — every state field is declared by the
+author.
 
 **IR shape:**
 
 ```yaml
-progress:
-  time_window:
-    initial_offset: 24h
-    format: rfc3339
-```
+state:
+  export_id:
+    type: string
+  result_url:
+    type: url
 
-Window bounds land on request slots via `{ref: cursor.window_start}`
-and `{ref: cursor.window_end}`. Combines orthogonally with
-`pagination.offset` (offset paginates *within* the window).
-
-### 5.3 Latest-event timestamp (`progress.latest_event_timestamp`)
-
-**What it does:** After each drain, advance `cursor.last_timestamp` to the
-maximum event-time across the drain's emitted events. The next drain
-reads `since` from `{ref: cursor.last_timestamp}` with first-run
-fallback to `initial.lookback`. Optional per-iteration `lookback` lets
-the window overlap on every advance, not just the first.
-
-**IR shape:**
-
-```yaml
-progress:
-  latest_event_timestamp:
-    event_time:
-      path: created_at
-    initial:
-      lookback: 7d
-    lookback: 60s            # optional; subtracted on every advance
-```
-
-### 5.4 Max-of-list cursor (`progress.max_event_field`)
-
-**What it does:** Same shape as `latest_event_timestamp` but advances to
-the *maximum* value of the named field across the drain's emitted events,
-treated as an arbitrary monotonically-increasing field (numeric id, etc.)
-rather than specifically a timestamp. Shares the events-walk helper with
-`latest_event_timestamp`.
-
-```yaml
-progress:
-  max_event_field:
-    event_time:
-      path: id
-```
-
-### 5.5 Async-job dispatcher (`progress.async_job`)
-
-**What it does:** Submit → poll → fetch state machine. The runner
-dispatches on `cursor.phase` (default `submit`): one HTTP step per
-evaluation. The `async_job:` block assigns step ids to roles (via
-`step:`), declares per-role `extract:` maps (each entry is
-`<name>: {from: response.body.<path>}` — or `steps.<id>.body.<path>` for
-a labelled prior step) that flow into the cursor, and declares
-`poll.complete_when` (a `Predicate`, with `response.body.<path>` valid
-inside it) for the loop-exit signal. Inner re-poll (stay-in-poll while the
-completion predicate is false) is handled by the runner on slow jobs.
-`on_complete.cursor_update.kind` chooses how the cursor advances after
-the fetch: `stateless`, `use_now`, or `latest_event_timestamp`
-(the last form requires `event_time: {path: ...}`).
-
-Each role is independently optional: at least one of `submit`, `poll`,
-`fetch` must be set. The events-bearing step is the last-declared role
-(`fetch` > `poll` > `submit`) unless one of the requests carries
-`produces_events: true`.
-
-**IR shape:**
-
-```yaml
 requests:
   - id: submit
     method: POST
-    path: /exports
+    url: "${state.url}/exports"
     expect_status: [202]
+    extract:
+      - {to: state.export_id, from: response.body.export_id}
 
   - id: poll
     method: GET
-    path:
-      concat:
-        - /exports/
-        - {ref: cursor.export_id}
-        - /status
+    url: "${state.url}/exports/${state.export_id}/status"
+    expect_status: [200, 404]
+    terminate_when:
+      and:
+        - {present: response.body.status}
+        - {eq: {path: response.body.status, value: complete}}
+    extract:
+      - {to: state.result_url, from: response.body.result_url}
 
   - id: fetch
     method: GET
-    url: {ref: cursor.result_url}
-
-progress:
-  async_job:
-    submit:
-      step: submit
-      extract:
-        export_id: {from: response.body.export_id}
-    poll:
-      step: poll
-      complete_when:
-        eq:
-          path: response.body.status
-          value: complete
-      extract:
-        result_url: {from: response.body.result_url}
-    fetch:
-      step: fetch
-    on_complete:
-      cursor_update:
-        kind: stateless
+    url: {ref: state.result_url}
+    produces_events: true
 ```
 
-The cursor namespace auto-provides `cursor.phase`, plus every name
-declared in `submit.extract` / `poll.extract`. The scalar shorthand
-(`cursor_update: use_now`) is rejected at parse time — use the map form
-`{kind: use_now}`.
+**How the loop works.** `terminate_when:` on the poll step is the
+request-level loop primitive — after each poll response, the predicate
+is evaluated against `response.*` and the active `state.*`. If true,
+the loop exits and the runner moves to the fetch step. If false, the
+same poll step re-fires. The submit and fetch steps run once per
+iteration; only the poll step loops.
 
-### 5.6 Use-now (`progress.use_now`)
+**Variants:**
 
-**What it does:** Advance writes `cursor.last_timestamp = now() - lookback`
-every drain — no events walk. Suits APIs where the drain itself defines
-the cutoff (the next iteration is "everything since the last invocation").
+- *Asynchronous export with completion timestamp.* `progress:` writes
+  a max-merge over `events.*.timestamp` after the fetch step's events
+  are emitted (§5.2). The fetch step is the producer because it is the
+  last request and carries `produces_events: true`.
+- *Stateless export.* Omit `progress:` (or set `progress: []`) — every
+  drain re-submits, re-polls, and re-fetches without persisting any
+  high-water mark.
+- *Poll-without-fetch.* Some APIs return events directly inside the
+  poll response when the job completes — drop the fetch step and mark
+  the poll step `produces_events: true`. The poll loop's
+  `terminate_when:` doubles as the "events are ready" signal.
 
-```yaml
-progress:
-  use_now:
-    lookback: 5m         # optional
-```
-
-### 5.7 Multi-field cursor
-
-**What it does:** Multiple cursor fields advance together (timestamp +
-worklist tail; timestamp + offset; per-entity timestamps).
-
-Multiple `progress.*` strategies do not compose today. Authors can stash
-auxiliary cursor fields via `requests[].extract` with `target: cursor`
-(an auto-registered cursor field that persists across iterations).
-Complex multi-field cursors with conditional advance logic remain out of
-scope.
-
-```yaml
-requests:
-  - id: data
-    method: GET
-    path: /events
-    extract:
-      - name: high_water_id
-        from: response.body.meta.last_id
-        target: cursor       # writes to cursor.high_water_id
-```
-
-### 5.8 Conditional fetch / ETag
-
-**What it does:** Skip the work when the upstream has not changed —
-e.g. store an `ETag` (or `Last-Modified`) in the cursor, send
-`If-None-Match` on the next iteration, and treat 304 as "advance cursor
-without emitting events".
-
-**Supported.** Express via:
-
-- `extract:` with `from: response.header.<name>, target: cursor` to
-  capture the ETag into the cursor namespace,
-- `headers:` reading it back as `If-None-Match` via
-  `{ref: cursor.<name>, default: <empty-string>}`,
-- `on_status: {304: skip}` so the 304 response yields the skip-block
-  (empty events, cursor preserved).
-
-```yaml
-requests:
-  - id: data
-    method: GET
-    path: /events
-    headers:
-      If-None-Match: {ref: cursor.etag, default: ""}
-    extract:
-      - name: etag
-        from: response.header.ETag
-        target: cursor
-    on_status:
-      304: skip
-```
-
-A first-class "wrap the fetch in a conditional HEAD then GET" branch is
-not yet modelled — `if:` is evaluated before the step runs, so the two
-ways to dispatch on a prior response status are `on_status:` on the
-prior step or a `select` over the prior body.
-
-### 5.9 State machine across iterations
-
-**What it does:** Three-or-more-phase orchestration with LIFO / FIFO
-worklists, retry budgets, conditional branching, or cross-iteration
-queue draining.
-
-**Out of scope.** The two-phase shapes are covered: submit → poll →
-fetch via `progress.async_job` (§5.5); list → detail via `requests:` +
-`fan_out:` (§3.11). Beyond that, no escape hatch.
+**Phase information lives in plain state.** `state.export_id` and
+`state.result_url` are author-declared persistent state fields,
+populated by ordinary extracts on the submit and poll steps. There is
+no runner-managed `phase` field, no role discriminator, no
+auto-registered state slots.
 
 ---
 
-## 6. Cross-cutting
+## 7. Loop primitives
 
-### 6.1 Token caching across iterations
+The runner expresses two loops, each with one predicate hook.
 
-**What it does:** Cache an OAuth2 / session token in state with an expiry
-field; the runner checks expiry before re-fetching, avoiding a token
-round-trip on every iteration.
+| Loop                | Hook                                      | Variant-specific default                                                             |
+|---------------------|-------------------------------------------|--------------------------------------------------------------------------------------|
+| Pagination loop     | `pagination.<variant>.terminate_when:`    | `cursor_token` / `next_url`: `{not: {present: <from>}}`. `counter`: short-page (`{lt: {path: events.count, value: <step>}}`). `custom`: no default — author must supply. `none`: no loop. |
+| Request loop        | `requests[].terminate_when:`              | None — the request fires once when omitted. Used for async-poll patterns (§6).       |
 
-See `auth.oauth2.<grant>.cache` (§1.8) for OAuth2 token caching.
+Both loops use the [Predicate](schema.md#predicates) language and read
+`response.*` plus the active `state.*`. Both are absent-tolerant: a
+Path that resolves to absent makes `present` return false and makes
+comparison predicates return false, never throws.
 
-For non-OAuth2 cached-login endpoints (custom session tokens with their own
-expiry), `requests[].cache` (§3.10) wraps the login step in the same
-fresh-vs-cached conditional — the step is skipped while the cached token is
-still inside its expiry buffer.
+There are no other loop primitives. Cross-iteration state-machine
+orchestration (LIFO / FIFO worklists, retry budgets, conditional
+branching beyond the two-loop shape) is **out of scope**. No escape
+hatch.
 
-### 6.2 Cross-iteration state
+---
 
-**What it does:** Values that are not cursor fields but must survive
-across iterations (cached tokens, derived config).
+## 8. Cross-cutting
 
-There is no `state.passthrough:` block. Persistence rules:
+### 8.1 Token caching across drains
 
-- `state.fields.<name>` with `mutability: runtime` is round-tripped
-  through the `Store`; runtime writes survive across iterations and
-  drains.
-- `auth.oauth2.<grant>.cache.store_in` and `requests[].cache.store_in`
-  auto-register their slot as a `mutability: runtime` `string` field
-  (authors must NOT also declare it under `state.fields`).
-- Auxiliary cursor fields go through `extract:` with `target: cursor`
-  (§5.7) — these auto-register a cursor field that persists alongside
-  the strategy-inferred ones.
-- `state.fields.<name>` with `mutability: config` (the default) is
-  operator-supplied and NOT written back at runtime.
+`auth.oauth2.<grant>.cache` (§1.8) for OAuth2 tokens;
+`requests[].cache` (§3.7) for custom session-token logins. Both write
+into a `cache.<name>` slot and use the same `Cache` struct.
 
-### 6.3 Dual-mode behaviour (`auth.multi_mode` and beyond)
+The `cache.*` namespace is process memory only. Tokens DO NOT persist
+across runner restarts — the first request after a restart misses the
+cache and forces a fresh token fetch. This is by design: the persisted
+surface ([`stores.md`](stores.md)) is `state.*` only.
 
-**What it does:** Runtime branching on a state flag. Auth-level branching
-is covered by `auth.multi_mode` (§1.9). Within a single request, branching
-the URL / body / headers on a flag is covered by `{select: {branches: [...], default: ...}}`
-on any `Value` slot. URL/endpoint or request-shape branching that needs
-to swap a whole request out for a different one (e.g. `gov_cloud` selecting
-a completely different endpoint set) is *not* yet modelled as a first-class
-form — express it via `select` on individual `path` / `body` slots, or via
-`if:` gating two parallel request chains.
+### 8.2 Secret redaction in logs / traces
 
-### 6.4 Secret redaction in logs / traces
-
-**What it does:** Every log line, error message, and `Tracer` field that
-mentions an `schema.Value` routes through `redactValue(doc, v)`. URLs go
-through `safeURL` (scheme + host + path; query and userinfo stripped).
+Every log line, error message, and `Tracer` field that mentions a
+`Value` routes through the secret-detector. URLs are emitted with
+scheme + host + path only; query strings and userinfo are stripped.
 `Authorization` / `Cookie` / `Proxy-Authorization` headers are always
 redacted by name; the runtime credential surfaces named by
-`auth.custom.header` and `auth.api_key.header` are redacted by name; any
-`request.headers` / `request.query` entry whose IR `Value` is
-`schema.IsSecret` is redacted by content. Request and response bodies
-are metadata-only (byte length + leading-byte classification), never
-raw bytes.
+`auth.custom.header` and `auth.api_key.header` are redacted by name;
+any `requests[].headers` / `requests[].query` entry whose IR Value is
+secret-tainted is redacted by content. Request and response bodies are
+metadata-only (byte length + leading-byte classification), never raw
+bytes.
 
-`schema.IsSecret(doc, v)` walks the full `Value` tree (Ref + Default,
-Now.Offset, Concat, Select branches + default, Format.Value, Base64,
-List, Object) so secret-ness propagates through composition.
+`secret`-typed state fields propagate their secret status through every
+composite Value form they appear in — `{concat}`, `{format}`, `{base64}`,
+`{select}`, `{list}`, `{object}`, and interpolated strings. See
+[schema.md §secret propagation](schema.md#secret-propagation).
 
-### 6.5 HTTP transport: timeouts, proxies, retries
+### 8.3 HTTP transport: timeouts, proxies, retries
 
-**What it does:** Default 30-second per-request timeout. Callers inject a
-custom `*http.Client` to control proxy, mTLS, custom transport, redirect
+Default 30-second per-request timeout. Callers inject a custom
+`*http.Client` to control proxy, mTLS, custom transport, redirect
 policy, DNS overrides.
 
 Retry / backoff / rate-limit policy is **never** modelled at the runner
 layer. Authors who need retries plug them into the injected transport.
 
-### 6.6 Observability: structured trace per HTTP exchange
+### 8.4 Observability: structured trace per HTTP exchange
 
-**What it does:** `Runner.Tracer` receives one `Exchange` record per HTTP
-exchange, carrying iteration, phase, step id, redacted URL, redacted query
-map, redacted post-auth headers, body metadata, status, elapsed, error
-string. The `JSONLTracer` writes one JSON object per exchange.
+`Runner.Tracer` receives one record per HTTP exchange, carrying
+iteration, step id, redacted URL, redacted query map, redacted
+post-auth headers, body metadata, status, elapsed, error string. The
+`JSONLTracer` writes one JSON object per exchange.
 
-Metrics surface (drain duration, events/page, error rate by endpoint)
-is deferred — a `Tracer` can compute most of these by aggregating
-per-exchange records.
+A metrics surface (drain duration, events/page, error rate by
+endpoint) is **deferred** — a `Tracer` can compute most of these by
+aggregating per-exchange records.
+
+### 8.5 Branching the request shape on a state flag
+
+Auth-level branching is `auth.multi_mode` (§1.9). Within a single
+request, branching the URL / body / headers on a flag is covered by
+`{select: {branches: [...], default: ...}}` on any Value slot.
+
+Whole-request-shape branching (e.g. `gov_cloud` selecting a completely
+different endpoint set) is **not** modelled as a first-class form —
+express it via `select` on individual `url:` / `body:` slots, or via
+`if:` gating two parallel request chains.
