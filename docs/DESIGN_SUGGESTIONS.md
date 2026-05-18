@@ -2,7 +2,7 @@
 
 This document proposes a reshaped schema for skopos. It covers every
 top-level block, the cross-cutting primitives, and two side-by-side
-template migrations to ground the proposal in concrete YAML.
+template sketches to ground the proposal in concrete YAML.
 
 Section 6 records the settled decisions from the design discussion and
 the implementation-time work items that the code-change PR will pick
@@ -10,7 +10,9 @@ up. There are no open schema questions.
 
 No code changes accompany this document. The next step is a separate
 plan specifying the Go-side refactor (struct changes, validator
-changes, runtime changes, snapshot migration).
+changes, runtime changes). The project has no installed user base, so
+there is no on-disk snapshot to migrate — the old shape is deleted
+outright in the same code change that introduces the new one.
 
 ---
 
@@ -48,13 +50,15 @@ changes, runtime changes, snapshot migration).
 
 **Non-goals**
 
-- Backward compatibility. The project has no released version; breaking
-  changes are welcome and `ir_version` does not need bumping for this
-  redesign (a single IR version bump will ship alongside the code
-  change).
-- Rewriting all 26 templates in this document. Two migration sketches
-  are included to validate the proposal; the remaining templates will
-  be migrated in the code-change PR.
+- Backward compatibility. The project has no released version. There
+  is no installed user base, no existing on-disk `state.json` we need
+  to migrate, and no "both old and new" support to plan for. The new
+  schema is the source of truth; the old schema is deleted in the
+  same code change that introduces the new one. No shims, no
+  compatibility layers, no migration code. `ir_version` stays `"1"`.
+- Rewriting all 26 templates in this document. Two side-by-side
+  sketches (§5) are included to validate the proposal; the remaining
+  templates are rewritten in the code-change PR.
 - Specifying every runtime detail. Some implementation choices
   surface in §6 as notes for the implementation plan; none of them
   affect the schema shape.
@@ -714,10 +718,10 @@ in-process representation is always `time.Time`.
 
 ---
 
-## 5. Migration sketches
+## 5. Side-by-side template sketches
 
-Two templates migrated side-by-side. Current YAML on the left,
-proposed on the right.
+Two templates rewritten side-by-side to validate the proposal.
+Current YAML on the left, proposed on the right.
 
 ### 5.1 `bearer_simple.yml` — simple GET with timestamp progress
 
@@ -1007,17 +1011,13 @@ those words carry the right meaning for the per-item construct). The
 code-change PR will run a final audit; any straggler will be renamed
 at that point.
 
-**G. Snapshot migration.** The code change must migrate existing
-`state.json` files: `cursor.<name>` keys move to `state.<name>` keys
-(per the namespace consolidation). Per-drain state entries can be
-dropped during migration; they'll be re-derived from pagination on
-the first post-migration drain.
-
-**H. Type rename.** The current schema's `type: rfc3339` (proposed in
-an earlier draft) does not exist in code; the production schema uses
-`type: duration` for timestamp-flavoured fields. The new `type:
-timestamp` with `format:` replaces both, but no migration is needed
-beyond updating templates.
+**G. No migration code.** There is no installed user base to migrate.
+Existing `state.json` files from any development snapshot are
+discarded — the code change deletes the old schema structs, the old
+`cursor.*` namespace, and the old per-drain state handling outright.
+No shims, no detection-and-translation logic, no "load v0 snapshot,
+emit v1 snapshot" path. Anything not described in this document is
+removed in the same change that introduces it.
 
 ---
 
@@ -1028,11 +1028,8 @@ beyond updating templates.
 - Does not specify the runtime changes in `client/` (in particular,
   per-page progress checkpointing requires a refactor of the
   `Drain` loop and the `Store.Save` deferred call).
-- Does not specify the snapshot migration path (existing `cursor.*`
-  state keys → `state.*` keys; existing per-drain fields → wiped on
-  first load).
-- Does not rewrite all 26 templates (the two migration sketches above
-  validate the proposal; the remaining templates are a follow-up).
+- Does not rewrite all 26 templates (the two side-by-side sketches in
+  §5 validate the proposal; the remaining templates are a follow-up).
 
 All of the above are deferred to a separate plan once this document is
 accepted.
