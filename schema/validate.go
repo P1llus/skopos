@@ -61,7 +61,7 @@ func (v *validator) errorf(path, format string, args ...any) {
 // ns is the namespace context used when validating references inside a
 // particular scope.
 type ns struct {
-	state              map[string]struct{} // declared state field names
+	state         map[string]struct{} // declared state field names
 	cursor        map[string]struct{} // inferred cursor field names
 	extract       map[string]struct{} // available extract.<name> bindings
 	stepBodies    map[string]struct{} // available steps.<id> bindings
@@ -910,6 +910,9 @@ func (v *validator) checkProgress(path string, p Progress, namespace *ns) {
 
 func (v *validator) checkTimestampProgress(path string, tp TimestampProgress, namespace *ns) {
 	v.checkPerEventPath(path+".event_time.path", tp.EventTime.Path)
+	if tp.Initial != nil {
+		v.checkValue(path+".initial.lookback", tp.Initial.Lookback, namespace, false)
+	}
 	if tp.Lookback != nil {
 		v.checkValue(path+".lookback", *tp.Lookback, namespace, false)
 	}
@@ -1482,4 +1485,3 @@ func cursorSchema(d *Doc) map[string]struct{} {
 	}
 	return cs
 }
-

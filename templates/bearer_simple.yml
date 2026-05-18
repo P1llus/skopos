@@ -46,7 +46,7 @@ progress:
     event_time:
       path: timestamp
     initial:
-      lookback: "720h"
+      lookback: {ref: state.initial_interval}
 
 error:
   mode: standard
