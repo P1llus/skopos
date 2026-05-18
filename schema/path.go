@@ -11,12 +11,31 @@ import (
 )
 
 // Path is a typed identifier for a dotted-string reference into one of the
-// IR's defined namespaces (state, cursor, extract, steps, item, response).
+// IR's defined namespaces. The closed set of namespace roots is:
+//
+//	state | cache | events | extract | steps | response
+//
+// Any other first segment is treated as an author-chosen fan_out.as alias
+// at parse time and is accepted; the validator binds the alias to a
+// concrete fan-out step at use-site time. Three names — cursor, body, item
+// — are explicitly rejected at parse time as historical reserved roots
+// that have been removed.
+//
+// The events root carries a small vocabulary of declared-order shortcuts:
+//
+//	events.first.<field>   first event in the active page
+//	events.last.<field>    last event in the active page
+//	events.<int>.<field>   positional access (zero-based)
+//	events.count           cardinality of the active page
+//	events.*.<field>       projection across every event
+//
+// These shortcut segments parse like any other identifier; the validator
+// is what enforces their semantics.
 //
 // Primary form (dotted string):
 //
 //	events_at: response.body.data.issues.nodes
-//	ref: cursor.last_timestamp
+//	ref: events.last.timestamp
 //
 // Segment-escape form for field names containing dots or other special chars:
 //
@@ -33,6 +52,74 @@ type Path struct {
 	// (YAML null / JSON null). Use IsEmpty to also cover the
 	// never-decoded "Parts is nil" case.
 	IsZero bool
+}
+
+// pathClosedRoots is the closed set of namespace-root names. The validator
+// (and the client-side scope resolver) mirror this set; any change here
+// must be reflected at every mirroring site.
+var pathClosedRoots = map[string]struct{}{
+	"state":    {},
+	"cache":    {},
+	"events":   {},
+	"extract":  {},
+	"steps":    {},
+	"response": {},
+}
+
+// pathRemovedRoots names roots that were once legal but have been removed
+// from the IR. Each entry's value is the migration hint surfaced at parse
+// time so authors of stale templates get a precise diagnostic.
+var pathRemovedRoots = map[string]string{
+	"cursor": "declare each cursor field under state.<name> (lifetimes are inferred from write sites; there is no cursor namespace any more)",
+	"body":   "use response.body.<path> (or steps.<id>.body.<path> for a prior step's response)",
+	"item":   "reference the per-iteration value through the author-chosen fan_out.as alias",
+}
+
+// pathLegalRootsList is the canonical English list of legal roots used in
+// the parse-time error message.
+const pathLegalRootsList = "state, cache, events, extract, steps, response, or a fan_out.as alias"
+
+// validatePathRoot returns nil when root is a legal first-segment name and
+// an error otherwise. The closed six roots and any syntactically valid
+// identifier (a potential fan_out.as alias) are accepted; the three
+// removed-reserved roots are rejected with a migration hint; anything else
+// is rejected as a malformed root.
+func validatePathRoot(root string) error {
+	if _, ok := pathClosedRoots[root]; ok {
+		return nil
+	}
+	if hint, ok := pathRemovedRoots[root]; ok {
+		return fmt.Errorf("namespace root %q is not recognised (legal roots: %s): %s",
+			root, pathLegalRootsList, hint)
+	}
+	if !isIdentifier(root) {
+		return fmt.Errorf("namespace root %q is not recognised (legal roots: %s)",
+			root, pathLegalRootsList)
+	}
+	return nil
+}
+
+// isIdentifier reports whether s matches the bare identifier shape
+// fan_out.as aliases use: a non-empty run of ASCII letters, digits, and
+// underscores with a non-digit first character.
+func isIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r == '_':
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Root returns the first segment of the path (the namespace root), or ""
@@ -68,6 +155,9 @@ func ParsePath(s string) (Path, error) {
 		if seg == "" {
 			return Path{}, fmt.Errorf("schema.Path: empty segment in %q", s)
 		}
+	}
+	if err := validatePathRoot(parts[0]); err != nil {
+		return Path{}, fmt.Errorf("schema.Path %q: %w", s, err)
 	}
 	return Path{Parts: parts}, nil
 }
@@ -105,6 +195,9 @@ func (p *Path) UnmarshalYAML(node *yaml.Node) error {
 			if seg == "" {
 				return fmt.Errorf("schema.Path map at line %d: empty segment in parts", node.Line)
 			}
+		}
+		if err := validatePathRoot(m.Parts[0]); err != nil {
+			return fmt.Errorf("schema.Path map at line %d: %w", node.Line, err)
 		}
 		p.Parts = m.Parts
 		return nil
@@ -177,6 +270,9 @@ func (p *Path) UnmarshalJSON(data []byte) error {
 				return fmt.Errorf("schema.Path: 'parts' element %d must be a non-empty string", i)
 			}
 			parts[i] = s
+		}
+		if err := validatePathRoot(parts[0]); err != nil {
+			return fmt.Errorf("schema.Path: %w", err)
 		}
 		p.Parts = parts
 		return nil

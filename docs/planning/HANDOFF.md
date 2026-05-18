@@ -1,14 +1,14 @@
-# Handoff — Phase 2 Slice 6 (`schema/path.go` + `schema/predicate.go`)
+# Handoff — Phase 2 Slice 7 (`schema/validate.go`)
 
-Slice 5 closed (Value language additions, string interpolation, IsSecret
-walker for the new forms; one-line `d.State.Fields → d.State` fix
-absorbed). See [`IMPL-05-schema-value.md`](IMPL-05-schema-value.md). The
-schema package is still **build-red** because `schema/validate.go` is
-Slice 7's rewrite. `path.go` and `predicate.go` build cleanly against
-the new struct shape today; Slice 6 closes them out without re-RED'ing
-anything you don't already see.
+Slice 6 closed (closed-set namespace-root check at parse time; `events.*`
+shortcut vocabulary documented; removed-root migration hints for
+`cursor`/`body`/`item`; `equal:` → `value:` migration codec deleted from
+predicate.go; package docstrings cleaned of stale references). See
+[`IMPL-06-schema-path-predicate.md`](IMPL-06-schema-path-predicate.md).
+The schema package is still **build-red** — the entire remaining error
+set lives in `schema/validate.go`, which is yours to rewrite.
 
-The next slice is **Slice 6 — `schema/path.go` + `schema/predicate.go`**.
+The next slice is **Slice 7 — `schema/validate.go`**.
 
 ---
 
@@ -18,204 +18,231 @@ In this order:
 
 1. [`RESEARCH_PLAN.md` §"Global rules"](RESEARCH_PLAN.md#global-rules---apply-to-every-slice).
    Eight global rules apply to every slice. Internalise them. Rule #1
-   (no backwards compat), Rule #4 (no design-doc / slice-number /
-   stale-concept references in comments), and Rule #5 (clean up stale
+   (no backwards compat), Rule #2 (`DESIGN_SUGGESTIONS.md` is the
+   source of truth), Rule #4 (no design-doc / slice-number / stale-
+   concept references in comments), and Rule #5 (clean up stale
    comments in any file you touch) are particularly load-bearing here.
 2. [`PHASE-2-PLAN.md` §1 + §3 + §4](PHASE-2-PLAN.md). The Phase 2 slice
    list, the cross-cutting rules, the verification posture. §3.3 is
-   the load-bearing rule on throwaway smoke tests.
-3. [`PHASE-2-PLAN.md` §"Slice 6"](PHASE-2-PLAN.md#slice-6--schemapathgo--schemapredicatego).
-   Your slice's detailed scope.
-4. [`docs/schema.md` §Paths](../schema.md#paths) and
-   [`docs/schema.md` §Namespaces](../schema.md#namespaces) and
-   [`docs/schema.md` §Predicates](../schema.md#predicates) — your source
-   of truth for the new namespace-root vocabulary, the `events.*`
-   shortcut set, and the closed predicate verbs.
-5. [`IMPL-05-schema-value.md` §"Notes for downstream slices §Slice 6"](IMPL-05-schema-value.md).
-   Your immediate predecessor's artefact — read the Slice 6 notes
-   in particular; the interpolation parser already calls `ParsePath`
-   and assumes `*` is a legal segment.
-6. [`IMPL-04-schema-structs.md`](IMPL-04-schema-structs.md). The struct
-   shape underlying every path / predicate reference.
+   the load-bearing rule on throwaway smoke tests; §4 is the
+   verification posture table.
+3. [`PHASE-2-PLAN.md` §"Slice 7"](PHASE-2-PLAN.md#slice-7--schemavalidatego).
+   Your slice's detailed scope — eleven structural-change bullets.
+4. [`docs/schema.md`](../schema.md) end-to-end. The validator IS the
+   prose semantics of that file; every constraint in §state, §auth,
+   §requests, §response, §pagination, §progress, §error, §values, and
+   §predicates becomes a check in `validate.go`. §3.6 (pagination
+   variants) and §state (lifetime inference) are the two heaviest
+   sections — read those twice.
+5. [`docs/runtime.md` §error.mode + §6 (cache-invalidate-on-error)](../runtime.md).
+   The validator enforces the `on_status:` verb closure and the
+   "invalidate_cache without a reachable cache block degrades to
+   empty_events" rule (per Slice 4's `error.mode`).
+6. [`IMPL-04-schema-structs.md`](IMPL-04-schema-structs.md),
+   [`IMPL-05-schema-value.md`](IMPL-05-schema-value.md), and
+   [`IMPL-06-schema-path-predicate.md`](IMPL-06-schema-path-predicate.md).
+   The three predecessor artefacts. IMPL-04 has the new struct shape;
+   IMPL-05 has the post-desugar Value surface area; IMPL-06 has the
+   closed-root set (`pathClosedRoots`) plus the live predicate
+   call-site list.
 
-The current `schema/path.go` (~450 lines) and `schema/predicate.go`
-(~500 lines) both build today against the new struct shape. The slice
-is small in terms of new code; most of the work is closing the
-namespace-root set, recognising the new `events.*` shortcuts, and a
-hygiene pass over the docstrings (they reference `cursor.*`,
-`async_job.poll.complete_when`, `pagination.scroll_id.complete_when`,
-and `item.<path>` — all gone).
+The current `schema/validate.go` is 1487 lines of pre-redesign checks
+woven throughout — `cursor.*` namespace, `mutability:` field,
+`state.fields`, the seven pagination variants, the five progress
+variants, the `async_job` phase machine, `Defaults`, `path:`,
+`placeholder_event:`. Almost none of it survives. Plan to rewrite the
+file end-to-end rather than incrementally patch.
 
 ---
 
 ## Your slice
 
-**Branch.** Develop on `claude/slice-06-schema-path-predicate-<token>`.
+**Branch.** Develop on `claude/slice-07-schema-validator-<token>`.
 
 **Files you may touch.**
 
-- `schema/path.go`
-- `schema/predicate.go`
+- `schema/validate.go`
 
 **Files you must NOT touch.**
 
-- `schema/schema.go`, `schema/read.go`, `schema/doc.go`, `schema/value.go` —
-  Slices 4 and 5 own these. The post-redesign struct + Value-language
-  shape is locked.
-- `schema/validate.go` — Slice 7 owns the full validator rewrite. Don't
-  pull validator logic into path.go or predicate.go.
+- `schema/schema.go`, `schema/read.go`, `schema/doc.go`,
+  `schema/value.go`, `schema/path.go`, `schema/predicate.go` —
+  Slices 4-6 own these. The post-redesign struct, Value-language,
+  and path/predicate shapes are locked.
 - `schema/fixtures_test.go`, `schema/example_test.go` — Slice 17.
 - Any file outside `schema/`.
 
 **Deliverables.**
 
-1. `schema/path.go` rewritten against `docs/schema.md` §Paths +
-   §Namespaces:
-   - **Closed root set** (parse-time check, not validator):
-     `state`, `cache`, `events`, `extract`, `steps`, `response`. Plus
-     any `fan_out.as` name — but that name is author-chosen and
-     contextual, so the parse-time check should NOT hard-code the
-     fan-out alias; Slice 7's validator handles the fan-out reserved-root
-     check. `path.go` rejects only roots that are NEVER legal anywhere
-     (i.e. anything outside the six fixed roots AND outside the bare
-     identifier shape that fan-out aliases use).
-   - Drop `cursor`, `body`, `item` from the legal-root vocabulary
-     entirely. Stale docstring mentions of `cursor.<name>` / `body.<path>`
-     / `item.<path>` go away per global rule #5.
-   - **`events.*` shortcut set**: `events.first`, `events.last`,
-     `events.<int>` (where `<int>` is a non-negative integer literal),
-     `events.count`, `events.*` (projection wildcard). The parser
-     recognises these at path-parse time; the validator (Slice 7) is
-     where they bind to a concrete events list.
-   - **`steps.<id>.body[.<path>]` and `steps.<id>.header.<name>`** stay
-     as-is.
-   - **`response.body[.<path>]` and `response.header.<name>`** stay
-     as-is.
-   - The segment-escape form (`{parts: [...]}`) is unchanged.
+1. `schema/validate.go` rewritten against the eleven bullets in
+   [`PHASE-2-PLAN.md` §Slice 7](PHASE-2-PLAN.md#slice-7--schemavalidatego).
+   The bullets are reproduced here for convenience; consult the plan
+   for the source-of-truth list.
+   1. Replace `cursorSchema(d *Doc)` with the lifetime-inference rule
+      (`docs/schema.md` §state): operator-config (has `default:`,
+      never written), per-drain scratch (target of any
+      `pagination.*.to` write), persistent (target of any
+      `progress[].to` write or `requests[].extract` with
+      `to: state.*`).
+   2. Reject conflicts: same field written by both `pagination.*.to`
+      and `progress[].to`, or by a `to:` write AND `default:`-only
+      classification.
+   3. Validate the new five-variant Pagination union
+      (`none|cursor_token|next_url|counter|custom`). Per-variant
+      required fields per `docs/schema.md` §3.6.
+   4. Validate `Progress` as a flat list of writes; each entry's
+      `to:` must be `state.<name>` AND that field must be declared.
+   5. Validate `requests[].terminate_when:` as a Predicate; reject
+      when a request is missing `id:` but referenced from
+      `steps.<id>.body.<path>` or `fan_out.over` ref.
+   6. Validate the closed `on_status:` verb set
+      (`skip|fail|empty_events|invalidate_cache`). Reject
+      `invalidate_cache` when no reachable cache block exists
+      (warn-degrade per `docs/runtime.md` §6).
+   7. Validate the unified `Cache` block (auth + request). Reject
+      `requests[].fan_out` + `requests[].cache` co-occurrence.
+   8. Validate reducer arguments (`Max`/`Min`/`First`/`Last`/`Count`):
+      either a `{list: [...]}` literal or a list-shaped Value
+      (typically `{ref: events.*.<field>}`). Slice 5 already
+      normalised the list-literal sugar; you read a single `*Value`
+      operand per reducer.
+   9. Validate string-interpolation refs: every `Concat` arm that
+      reaches the validator may be the post-desugar form of a
+      `${...}` string — the validator type-checks the inner Refs
+      and Defaults as usual.
+   10. Validate the fan-out reserved-root set: `fan_out.as` must not
+       shadow `state | cache | events | extract | steps | response`.
+       Use `pathClosedRoots` directly (same package).
+   11. Reject `Defaults`, `state.fields`, `mutability:`, `cursor.*`
+       (already caught at parse — defensive only), `placeholder_event:`,
+       `flow:`, `async_job:`, `complete_when:`, `target:` on extract,
+       `path:` on request, `{now: true, offset: ...}` (already caught
+       at parse — defensive only).
 
-2. `schema/predicate.go`:
-   - The verb set stays exactly as today: `eq | gt | lt | gte | lte |
-     present | not | and | or | literal_bool`. No additions.
-   - Drop the docstring list of call-sites that references `async_job.poll.complete_when`
-     and `pagination.scroll_id.complete_when` — both deleted in Slice 4.
-     Replace with the live call-site list (per `docs/schema.md`
-     §Predicates): `requests[].if`, `requests[].terminate_when`,
-     `auth.multi_mode.branches[].when`, `Value.select.branches[].when`.
-   - Drop the `cursor.*` examples from the doc comments; replace with
-     `state.*` or `events.*` examples drawn from the post-redesign
-     templates (`docs/schema.md` has good ones).
-   - The `equal:` → `value:` migration-hint codec (legacy renamed key)
-     is **stale** per global rule #1 (no migration code). Remove the
-     `predicateEqRaw` shadow and the `equal:` rejection — the field is
-     called `value:` everywhere now. Authors of stale templates get
-     the standard "unknown key" diagnostic.
-   - Absent-tolerance is the policy: `{present: state.x}` returns
-     false when `state.x` is unset; `{eq: ...}`, `{gt: ...}` and
-     friends return false when either side is absent. The codec
-     doesn't enforce this (runtime + validator do); but the package-
-     level docstring should state it once.
+2. **Hygiene pass** on `validate.go` per global rule #5. Top-of-file
+   comments, doc-strings on every helper, and error-message strings:
+   no `cursor.*`, no `body.<path>`, no `async_job.*`, no
+   `pagination.scroll_id.*`, no `pagination.link_header.*`, no
+   `state.fields`, no slice numbers. Error messages should read as if
+   the post-redesign IR had always existed.
 
-3. **Hygiene pass** on both files per global rule #5. Cleanup targets:
-   - `path.go`'s top docstring lists `cursor`, `item`, `response` as
-     legal roots — update to the post-redesign six-root set.
-   - `path.go`'s "primary form" examples reference `cursor.last_timestamp` —
-     rewrite to a post-redesign example (`events.last.timestamp`
-     or `state.last_timestamp`).
-   - `predicate.go`'s package docstring lists deleted call sites
-     (`async_job.poll.complete_when`, `pagination.scroll_id.complete_when`)
-     — replace with the live list above.
-   - `predicate.go`'s example block (`{eq: {path: cursor.phase, ...}}`,
-     etc.) — rewrite around `state.*` references.
+3. **`events.*` projection binding.** Slice 6 documented the shortcuts
+   (`events.first` / `events.last` / `events.<int>` / `events.count` /
+   `events.*`). The validator binds the semantics:
+   - `events.count` resolves to an int (cardinality of the active page).
+   - `events.<int>` requires a non-negative integer literal segment.
+   - `events.*.<field>` is a projection; the `*` segment is illegal
+     outside the events root.
+   - Reducer operands typed `{ref: events.*.<field>}` type-check as
+     list-shaped.
 
-4. New artefact `docs/planning/IMPL-06-schema-path-predicate.md` carrying:
-   - Scope (the files you owned, one sentence).
-   - Old → new root-set map for path.go.
-   - Old → new call-site map for predicate.go (and the deleted
-     `equal:` → `value:` migration codec).
-   - Removed-content list (`cursor` root, `body` root, `item` root,
-     `predicateEqRaw`, `predicateEqEqualRenamedHint`).
-   - Notes for downstream slices: Slice 7 (validator reads the closed
-     root set off path.go), Slice 8 (`client/state.go`'s
-     `resolveNamespaceRef` mirrors the same closed set), Slice 9
-     (`client/value.go` consumes the `events.*` shortcuts via the new
-     scope's events resolver).
+4. New artefact `docs/planning/IMPL-07-schema-validator.md` carrying:
+   - Scope (one sentence).
+   - Old → new check map: every check in the pre-redesign validator,
+     classified as kept / rewritten / deleted, with a one-line note
+     each.
+   - Removed-content list (helper functions, structures, constants,
+     error messages that are gone).
+   - Notes for downstream slices: Slice 8 (client/state.go's lifetime
+     classification mirrors yours), Slice 12 (client/runner.go reads
+     the resolved `error.mode` verbs), Slice 16 (templates rely on
+     the validator accepting the new shape).
 
-5. Slice-table row 6 in `RESEARCH_PLAN.md` flipped to `[x]` with the
-   `IMPL-06-schema-path-predicate.md` link.
+5. Slice-table row 7 in `RESEARCH_PLAN.md` flipped to `[x]` with the
+   `IMPL-07-schema-validator.md` link.
 
-6. `HANDOFF.md` rewritten to point at Slice 7 (`schema/validate.go`).
+6. `HANDOFF.md` rewritten to point at Slice 8 (`client/state.go`).
 
-**Smoke tests.** Optional and throwaway. The path/predicate parsers are
-mechanical; a handful of round-trip asserts (parse + marshal + reparse)
-is enough. Mark them `// SMOKE - DELETE BEFORE SLICE CLOSE`. If you do
-add them, validate.go's red state means you'll need the same
-"temporarily move validate.go + the stale test files aside, run, move
-back" trick Slice 5 used. The smoke file goes away at slice close.
+**Smoke tests.** Throwaway and optional, but recommended for the
+trickier checks — lifetime-inference conflict diagnostics, reducer arg
+shape rejection, `on_status` closure, `invalidate_cache`-without-cache
+degradation. Mark them `// SMOKE - DELETE BEFORE SLICE CLOSE`. The
+existing `schema/fixtures_test.go` and `schema/example_test.go` are
+massively stale and OFF-limits per Slice 17.
 
-**Out of scope.** No struct-shape changes (Slice 4 / Slice 5 own those).
-No validator changes (Slice 7). No new Value forms (Slice 5 closed
-that set). No client / runtime changes.
+**Out of scope.** No struct-shape changes (Slice 4). No Value-language
+additions (Slice 5). No path / predicate changes (Slice 6 closed). No
+client / runtime / template touches. No regeneration of
+`schema-reference.md` (Slice 18).
 
 ---
 
 ## Watch out for
 
-- **The closed-root check is parse-time, not validator-time.** Authors
-  who type `cursor.foo` see an error from `path.go`, not from a deep
-  validator walk. Keep the error message clean: "namespace root
-  'cursor' is not recognised (legal roots: state, cache, events,
-  extract, steps, response, or a fan-out alias)". The "or a fan-out
-  alias" clause is what lets parsing succeed for the contextual
-  `fan_out.as` name; the validator decides whether the alias is in
-  scope at the use site.
+- **`pathClosedRoots` is internal to `schema/path.go`.** It is a
+  lowercase package-level var, accessible from `validate.go` because
+  same package. The fan-out reserved-root check should reuse it
+  directly rather than copying the list.
 
-- **`events.*` is a path-parse concern, not a Value concern.** A path
-  like `events.first.timestamp` parses as `{parts: ["events", "first",
-  "timestamp"]}`. The `first` / `last` / `count` segments are not
-  reserved at the path layer beyond being valid segments. The
-  validator (Slice 7) is where the events-projection semantics are
-  enforced. Don't bake the shortcut list into path.go's grammar.
+- **`pathRemovedRoots` rejection already fires at parse time.** The
+  three removed-reserved roots (`cursor`, `body`, `item`) never reach
+  the validator inside a `*Path`. Don't add validator-side checks for
+  them; add at most a single defensive top-level reject for an
+  author who somehow constructs a `Path` programmatically.
 
-- **`*` is a legal path segment.** `events.*.timestamp` parses as
-  three parts `["events", "*", "timestamp"]`. Don't reject `*` at
-  parse time — the existing `ParsePath` already accepts it (just rejects
-  empty segments). Verify the existing behaviour still holds.
+- **`PredicateEq` no longer has custom UnmarshalYAML/JSON.** The
+  `equal:` migration hint is gone. Author errors like an `equal:` key
+  in an `eq:` body surface as yaml.v3's silent-unknown-key behaviour;
+  if you want strict rejection of unknown sibling keys inside
+  `{eq: {...}}`, add it at the validator layer, not back into
+  predicate.go.
 
-- **The `equal:` → `value:` migration codec is dead code.** Delete the
-  `predicateEqRaw` shadow type and the custom `UnmarshalYAML` /
-  `UnmarshalJSON` on `PredicateEq` outright. After the delete,
-  `PredicateEq` uses default yaml.v3 / encoding/json decoding (its
-  field tags already say `yaml:"value"` / `json:"value"`).
+- **Lifetime inference is the hardest check.** Reading the new
+  `docs/schema.md` §state twice before writing code will save you a
+  rewrite. The classification table is: `default:`-only →
+  operator-config; `pagination.*.to` target → per-drain scratch;
+  `progress[].to` target or `requests[].extract.to: state.*` target
+  → persistent. A field that's *both* a `default:` AND a write target
+  takes its lifetime from the write target. A field with conflicting
+  write targets (pagination AND progress) is an error.
 
-- **The build is RED at the start of this slice and stays RED at the
-  end** — same posture as Slice 5. Specifically, `schema/validate.go`'s
-  errors are unchanged. Don't widen scope into validate.go.
+- **`invalidate_cache` without a reachable cache block.** Per
+  `docs/runtime.md` §6, the runner degrades to `empty_events` at
+  request time when this happens. The validator emits a warning (not
+  an error) for this case. The diagnostic structure already supports
+  warning-level entries; reuse it.
+
+- **The build is RED at the start of this slice. It must be GREEN at
+  the end.** Slice 7 is the last schema-package slice. After your
+  rewrite, `go build ./schema/...` passes. Slices 8-14 will start
+  consuming `*schema.Doc` and will assume the validator is the gate
+  on shape.
+
+- **Test files stay stale.** Per global rule #6 and PHASE-2-PLAN §4,
+  Slice 17 owns the test rewrite. You may NOT touch
+  `schema/fixtures_test.go` or `schema/example_test.go`. The existing
+  tests' assertions are massively wrong against the new validator;
+  expect a sea of red on `go test ./schema/...` and ignore it.
 
 ---
 
 ## When you finish
 
-`git add` the modified `schema/path.go`, `schema/predicate.go`, the new
-`IMPL-06-schema-path-predicate.md`, the updated `RESEARCH_PLAN.md`, and
-the updated `HANDOFF.md`. Commit with a message like:
+`git add` the rewritten `schema/validate.go`, the new
+`IMPL-07-schema-validator.md`, the updated `RESEARCH_PLAN.md`, and the
+updated `HANDOFF.md`. Commit with a message like:
 
 ```
-feat(schema): slice 6 — namespace roots, path & predicate rules
+feat(schema): slice 7 — full validator rewrite against the new IR
 
-Closes path.go's namespace-root vocabulary on {state, cache, events,
-extract, steps, response} plus author-chosen fan-out aliases. Drops
-cursor / body / item from the legal-root set. Recognises events.first /
-events.last / events.<int> / events.count shortcuts at path-parse time.
-Removes the dead equal:→value: migration codec from predicate.go. Live
-predicate call-site list rewritten around the post-redesign IR.
+Replaces the pre-redesign validator end-to-end. Adds lifetime inference
+(operator-config / per-drain scratch / persistent) off write sites,
+five-variant pagination check, flat progress-write check,
+terminate_when predicate gates, the closed on_status verb set with the
+invalidate_cache degrade rule, the unified Cache block check, the
+fan-out reserved-root check off pathClosedRoots, and the reducer
+operand shape check. Removes every old-shape check (cursor namespace,
+mutability, state.fields, the 7 pagination / 5 progress variants, the
+async_job phase machine, Defaults, placeholder_event, …).
 
-schema/validate.go is still red — Slice 7 owns the validator rewrite.
+schema/ builds green at slice close; tests stay red (Slice 17 rewrite).
 ```
 
-Push to `claude/slice-06-schema-path-predicate-<token>` and open a PR.
+Push to `claude/slice-07-schema-validator-<token>` and open a PR.
 
-If you discover the slice is wider than the plan (e.g. the validator-side
-closed-root table turns out to live in path.go and needs to migrate),
+If you discover the slice is wider than the plan (e.g. a check needs
+data from the new `client/state.go` snapshot that doesn't exist yet),
 **stop and flag it via `AskUserQuestion`** rather than widening scope
-silently. The validator rewrite is Slice 7's. A small cross-file fix
-is fine; rewriting another slice's primary file is not.
+silently. The validator is intentionally the last schema-package slice
+so that all the surrounding shape is fixed; if you find you can't
+finish without crossing into client/, the plan needs revisiting.
