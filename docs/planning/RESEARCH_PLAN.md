@@ -89,7 +89,7 @@ is NOT touched (it will be regenerated post-Phase 2).
 
 | #   | Status | Research target                                              | Implementation plan file                   |
 |-----|--------|--------------------------------------------------------------|--------------------------------------------|
-| 1   | [ ]    | `docs/schema.md` (1010 lines, ~85 stale refs)                | `IMPL-01-docs-schema.md`                   |
+| 1   | [x]    | `docs/schema.md` (1010 lines, ~85 stale refs)                | `IMPL-01-docs-schema.md`                   |
 | 2   | [ ]    | `docs/api-methods.md` (1305 lines, ~80 stale refs)           | `IMPL-02-docs-api-methods.md`              |
 | 3   | [ ]    | `docs/runtime.md` + `docs/stores.md` + `docs/usage.md` (901 lines combined, ~32 stale refs) | `IMPL-03-docs-runtime-stores-usage.md` |
 
