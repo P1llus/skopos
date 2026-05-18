@@ -13,8 +13,8 @@ import (
 
 // applyAuth mutates req with the credentials selected by doc.Auth. The
 // variant set is catalogued at the package level (see doc.go); oauth2
-// grants and multi_mode dispatch through applyOAuth2 / applyMultiMode
-// respectively.
+// grants and multi_mode dispatch through applyOAuth2 (cache.go) and
+// applyMultiMode respectively.
 //
 // The ctx + client arguments exist because the oauth2 branch issues its
 // own HTTP exchange against the grant's token_url; non-oauth2 branches
@@ -82,10 +82,10 @@ func (s *scope) applyAuth(ctx context.Context, client *http.Client, req *http.Re
 
 // applyMultiMode evaluates each branch's predicate in declaration order
 // against the current scope; the first match wins. When no branch matches,
-// the default arm fires. The chosen Auth is dispatched back through
-// applyAuth — recursion is safe because applyAuth keeps no per-request
-// state of its own and the validator already forbids nested multi_mode
-// (so the recursion bottoms out in one hop).
+// the bare default Auth is dispatched. The chosen Auth is dispatched back
+// through applyAuth — recursion is safe because applyAuth keeps no
+// per-request state of its own and the validator already forbids nested
+// multi_mode (so the recursion bottoms out in one hop).
 func (s *scope) applyMultiMode(ctx context.Context, client *http.Client, req *http.Request, m *schema.MultiModeAuth) error {
 	for i, b := range m.Branches {
 		ok, err := s.evalPredicate(b.When)
@@ -96,5 +96,5 @@ func (s *scope) applyMultiMode(ctx context.Context, client *http.Client, req *ht
 			return s.applyAuth(ctx, client, req, b.Auth)
 		}
 	}
-	return s.applyAuth(ctx, client, req, m.Default.Auth)
+	return s.applyAuth(ctx, client, req, m.Default)
 }

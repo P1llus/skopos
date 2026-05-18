@@ -12,13 +12,11 @@ import (
 )
 
 // fanOutResult bundles what runFanOut produces for one fan_out step. The
-// fields mirror the producer-step signal set that runIteration's existing
-// single-request path returns: mergedBody is what binds into
-// scope.steps[req.ID] and what locateEvents walks when the fan_out step is
-// the producer; lastHeaders mirrors the single-request producerHeaders
-// (no link-header pagination crosses a fan_out boundary today, but the
-// field keeps the producer-iteration shape uniform); advance/fatal carry
-// the on_status / error.mode dispatch decisions.
+// fields mirror the producer-step signal set that the single-request path
+// returns: mergedBody is what binds into scope.steps[req.ID] and what
+// locateEvents walks when the fan_out step is the producer; lastHeaders
+// mirrors the single-request producer headers; advance/fatal carry the
+// on_status / error.mode dispatch decisions.
 type fanOutResult struct {
 	mergedBody  any
 	lastHeaders http.Header
@@ -38,10 +36,10 @@ type fanOutResult struct {
 //   - on_status: skip            drop this item and continue with the next.
 //   - on_status: fail            abort the drain (fatal=true).
 //   - on_status: empty_events    drop this item (no body contribution).
-//   - on_status: invalidate_cache clear OAuth2 + step caches and stop the
-//     fan-out early; the cursor still advances normally.
+//   - on_status: invalidate_cache clear every reachable cache.<name> slot
+//     and stop the fan-out early; pagination still advances normally.
 //   - error.mode: standard       end the drain iteration here; advance=false
-//     so neither pagination.advance nor end-of-drain progress.advance run.
+//     so neither pagination.advance nor the per-iteration progress writes run.
 //   - error.mode: warn           log and drop the item.
 //   - error.mode: fail           abort the drain (fatal=true).
 //
@@ -67,7 +65,7 @@ func (r *Runner) runFanOut(
 	req schema.Request,
 	errMode string,
 	iter int,
-	phase string,
+	_ string,
 ) (fanOutResult, error) {
 	over, err := s.evalValue(req.FanOut.Over)
 	if err != nil {
@@ -104,7 +102,7 @@ func (r *Runner) runFanOut(
 		}
 		res, runErr := s.executeRequest(ctx, client, req, trace)
 		if r.Tracer != nil {
-			r.Tracer.OnExchange(buildExchange(r.Doc, req, trace, runErr, iter, phase))
+			r.Tracer.OnExchange(buildExchange(r.Doc, req, trace, runErr, iter, ""))
 		}
 
 		if usErr, ok := asUnexpectedStatus(runErr); ok && res != nil {
@@ -120,8 +118,7 @@ func (r *Runner) runFanOut(
 				logger.Printf("client: %s[%d] status %d → empty_events", reqLabel(req), idx, usErr.status)
 				continue
 			case "invalidate_cache":
-				cleared := s.invalidateAuthCaches(r.Doc.Auth)
-				cleared = append(cleared, s.invalidateStepCaches(r.Doc)...)
+				cleared := dropReachableCaches(s, r.Doc)
 				if len(cleared) == 0 {
 					logger.Printf("client: %s[%d] status %d → invalidate_cache (no cache to invalidate; stopping fan_out)", reqLabel(req), idx, usErr.status)
 				} else {
@@ -139,7 +136,7 @@ func (r *Runner) runFanOut(
 					logger.Printf("client: %s[%d] WARN: %v", reqLabel(req), idx, redactURLError(usErr))
 					continue
 				default:
-					logger.Printf("client: %s[%d]: %v (standard mode; cursor not advanced)", reqLabel(req), idx, redactURLError(usErr))
+					logger.Printf("client: %s[%d]: %v (standard mode; pagination loop ends)", reqLabel(req), idx, redactURLError(usErr))
 					out.advance = false
 					return out, nil
 				}
@@ -153,7 +150,7 @@ func (r *Runner) runFanOut(
 				logger.Printf("client: %s[%d] WARN: %v", reqLabel(req), idx, redactURLError(runErr))
 				continue
 			default:
-				logger.Printf("client: %s[%d]: %v (standard mode; cursor not advanced)", reqLabel(req), idx, redactURLError(runErr))
+				logger.Printf("client: %s[%d]: %v (standard mode; pagination loop ends)", reqLabel(req), idx, redactURLError(runErr))
 				out.advance = false
 				return out, nil
 			}
@@ -177,8 +174,8 @@ done:
 }
 
 // coerceFanOutList resolves the value of fan_out.over to a []any. A nil
-// over (the cursor / state field is unset on the first iteration) is
-// treated as the empty list — no items, no error — matching the spirit of
+// over (a state field unset on the first iteration) is treated as the
+// empty list — no items, no error — matching the spirit of
 // {ref: ..., default: ""} elsewhere in the value layer.
 func coerceFanOutList(v any) ([]any, error) {
 	switch x := v.(type) {
