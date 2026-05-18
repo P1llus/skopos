@@ -1,32 +1,27 @@
 # link_header — RFC 5988 Link-header pagination.
 #
-# Demonstrates: pagination.link_header. Each response carries a
-# `Link: <next-url>; rel="next"` header; the runner parses it into
-# cursor.next_link, and the request's url slot reads it back via
-# {ref: cursor.next_link, default: <bootstrap-url>} — so the first
-# iteration hits the bootstrap URL and every subsequent iteration follows
-# the server's link until it disappears. Wiring cursor.next_link into the
-# request is the template's job.
+# Demonstrates: pagination.next_url with regex / capture parsing the
+# Link: <url>; rel="next" header. The runner peels the URL out of the
+# header value and writes it to state.next_url; the request's url slot
+# reads it back with a bootstrap default for the very first iteration.
 
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    api_key:
-      type: secret
-      default: "test-api-key-67890"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  page_size:
+    type: int
+    default: 5
+  api_key:
+    type: secret
+    default: "test-api-key-67890"
+  next_url:
+    type: url
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
 
 auth:
   api_key:
@@ -35,33 +30,28 @@ auth:
 
 requests:
   - method: GET
-    # First iteration: cursor.next_link is unset, so the default builds the
-    # bootstrap URL. Subsequent iterations follow the absolute URL the server
-    # advertised in the previous response's Link header.
-    url:
-      ref: cursor.next_link
-      default:
-        concat:
-          - {ref: state.url}
-          - /link_header/incidents
+    # First iteration: state.next_url is unset, so the default builds the
+    # bootstrap URL. Subsequent iterations follow the absolute URL the
+    # server advertised in the previous response's Link header.
+    url: {ref: state.next_url, default: "${state.url}/link_header/incidents"}
     query:
-      updated_after: {ref: cursor.last_timestamp}
-      per_page: {format: string, value: {ref: state.page_size}}
+      updated_after: {ref: state.last_timestamp}
+      per_page: "${state.page_size}"
 
 response:
   decode: json
   events_at: response.body.incidents
 
-# Follows the RFC 5988 Link: <url>; rel="next" response header. When a
-# next-link is absent the drain completes. The default regex pattern is
-# applied; override with pagination.link_header.pattern for non-standard forms.
 pagination:
-  link_header: {}
+  next_url:
+    from:    response.header.link
+    to:      state.next_url
+    regex:   '<(.*?)>;\s*rel="next"'
+    capture: 1
 
 progress:
-  latest_event_timestamp:
-    event_time:
-      path: updated_at
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.updated_at}}]}
 
 error:
   mode: standard

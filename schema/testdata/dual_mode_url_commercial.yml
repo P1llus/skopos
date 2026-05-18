@@ -1,55 +1,42 @@
-# NOTE: shares the auth × pagination × progress × decode tuple with
+# Shares the auth × pagination × progress × decode tuple with
 # dual_mode_url_gov.yml. The two fixtures intentionally differ only in
-# state.gov_cloud (false vs true) so they exercise the select branches arm
-# (gov) vs the default arm (commercial); don't drop either one without
-# splitting that coverage somewhere else.
+# state.gov_cloud (false vs true) so they exercise the select branches
+# arm (gov) vs the default arm (commercial); don't drop either one
+# without splitting that coverage somewhere else.
+#
+# This sibling pins the default arm: gov_cloud=false causes no branch to
+# fire and the commercial endpoint applies.
+
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    api_key:
-      type: secret
-      default: "test-bearer-token-12345"
-    gov_cloud:
-      type: bool
-      default: false
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  gov_cloud:
+    type: bool
+    default: false
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
 
 auth:
   bearer:
     token: {ref: state.api_key}
 
-# URL branch: gov_cloud=false causes no branch to fire; default (commercial) applies.
 requests:
   - method: GET
     url:
       select:
         branches:
-          - when:
-              eq:
-                path: state.gov_cloud
-                value: true
-            value:
-              concat:
-                - {ref: state.url}
-                - /api/v1/events-gov
-        default:
-          concat:
-            - {ref: state.url}
-            - /api/v1/events-commercial
+          - when: {eq: {path: state.gov_cloud, value: true}}
+            value: "${state.url}/api/v1/events-gov"
+        default: "${state.url}/api/v1/events-commercial"
     query:
-      since: {ref: cursor.last_timestamp}
+      since: {ref: state.last_timestamp}
 
 response:
   decode: json
@@ -59,9 +46,8 @@ pagination:
   none: {}
 
 progress:
-  latest_event_timestamp:
-    event_time:
-      path: created_at
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.created_at}}]}
 
 error:
   mode: standard

@@ -1,45 +1,30 @@
 # session_cookie — session cookie auth via a login request.
 #
-# Demonstrates: a login request whose Set-Cookie is captured into the
-# cursor, then replayed as the Cookie header on subsequent requests until
-# the session expires.
+# Two-step chain. The login step extracts Set-Cookie into
+# extract.session_cookie (per-iteration scratch); the data step rides it
+# as the Cookie header. The chain runs end-to-end every iteration so
+# server-rotated session cookies are handled.
 
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
 
 auth:
   none: {}
 
-# Two-step session-cookie chain.
-# Step 1 (login): POST /session_cookie/login; extract Set-Cookie response header into extract.session_cookie.
-# Step 2 (data):  GET /session_cookie/data with the extracted cookie as the Cookie request header.
-#
-# The chain runs end-to-end every iteration so server-rotated session cookies are handled.
 requests:
   - id: login
     method: POST
-    path: /session_cookie/login
+    url: "${state.url}/session_cookie/login"
     extract:
-      - name: session_cookie
-        from: response.header.Set-Cookie
+      - {to: extract.session_cookie, from: response.header.Set-Cookie}
 
   - id: data
     method: GET
-    path: /session_cookie/data
+    url: "${state.url}/session_cookie/data"
     headers:
       Cookie: {ref: extract.session_cookie}
 
@@ -50,8 +35,7 @@ response:
 pagination:
   none: {}
 
-progress:
-  stateless: {}
+progress: []
 
 error:
   mode: standard

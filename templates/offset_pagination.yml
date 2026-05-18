@@ -1,58 +1,50 @@
-# offset_pagination — offset/limit pagination.
+# offset_pagination — offset/limit pagination via the counter variant.
 #
-# Demonstrates: pagination.offset. Each request bumps `offset` by `limit`;
-# termination when the page is short (events returned < limit).
+# Demonstrates: pagination.counter with start: 0 and step: {ref:
+# state.page_size}. Default short-page termination — when the page returns
+# fewer events than state.page_size, the loop ends. For APIs that take
+# both a start and an exclusive-end index, the `end` field is computed
+# from state.offset + state.page_size.
 
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    api_key:
-      type: secret
-      default: "test-bearer-token-12345"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  page_size:
+    type: int
+    default: 5
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  offset:
+    type: int
 
 auth:
   bearer:
     token: {ref: state.api_key}
 
-# Classic ?offset=<n>&limit=<batch_size> pagination.
-# cursor.offset      — page start, 0-indexed; seeded to 0 on first iteration.
-# cursor.offset_end  — cursor.offset + batch_size (exclusive end); seeded by
-#                      pagination.seed when batch_size is declared.
-# Used by APIs that take both a start and an exclusive-end index.
 requests:
   - method: GET
-    path: /offset/findings
+    url: "${state.url}/offset/findings"
     expect_status: [200, 204]
     query:
-      offset: {format: string, value: {ref: cursor.offset}}
-      limit: {format: string, value: {ref: state.page_size}}
-      end: {format: string, value: {ref: cursor.offset_end}}
+      offset: "${state.offset|0}"
+      limit:  "${state.page_size}"
+      end:    {add: [{ref: state.offset, default: 0}, {ref: state.page_size}]}
 
 response:
   decode: json
   events_at: response.body.items
 
-
 pagination:
-  offset:
-    offset_param: offset
-    batch_size: {ref: state.page_size}
+  counter:
+    to:    state.offset
+    start: 0
+    step:  {ref: state.page_size}
 
-progress:
-  stateless: {}
+progress: []
 
 error:
   mode: standard

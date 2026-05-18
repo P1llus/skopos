@@ -1,33 +1,27 @@
 # next_url_in_body — server returns the next URL in the response body.
 #
-# Demonstrates: pagination.next_url_in_body with the URL pulled from the
-# body (e.g. {"meta": {"next_page": "https://api/.../?page=2"}}). The
-# runner parses next_url_at into cursor.next_url, and the request's url
-# slot reads it back via {ref: cursor.next_url, default: <bootstrap-url>}
-# — first iteration hits the bootstrap URL, every subsequent iteration
-# follows whatever the previous page named, until the field is absent
-# (null or ""). Wiring cursor.next_url into the request is the template's
-# job.
+# Demonstrates: pagination.next_url reading meta.next_page from the body
+# (e.g. {"meta": {"next_page": "https://api/.../?page=2"}}). The request's
+# url slot reads state.next_url back with a bootstrap fallback that fires
+# on the very first iteration.
 
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    api_key:
-      type: secret
-      default: "test-bearer-token-12345"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  page_size:
+    type: int
+    default: 5
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  next_url:
+    type: url
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
 
 auth:
   bearer:
@@ -35,33 +29,26 @@ auth:
 
 requests:
   - method: GET
-    # First iteration: cursor.next_url is unset, so the default builds the
-    # bootstrap URL. Subsequent iterations follow the absolute URL the server
-    # returned at meta.next_page in the previous response.
-    url:
-      ref: cursor.next_url
-      default:
-        concat:
-          - {ref: state.url}
-          - /next_url_in_body/alerts
+    # First iteration: state.next_url is unset, so the default builds the
+    # bootstrap URL. Subsequent iterations follow the absolute URL the
+    # server returned at meta.next_page in the previous response.
+    url: {ref: state.next_url, default: "${state.url}/next_url_in_body/alerts"}
     query:
-      since: {ref: cursor.last_timestamp}
-      limit: {format: string, value: {ref: state.page_size}}
+      since: {ref: state.last_timestamp}
+      limit: "${state.page_size}"
 
 response:
   decode: json
   events_at: response.body.alerts
 
-# The response body carries a fully-formed URL for the next page. When absent
-# (null or "") the drain completes.
 pagination:
-  next_url_in_body:
-    next_url_at: response.body.meta.next_page
+  next_url:
+    from: response.body.meta.next_page
+    to:   state.next_url
 
 progress:
-  latest_event_timestamp:
-    event_time:
-      path: created_at
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.created_at}}]}
 
 error:
   mode: standard

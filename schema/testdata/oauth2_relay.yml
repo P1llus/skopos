@@ -1,49 +1,47 @@
-# auth.oauth2.client_credentials with cache + GraphQL Relay-style pagination.
+# auth.oauth2.client_credentials with token caching + GraphQL Relay
+# cursoring (expressed via pagination.cursor_token with an explicit
+# terminate_when keyed on hasNextPage=false). GraphQL is encoded as
+# body.json with a query string and a variables Object — there is no
+# dedicated body.graphql variant.
+
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    token_url:
-      type: url
-      default: "http://localhost:9999/oauth2/token"
-    client_id:
-      type: string
-      default: "test-client"
-    client_secret:
-      type: secret
-      default: "test-secret"
+  url:
+    type: url
+    default: "http://localhost:9999"
+  page_size:
+    type: int
+    default: 5
+  token_url:
+    type: url
+    default: "http://localhost:9999/oauth2/token"
+  client_id:
+    type: string
+    default: "test-client"
+  client_secret:
+    type: secret
+    default: "test-secret"
+  after:
+    type: string
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
 
-defaults:
-  base_url: {ref: state.url}
-
-# OAuth2 client_credentials with cached token + GraphQL Relay-style cursor
-# pagination. The token fetch is handled transparently; every main request
-# carries "Authorization: Bearer <access_token>".
 auth:
   oauth2:
     client_credentials:
-      token_url: {ref: state.token_url}
-      client_id: {ref: state.client_id}
+      token_url:     {ref: state.token_url}
+      client_id:     {ref: state.client_id}
       client_secret: {ref: state.client_secret}
       cache:
-        store_in: token
-        expiry_field: response.body.expires_in
-        expiry_buffer: 60s
+        to:         cache.access_token
+        expires_at: {ref: response.body.expires_in, default: "1h"}
+        buffer:     60s
 
-# GraphQL: expressed as a JSON body with a query string and variables map.
-# There is no dedicated body.graphql variant; body.json is the right form.
 requests:
   - method: POST
-    path: /api/v1/graphql
+    url: "${state.url}/api/v1/graphql"
     body:
       json:
         query: |
@@ -55,7 +53,7 @@ requests:
           }
         variables:
           object:
-            after: {ref: cursor.after}
+            after: {ref: state.after}
             first: {ref: state.page_size}
 
 response:
@@ -63,15 +61,17 @@ response:
   events_at: response.body.data.issues.nodes
 
 pagination:
-  graphql_relay:
-    has_next_page_at: response.body.data.issues.pageInfo.hasNextPage
-    end_cursor_at: response.body.data.issues.pageInfo.endCursor
-    cursor_var: after
+  cursor_token:
+    from: response.body.data.issues.pageInfo.endCursor
+    to:   state.after
+    terminate_when:
+      eq:
+        path: response.body.data.issues.pageInfo.hasNextPage
+        value: false
 
 progress:
-  latest_event_timestamp:
-    event_time:
-      path: created_at
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.created_at}}]}
 
 error:
   mode: standard

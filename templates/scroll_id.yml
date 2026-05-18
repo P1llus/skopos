@@ -1,27 +1,26 @@
 # scroll_id — scroll-and-keep-alive paginated API.
 #
-# Demonstrates: pagination.scroll_id. The first request opens a scroll
-# session; subsequent requests echo the scroll_id until the page is empty.
+# Demonstrates: pagination.cursor_token used as a scroll session. The first
+# request opens a scroll; subsequent requests echo the scroll id until the
+# server reports complete=true via the explicit terminate_when predicate.
 
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    api_key:
-      type: secret
-      default: "test-bearer-token-12345"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  page_size:
+    type: int
+    default: 5
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  scroll_id:
+    type: string
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
 
 auth:
   bearer:
@@ -29,30 +28,30 @@ auth:
 
 requests:
   - method: GET
-    path: /scroll_id/scroll
+    url: "${state.url}/scroll_id/scroll"
     query:
-      since: {ref: cursor.last_timestamp}
-      # Bootstrap iteration: cursor.scroll_id is unset → the slot is
-      # omitted (no default) so the server opens a fresh scroll session.
-      # Subsequent iterations send the captured scroll id.
-      scroll: {ref: cursor.scroll_id}
+      since: {ref: state.last_timestamp}
+      # Bootstrap iteration: state.scroll_id is unset → the slot is omitted
+      # (no default) so the server opens a fresh scroll session. Subsequent
+      # iterations send the captured scroll id.
+      scroll: {ref: state.scroll_id}
 
 response:
   decode: json
   events_at: response.body.events
 
 pagination:
-  scroll_id:
-    scroll_id_at: response.body.request_metadata.scroll
-    complete_when:
+  cursor_token:
+    from: response.body.request_metadata.scroll
+    to:   state.scroll_id
+    terminate_when:
       eq:
         path: response.body.request_metadata.complete
         value: "true"
 
 progress:
-  latest_event_timestamp:
-    event_time:
-      path: created_at
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.created_at}}]}
 
 error:
   mode: standard

@@ -1,28 +1,26 @@
 # cursor_token — opaque cursor token pagination.
 #
 # Demonstrates: pagination.cursor_token. The server returns a cursor in the
-# response body; the next request echoes it back via {ref: cursor.token}.
-# Termination is implicit when the cursor field is absent.
+# response body; the next request echoes it back via {ref: state.next_token}.
+# Default termination fires when the source path resolves to absent.
 
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-    initial_interval:
-      type: duration
-      default: "720h"
-    page_size:
-      type: int
-      default: 5
-    api_key:
-      type: secret
-      default: "test-bearer-token-12345"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
+  page_size:
+    type: int
+    default: 5
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  next_token:
+    type: string
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
 
 auth:
   bearer:
@@ -30,13 +28,13 @@ auth:
 
 requests:
   - method: GET
-    path: /cursor_token/findings
+    url: "${state.url}/cursor_token/findings"
     query:
-      # Bootstrap iteration: cursor.token is unset → default "" reaches the
-      # wire as cursor= so the server starts a fresh cursor session.
+      # Bootstrap iteration: state.next_token is unset → default "" reaches
+      # the wire as cursor= so the server starts a fresh cursor session.
       # Subsequent iterations send the captured cursor token.
-      cursor: {ref: cursor.token, default: ""}
-      limit: {format: string, value: {ref: state.page_size}}
+      cursor: {ref: state.next_token, default: ""}
+      limit: "${state.page_size}"
 
 response:
   decode: json
@@ -44,12 +42,12 @@ response:
 
 pagination:
   cursor_token:
-    token_at: response.body.next_cursor
+    from: response.body.next_cursor
+    to:   state.next_token
 
 progress:
-  latest_event_timestamp:
-    event_time:
-      path: created_at
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.created_at}}]}
 
 error:
   mode: standard
