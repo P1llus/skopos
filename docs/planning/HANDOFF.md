@@ -1,23 +1,27 @@
-# Handoff — Phase 2 Slice 12 (`client/runner.go`)
+# Handoff — Phase 2 Slice 13 (`client/{http,auth,cache,fanout}.go`)
 
-Slice 11 closed (`client/progress.go` rewritten against the new IR;
-the five-variant `progressPlan` interface and the async-job phase
-machine collapse into one `applyProgress(s, doc.Progress)` pass that
-fires once per accepted page-response; every entry's `from:` resolves
-against the pre-write snapshot of `state.*`, then every `to:` writes;
-`regex:` captures group 0 with no default and is skipped when the
-staged value is nil; `coerce:` dispatches through `applyFormat`).
-See [`IMPL-11-client-progress.md`](IMPL-11-client-progress.md).
-`schema/` plus `client/{state,value,predicate,extract,bodypath,
-pagination,progress}.go` build green; Slice 11 introduced **zero**
-new errors in the file it owns. The new errors in `runner.go`
-(`makeProgressPlan undefined`, `progressPlan undefined` at three
-sites) are deliberate — Slice 12 rewires the call site against the
-new function-shaped interface.
+Slice 12 closed (`client/runner.go` rewritten against the new IR; the
+async-job phase machine, the `placeholder_event` two-pass logic, the
+`progressPlan` constructor, and the `pagination.seed` / `progress.seed`
+/ `progress.advance` call sites all gone; the drain loop now follows
+`docs/runtime.md` §2 — load → per-drain wipe → pagination loop
+(request chain with `requests[].terminate_when:` per step → bind
+producer body/headers/events → emit to sink → `applyProgress(s,
+doc.Progress)` → `pagination.advance(s)`) → deferred Save; the
+`on_status:` verb table dispatches `skip` / `fail` / `empty_events` /
+`invalidate_cache` and `error.mode` falls back through `standard` /
+`warn` / `fail`; the MaxPages cap bounds runaway pagination). See
+[`IMPL-12-client-runner.md`](IMPL-12-client-runner.md). `schema/` plus
+`client/{state,value,predicate,extract,bodypath,pagination,progress,
+runner,sink,trace,redact,filestore,doc,fanout}.go` build green; Slice
+12 introduced **zero** new errors in the file it owns. The remaining
+21 client/* errors live in `auth.go`, `oauth2.go`, `requestcache.go`,
+and `http.go` until this slice closes.
 
-The next slice is **Slice 12 — `client/runner.go`** (rewrite the
-drain loop, the request-level loop primitive, the `on_status` verb
-table, and the `error.mode` fallback against the post-redesign
+The next slice is **Slice 13 — `client/http.go` + `auth.go` +
+`cache.go` (merging `oauth2.go` + `requestcache.go`) + `fanout.go`**
+(rewrite the HTTP execution layer, the auth layer, the unified `Cache`
+runtime, and the fan-out per-item dispatcher against the post-redesign
 surface).
 
 ---
@@ -28,54 +32,50 @@ In this order:
 
 1. [`RESEARCH_PLAN.md` §"Global rules"](RESEARCH_PLAN.md#global-rules---apply-to-every-slice).
    Eight global rules apply to every slice. Internalise them.
-2. [`PHASE-2-PLAN.md` §1 + §3 + §4](PHASE-2-PLAN.md). The Phase 2 slice
-   list, the cross-cutting rules, the verification posture.
-3. [`PHASE-2-PLAN.md` §"Slice 12"](PHASE-2-PLAN.md#slice-12--clientrunnergo).
+2. [`PHASE-2-PLAN.md` §1 + §3 + §4](PHASE-2-PLAN.md). The Phase 2
+   slice list, the cross-cutting rules, the verification posture.
+3. [`PHASE-2-PLAN.md` §"Slice 13"](PHASE-2-PLAN.md#slice-13--clienthttpgo--authgo--cachego--fanoutgo).
    Your slice's detailed scope.
-4. [`docs/runtime.md`](../runtime.md). The whole document is the
-   operational reference for Slice 12. The high-priority sections:
-   §2 (drain lifecycle), §3 (pagination loop), §4 (request loop), §5
-   (progress evaluation timing), §6 (error semantics — `on_status` +
-   `error.mode`).
-5. [`docs/schema.md` §requests](../schema.md) for the new
-   `requests[]` shape — `id:`, `terminate_when:`, `on_status:`, the
-   `cache:` block, `fan_out:` exclusivity. §error.mode for the closed
-   verb set.
+4. [`docs/runtime.md`](../runtime.md) §6 (error semantics — `on_status:`
+   verbs + `error.mode`), §7 (secret redaction), §8 (cache namespace),
+   §10 (HTTP transport defaults), §12 (fan-out). These are the
+   operational reference for everything you're rewriting.
+5. [`docs/schema.md` §auth + §requests + §cache](../schema.md). The
+   post-redesign shapes for `Auth`, `Request`, the unified `Cache`
+   struct, and the `cache.<name>` namespace.
 6. [`IMPL-08-client-state.md`](IMPL-08-client-state.md). The
-   `(*scope).resetPerDrainScratch` per-drain wipe is the replacement
-   for every old `pagination.seed` / `progress.seed` call. Read the
-   classification helpers (`perDrainScratchFields`,
-   `persistentStateFields`) and the deferred-`Save` contract for
-   `error.mode: warn` / `fail`.
-7. [`IMPL-10-client-pagination.md` §"Notes for downstream slices" /
-   Slice 12 sub-section](IMPL-10-client-pagination.md). The new
-   `pagination.advance(s) (terminate bool, err error)` signature; the
-   polarity flip from `want_more=true` (loop again) to
-   `terminate=true` (stop); the MaxPages safety cap.
-8. [`IMPL-11-client-progress.md` §"Notes for downstream slices" /
-   Slice 12 sub-section](IMPL-11-client-progress.md). The
-   `applyProgress(s, r.Doc.Progress)` call site placement and the
-   "accepted page-response" gate.
+   `scope.cache` map is the new home for cache slots; the per-drain
+   wipe / snapshot filter never touches it.
+7. [`IMPL-12-client-runner.md` §"Notes for downstream slices" / Slice
+   13 sub-section](IMPL-12-client-runner.md). The new runner's
+   contract with the HTTP / auth / cache / fan-out layers — what it
+   calls, what it reads, what it expects each helper to return. In
+   particular: `dropReachableCaches(s, doc)` lives in `runner.go`; the
+   HTTP/auth layer owns the cache MISS / WRITE path; fan-out's
+   internal `invalidate_cache` arm needs the same helper.
 
 ---
 
 ## Your slice
 
-**Branch.** Develop on `claude/slice-12-client-runner-<token>`.
+**Branch.** Develop on `claude/slice-13-client-http-cache-auth-<token>`.
 
 **Files you may touch.**
 
-- `client/runner.go`
+- `client/http.go`
+- `client/auth.go`
+- `client/oauth2.go` → merge contents into a new `client/cache.go`
+  alongside `requestcache.go`'s contents, then **delete** `oauth2.go`
+  and `requestcache.go`. The unified `Cache` runtime lives in one
+  file.
+- `client/fanout.go`
 
 **Files you must NOT touch.**
 
 - `client/state.go`, `client/value.go`, `client/predicate.go`,
   `client/extract.go`, `client/bodypath.go`, `client/pagination.go`,
-  `client/progress.go` (frozen at Slices 8-11's close).
-- `client/auth.go`, `client/oauth2.go`, `client/requestcache.go`,
-  `client/http.go`, `client/fanout.go` (Slice 13 owns the auth /
-  cache / http / fan-out rewrites; this slice should NOT pre-rewire
-  any of their surfaces).
+  `client/progress.go`, `client/runner.go` (frozen at Slices 8-12's
+  close).
 - `client/sink.go`, `client/filestore.go`, `client/redact.go`,
   `client/trace.go`, `client/doc.go` (Slice 14 owns those).
 - Any file under `schema/` (frozen at Slice 7's close).
@@ -83,231 +83,197 @@ In this order:
 
 **Deliverables.**
 
-1. **Drain sequence (per `docs/runtime.md` §2).**
-   1. `store.Load` → seed scope.
-   2. `(*scope).resetPerDrainScratch()` — wipes every per-drain
-      scratch state field back to its declared `default:` (or unset
-      when no default).
-   3. Pagination loop. Each iteration:
-      a. Run the requests chain end-to-end, honouring `if:` and the
-         per-request `terminate_when:` loop on each step.
-      b. Decode the producer step's body, resolve `events_at`, bind
-         to `scope.events` / `scope.body` / `scope.responseHeaders`.
-      c. Emit each event to `Sink` (one call per event).
-      d. `applyProgress(s, r.Doc.Progress)` — once per accepted
-         page-response, including empty pages.
-      e. `pagination.advance(s)`: terminate? exit. Else loop.
-   4. `defer store.Save(s.snapshot())` runs on normal exit,
-      `error.mode: warn`, AND `error.mode: fail`.
-
-2. **Request loop (per `docs/runtime.md` §4).** A request with
-   `terminate_when:` re-fires until the predicate evaluates true; a
-   request without it runs exactly once. The predicate sees the
-   just-finished step's response body and headers via
-   `response.body.<path>` / `response.header.<name>`.
-
-3. **`on_status` verb table (per `docs/runtime.md` §6).** Closed
-   set:
-   - `skip` — drop response, emit no events, advance progress as if
-     successful (`applyProgress` still fires).
-   - `fail` — emit no events, surface the iteration as a non-success
-     so `error.mode` takes over.
-   - `empty_events` — emit no events but DO call `applyProgress`.
-   - `invalidate_cache` — drop every reachable `cache.*` slot (the
-     active auth's cache + every `requests[].cache` slot), then
-     treat the response as a non-event "retry next iteration"
-     signal. Degrade to `empty_events` with a log line when no
-     reachable cache slot exists.
-
-4. **`error.mode` fallback (per `docs/runtime.md` §6).**
-   - `standard` (default) — pagination loop ends, per-drain wipe
-     runs at the next drain start, deferred Save runs.
-   - `warn` — log, continue, iteration advances as if the page came
-     back empty, `applyProgress` does NOT fire for this iteration.
-   - `fail` — `Drain` returns non-nil; deferred Save still runs.
-
-5. **MaxPages safety cap.** Increment a page counter after each
-   `pagination.advance(s)` returns `(false, nil)`. When the counter
-   exceeds the document-level cap (or the runner's compiled-in
-   ceiling when the document declines to set one), exit the drain
-   with an "iteration cap exceeded" diagnostic.
-
-6. **Removals.**
-   - `pagination.seed(s)` call sites — gone. The per-drain wipe
-     replaces them.
-   - `progress.seed(s)` / `progress.advance(s, events)` /
-     `progress.shouldSkipForPhase(req, phase)` /
-     `progress.currentPhase(s)` /
-     `progress.phaseTransition(s, stepID, res)` call sites — all
-     gone. Replace with the single `applyProgress` call.
-   - `progressPlan` type references — gone.
-   - `makeProgressPlan(doc)` constructor call — gone. The runner
-     reads `r.Doc.Progress` directly.
-   - `placeholder_event` two-pass logic — gone. Empty pages just
-     trigger the next page; no synthetic event.
-   - Async-job phase gating (`shouldSkipForPhase` /
-     `currentPhase` / `phaseTransition`) — gone. The new shape is a
-     three-request chain in `requests:` where the poll step carries
-     `terminate_when:`. Authors write a progress entry to persist
-     the completion timestamp.
-   - `placeholder_event` references in trace records — gone.
-   - Any `cursor.*` namespace plumbing — gone. The validator and the
-     scope resolver no longer accept that root.
-
-7. **Reuse, don't duplicate.** `(*scope).resetPerDrainScratch`
-   handles bootstrapping. `(*scope).evalPredicate` handles every
-   predicate (`if:`, `terminate_when:` on requests, `terminate_when:`
-   on pagination, `on_status` decode). `(*scope).evalValue` handles
-   every Value (URL, headers, body, cache TTL, etc.). The pagination
-   plan, the progress applier, and the request executor are already
-   shaped to be called from inside this loop.
-
-8. **Hygiene pass** per global rule #5. Top-of-file comments,
-   doc-strings on every helper, error-message strings: no
-   `cursor.<name>` as a namespace root, no `body.<path>` as a
-   top-level root, no slice numbers, no design-doc references, no
-   "for backwards compatibility", no references to the legacy
-   progress variants, the async-job phase machine, the
-   `placeholder_event` mechanism, the old `Defaults.BaseURL` /
-   `requests[].path` shape, or the old `state.fields` /
-   `mutability:` vocabulary. Error messages should read as if the
-   post-redesign shape had always existed.
-
-9. New artefact `docs/planning/IMPL-12-client-runner.md` carrying:
+1. **`client/http.go` rewrite.**
+   - `(*scope).buildURL(req schema.Request)` becomes `s.evalValue(req.URL)`
+     directly — there is no `Defaults.BaseURL` and there is no
+     `req.Path`. Every request carries an absolute URL Value (often a
+     `${...}`-interpolated string).
+   - `(*scope).executeRequest(ctx, client, req, trace)` consults the
+     unified `Cache` block on `req.Cache` BEFORE firing: if the slot
+     `cache.<name>` is fresh, the cache-hit body is returned as the
+     `stepResult` without an HTTP round-trip. The cache-miss path
+     fires the request, captures the body, and writes
+     `cache.<name>` + the slot's resolved `expires_at` instant.
+   - Trace records continue to live behind a non-nil `Runner.Tracer`;
+     the runner passes a `*httpTrace` scratchpad and reads back
+     metadata after the exchange.
+2. **`client/auth.go` rewrite.**
+   - `auth.MultiMode.Default` is now a bare `schema.Auth`, not the
+     wrapped `{auth: ...}` form. The dispatcher reads it as-is.
+   - `auth.OAuth2.<grant>.cache` is now a `*schema.Cache`, not a
+     `*schema.TokenCache`. The cache writes `cache.<name>` (in
+     `scope.cache`), NOT `state.<store_in>` + `state.<store_in>_expires_at`.
+3. **`client/cache.go` (new file, replacing `oauth2.go` and
+   `requestcache.go`).**
+   - One struct + helper handles both call sites (auth grant cache,
+     request-level cache). Cache slots live in `scope.cache` (process
+     memory, never persisted).
+   - The cache-hit decision: `now() + buffer >= expires_at` →
+     re-fetch. The captured value lands at `cache.<name>` AND the
+     resolved expiry instant lives alongside (internal record
+     keeping; the schema declares only one `cache.<name>` Path).
+   - The OAuth2 token-fetch path (POST to `token_url`, parse
+     `access_token` + `expires_in`) merges with the request-level
+     cache write path. Both end at the same "write to scope.cache"
+     primitive.
+4. **`client/fanout.go` rewrite.**
+   - The runner already passes `""` for the legacy `phase` parameter.
+     Slice 13 can drop the parameter from the signature entirely.
+   - Per-item `on_status: invalidate_cache` needs to use the new
+     `dropReachableCaches(s, doc)` from `runner.go` (or duplicate the
+     walk inside fanout.go — but reuse is preferred).
+   - `fan_out.as` validation is already enforced at validate time
+     (Slice 7); the runtime doesn't re-check.
+5. **Cross-file invariants.**
+   - The `cache.<name>` namespace is process-memory only — never read
+     from or written to `Snapshot.State`. `(*scope).snapshot()` in
+     `state.go` already excludes the cache map; this slice must not
+     stuff cache slots into state.
+   - `state.<store_in>_expires_at` is GONE. The validator no longer
+     auto-registers that slot; this slice must not look for it
+     either.
+   - `safeURL` (in `redact.go`, Slice 14's territory) is still the
+     canonical URL renderer for log / error / trace surfaces.
+   - `redactURLError` is still the canonical transport-error redaction
+     helper.
+6. **Hygiene pass** per global rule #5. Top-of-file comments, doc
+   strings on every helper, error-message strings: no `cursor.<name>`
+   as a namespace root, no `state.<store_in>` framework-internal slot
+   convention, no slice numbers, no design-doc references, no
+   "formerly", no "for backwards compatibility", no references to
+   the legacy `Defaults.BaseURL` / `requests[].path` shape, the old
+   `TokenCache` / `RequestCache` types, the `state.fields` /
+   `mutability:` vocabulary, the async-job phase machine, or the
+   `placeholder_event` mechanism. Error messages should read as if
+   the post-redesign shape had always existed.
+7. **New artefact `docs/planning/IMPL-13-client-http-cache-auth.md`**
+   carrying:
    - Scope (one sentence).
-   - Old → new map (per legacy call → new mechanism — `pagination.seed`,
-     `progress.seed`, `progress.advance`, the five `progressPlan`
-     methods, `placeholder_event`, the async-job phase machine).
+   - Old → new map (per legacy call → new mechanism — `TokenCache` →
+     `Cache`, `RequestCache` → `Cache`, `state.<store_in>` →
+     `cache.<name>`, `BaseURL` → absolute `url:` Value).
    - Removed-content list (every deleted helper, field, call site).
-   - Build-state enumeration (Slice 12 should bring the runner.go
-     red-error count down to zero; the remaining client/* errors
-     live in `auth.go` / `oauth2.go` / `requestcache.go` /
-     `http.go` until Slice 13).
-   - Notes for downstream slices (Slice 13 on the auth / cache /
-     http rewires, Slice 14 on the sink / redact / trace surface
-     and the new trace record layout, Slice 15 on the CLI's
-     continuous-mode error policy).
-
-10. Slice-table row 12 in `RESEARCH_PLAN.md` flipped to `[x]` with
-    the `IMPL-12-client-runner.md` link.
-
-11. `HANDOFF.md` rewritten to point at Slice 13
-    (`client/{http,auth,cache,fanout}.go`).
+   - Build-state enumeration (Slice 13 should bring the
+     auth/oauth2/requestcache/http red-error count down to zero;
+     the full `go build ./client/...` should be green after this
+     slice).
+   - Walkthrough verification for the trickier cases (OAuth2 cache
+     hit, OAuth2 cache miss + token fetch, request-level cache hit
+     when an event-fetch step is preceded by a login step, fan-out's
+     per-item `invalidate_cache`, `multi_mode.Default` dispatch).
+   - Notes for downstream slices (Slice 14 on the trace / redact
+     surface, Slice 15 on the CLI's continuous-mode interaction with
+     the cache namespace, Slice 17 on the test rewrite).
+8. Slice-table row 13 in `RESEARCH_PLAN.md` flipped to `[x]` with the
+   `IMPL-13-client-http-cache-auth.md` link.
+9. `HANDOFF.md` rewritten to point at Slice 14
+   (`client/{sink,redact,trace,filestore,doc}.go`).
 
 **Smoke tests.** Throwaway and optional. The trickier areas are:
 
-- A request with `terminate_when:` that needs three iterations
-  before the predicate becomes true — verify the same request is
-  re-issued, the scope's `response.body.<path>` and
-  `response.header.<name>` resolve against the latest response, and
-  `applyProgress` does NOT fire mid-request-loop (it fires once per
-  page-response, AFTER the request chain settles).
-- An `on_status: 429: empty_events` page — verify no events emit,
-  `applyProgress` fires, pagination advances, the loop continues.
-- An `on_status: 304: skip` page — verify no events emit,
-  `applyProgress` fires, pagination advances, the loop continues.
-- An `on_status: 401: invalidate_cache` page where the active auth
-  has a `cache:` slot — verify the slot is removed from
-  `scope.cache` and the loop continues (next iteration re-fetches
-  the token via the cache helper's miss path).
-- An `error.mode: warn` failure — verify the iteration advances
-  without firing `applyProgress` and without emitting events.
-- A drain that hits MaxPages — verify the "iteration cap exceeded"
-  diagnostic surfaces and the deferred Save runs.
+- An OAuth2 client_credentials grant with a cache block. Walk a
+  three-iteration drain: iter 1 misses the cache (fetches token,
+  writes `cache.access_token`); iter 2 + 3 hit the cache (no token
+  fetch); after `iter 3 + cache.buffer`, iter 4 misses again.
+- A request-level cache (a custom JSON login step) preceding an
+  event-fetch step. Same cache-hit / cache-miss walk as the OAuth2
+  case.
+- `on_status: invalidate_cache` on a 401 — verify the cache slot is
+  removed from `scope.cache` and the next iteration's HTTP layer
+  re-fetches the token.
+- `multi_mode` auth with two `bearer` branches and a `none` default.
+  Walk a drain where the predicate fires the first branch, then
+  fires the default arm on a different iteration.
+- A fan_out step with `merge: flatten` on a list of three items. One
+  item returns a non-list body → expect a clear error at
+  merge time, not a silent loss of events.
 
-The client package will still NOT compile end-to-end at slice close
-(Slices 13-14 own files that still reference removed shapes), so a
-real smoke `_test.go` won't build inside `package client`. A
-walkthrough verification is acceptable; document it in
-`IMPL-12-client-runner.md`.
+End-to-end correctness is not checkable until Slices 16-17 land. The
+build is the binding verification target.
 
 **Out of scope.** No schema changes (Slice 7 closed). No state /
-scope / value-runtime / pagination / progress changes (Slices 8-11
-closed). No http / auth / cache / fan-out changes (Slice 13). No
-sink / trace changes (Slice 14). No CLI changes (Slice 15). No
-templates (Slice 16). No tests (Slice 17).
+scope / value-runtime / pagination / progress / runner changes
+(Slices 8-12 closed). No sink / trace / redact / filestore changes
+(Slice 14). No CLI changes (Slice 15). No templates (Slice 16). No
+tests (Slice 17).
 
 ---
 
 ## Watch out for
 
-- **The package will not compile end-to-end.** `auth.go`,
-  `oauth2.go`, `requestcache.go`, `http.go` still reference removed
-  schema types. Your slice owns one file only; the rest stays red
-  until Slice 13.
+- **The package becomes fully green after this slice.** Slices 8-12
+  bought breathing room by leaving auth/cache/http red; Slice 13's
+  closing condition is `go build ./client/...` returning zero errors
+  on the whole package. If you discover a stray reference in some
+  earlier-slice file that should have been caught upstream, fix it in
+  the same slice — but flag it via `AskUserQuestion` first if the fix
+  touches a frozen file.
 
-- **The new request loop is the replacement for the async-job phase
-  machine.** Authors who used to write `async_job: {submit, poll,
-  fetch}` now write three entries in `requests:` — the poll step
-  carries `terminate_when:` and the runner re-fires it until the
-  predicate is satisfied. Do NOT add any phase-gating helper; the
-  re-fire is the whole mechanism.
+- **`cache.<name>` lives in `scope.cache`, not `scope.state`.** The
+  validator auto-registered `state.<store_in>` slots in the old shape;
+  the new shape declares `cache.<name>` Paths in the schema and the
+  runtime writes them into a separate map. Persistence (`Snapshot`)
+  never touches cache; a runner restart re-fetches.
 
-- **`applyProgress` fires once per accepted page-response.** The
-  call site is inside the pagination loop, AFTER the request chain
-  settles and AFTER events emit to the sink. Authors who used to
-  rely on `progress.seed` firing per drain now declare a
-  `default:` on the destination state field — the per-drain wipe
-  evaluates that default at drain start.
+- **The unified `Cache` struct replaces `TokenCache` and
+  `RequestCache`.** One helper, two call sites. The same expiry-
+  resolution logic, the same buffer semantics, the same miss → fetch
+  → write loop. Authors write the same YAML shape under both
+  `auth.oauth2.<grant>.cache:` and `requests[].cache:`.
 
-- **Per-drain wipe semantics are about scratch vs. persistent.**
-  `(*scope).resetPerDrainScratch` wipes only the fields classified
-  as scratch (target of any `pagination.*.to` write that is not
-  also a `progress[].to` target). Persistent fields (target of any
-  `progress[].to` or `requests[].extract` with `to: state.*`) keep
-  their values across drains and are read off the snapshot in
-  `newScope`.
+- **`MultiModeAuth.Default` is a bare `Auth`, not `{auth: ...}`.**
+  The struct has fields like `Bearer *BearerAuth`, `Basic *BasicAuth`,
+  etc. — the dispatcher reads the variant directly off the bare value.
+  Don't re-introduce the wrapping shape.
 
-- **`pagination.advance(s)` has the new polarity.** `terminate=true`
-  means stop. The old `want_more=true` meant loop. Don't invert.
+- **`req.URL` is a `schema.Value`, not `*schema.Value`.** Every
+  request has a URL. There is no `req.Path` and no `Defaults.BaseURL`.
+  `s.evalValue(req.URL)` returns the resolved URL string; parse it
+  with `url.Parse`. The Value layer handles secret-tainting; the URL
+  renderer (`safeURL`) handles output redaction.
 
-- **`error.mode: warn` skips `applyProgress`.** This is per
-  `docs/runtime.md` §6: warn-on-failure must not leak partial
-  progress writes that survive the deferred Save. Skip the
-  `applyProgress` call AND continue the loop.
-
-- **Deferred Save runs in every termination path.** Normal exit,
-  `error.mode: warn` (success), `error.mode: fail` (error return),
-  MaxPages cap exceeded, panic recovery (if any). Write the deferred
-  Save before the first early-return inside Drain so every exit path
-  hits it.
-
-- **No `cursor.*` references survive in trace records, log lines, or
-  error strings.** A grep for `cursor` in `runner.go` after the
-  slice closes should find nothing.
+- **OAuth2 interactive grants are out of scope.** Authorization code,
+  device code, PKCE — none of those land in this slice (or any
+  slice). The pull-loop has no browser round-trip surface.
 
 - **Tests stay stale.** Per global rule #6 and PHASE-2-PLAN §4,
   Slice 17 owns the test rewrite. You may NOT touch
-  `client/runner_test.go`. Expect `go test ./client/...` to stay
-  red.
+  `client/auth_test.go`, `client/oauth2_test.go` (or whatever it
+  becomes), `client/requestcache_test.go`, `client/fanout_test.go`.
+  Expect `go test ./client/...` to stay red.
+
+- **The runner's `dropReachableCaches` helper is the canonical
+  invalidate path.** Fanout's per-item `on_status:
+  invalidate_cache` arm should call it directly (export it if
+  needed). Two parallel cache-walk implementations is a divergence
+  risk worth avoiding.
 
 ---
 
 ## When you finish
 
-`git add` the rewritten file, the new `IMPL-12-client-runner.md`,
+`git add` the rewritten files, the new `IMPL-13-client-http-cache-auth.md`,
 the updated `RESEARCH_PLAN.md`, and the updated `HANDOFF.md`. Commit
 with a message like:
 
 ```
-feat(client): slice 12 — runner against the new IR
+feat(client): slice 13 — http, auth, cache, fan-out against the new IR
 
-Drain loop rewrite per docs/runtime.md §2: load → per-drain wipe →
-pagination loop (requests chain with terminate_when on each step,
-events to sink, applyProgress per accepted page, pagination advance)
-→ deferred Save. The on_status verb table (skip / fail /
-empty_events / invalidate_cache) replaces every retry / placeholder
-mechanism; the request-level terminate_when loop replaces the
-async-job phase machine; applyProgress fires once per accepted
-page-response, including empty pages. MaxPages guards the
-pagination loop against runaway servers.
+HTTP execution layer rewrite per docs/runtime.md §10: req.URL is a
+Value (no Defaults.BaseURL, no req.Path); req.Cache pre-check lives
+inside executeRequest. Auth layer rewrite: MultiModeAuth.Default is a
+bare Auth; OAuth2 grants use the unified Cache struct. cache.go
+absorbs oauth2.go + requestcache.go: one struct + helper for both
+sites, slots live in scope.cache (process memory only). Fan-out
+rewrite drops the legacy phase parameter and routes per-item
+invalidate_cache through dropReachableCaches.
 
-schema/ + client/{state,value,predicate,extract,bodypath,pagination,
-progress,runner}.go build at slice close (modulo auth/oauth2/
-requestcache/http which Slice 13 owns); tests stay red until Slice 17.
+schema/ + client/... build green at slice close; tests stay red
+until Slice 17.
 ```
 
-Push to `claude/slice-12-client-runner-<token>` and open a PR.
+Push to `claude/slice-13-client-http-cache-auth-<token>` and open a
+PR.
 
 If you discover the slice is wider than the plan, **stop and flag it
 via `AskUserQuestion`** rather than widening scope silently.
