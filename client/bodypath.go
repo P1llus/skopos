@@ -9,16 +9,6 @@ import (
 	"github.com/p1llus/skopos/schema"
 )
 
-// pathParts returns the Path's segments, or nil when the path is empty.
-// Used by per-event sub-path walks where the path is body-relative to
-// each event object — no namespace root to strip.
-func pathParts(p schema.Path) []string {
-	if p.IsEmpty() {
-		return nil
-	}
-	return p.Parts
-}
-
 // stripBodyRoot strips the body-root prefix from p and returns the
 // body-relative parts to walk plus the step id (or "" when the local
 // body is the target). The validator's body-rooted-Path contract feeds
@@ -52,33 +42,6 @@ func stripBodyRoot(p schema.Path) ([]string, string, error) {
 		return p.Parts[3:], p.Parts[1], nil
 	}
 	return nil, "", fmt.Errorf("body-rooted path must be response.body.<path> or steps.<id>.body.<path>, got %q", p.String())
-}
-
-// resolveBodyPath walks body (the local response body) or the named
-// step's response body at the segments under p's body root, returning
-// the value found there. Pairs stripBodyRoot with lookupBodyPath for
-// every read site whose Path is body-rooted (response.body.<path> or
-// steps.<id>.body.<path>) — pagination cursor sources, request cache
-// expiry fields, and progress per-event sub-paths all share this helper.
-//
-// When p references a labelled prior step (steps.<id>.body.<path>),
-// the named step's body is read from s.steps; missing step bodies
-// surface as (nil, false, nil) so callers handle the absence the same
-// way as a missing field.
-func (s *scope) resolveBodyPath(body any, p schema.Path) (any, bool, error) {
-	parts, stepID, err := stripBodyRoot(p)
-	if err != nil {
-		return nil, false, err
-	}
-	target := body
-	if stepID != "" {
-		v, ok := s.steps[stepID]
-		if !ok {
-			return nil, false, nil
-		}
-		target = v
-	}
-	return lookupBodyPath(target, parts)
 }
 
 // lookupBodyPath walks parts into body. body is a JSON-decoded value:

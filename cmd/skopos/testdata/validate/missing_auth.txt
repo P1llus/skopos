@@ -1,4 +1,4 @@
-# validate/missing_auth — spec that references a nonexistent state field
+# validate/missing_auth — spec that references an undeclared state field
 # produces an error-severity diagnostic on stdout and exits 1.
 
 ! exec skopos validate -i spec.yml
@@ -9,13 +9,9 @@ cmp stdout want_stdout.txt
 ir_version: "1"
 
 state:
-  fields:
-    url:
-      type: url
-      default: "http://localhost:9999"
-
-defaults:
-  base_url: {ref: state.url}
+  url:
+    type: url
+    default: "http://localhost:9999"
 
 auth:
   bearer:
@@ -23,7 +19,7 @@ auth:
 
 requests:
   - method: GET
-    path: /events
+    url: {ref: state.url}
 
 response:
   decode: json
@@ -32,14 +28,7 @@ response:
 pagination:
   none: {}
 
-progress:
-  latest_event_timestamp:
-    event_time:
-      path: timestamp
-    initial:
-      lookback: "1h"
-
 error:
   mode: standard
 -- want_stdout.txt --
-auth.bearer.token.ref: error: ref "state.missing_field": state field "missing_field" is not declared in state.fields
+auth.bearer.token.ref: error: ref "state.missing_field": state field "missing_field" is not declared under state:

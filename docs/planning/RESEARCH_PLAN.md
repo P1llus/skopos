@@ -131,7 +131,7 @@ slice.
 | 15  | [x]    | cmd        | `cmd/skopos/*` — `validate` / `run` / `init` / `template list|show`            | [`IMPL-15-cmd-cli.md`](IMPL-15-cmd-cli.md) |
 | 16  | [x]    | templates  | `templates/*.yml` + `templates/templates.go` + `schema/testdata/*.yml`         | [`IMPL-16-templates.md`](IMPL-16-templates.md) |
 | 17  | [x]    | tests      | All `*_test.go` files in `schema/`, `client/`, `cmd/`, `internal/testserver/`  | [`IMPL-17-tests.md`](IMPL-17-tests.md)  |
-| 18  | [ ]    | docs       | Regenerate `docs/schema-reference.md`                                          | `IMPL-18-schema-reference.md`           |
+| 18  | [x]    | docs       | Regenerate `docs/schema-reference.md`                                          | [`IMPL-18-schema-reference.md`](IMPL-18-schema-reference.md) |
 
 **Order:** strictly sequential, 4 → 18. Domain order is schema → client
 → cmd → templates → tests → schema-reference. Within each domain,
