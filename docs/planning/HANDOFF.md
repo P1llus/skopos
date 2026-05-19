@@ -1,180 +1,73 @@
-# Handoff — Phase 2 Slice 18 (regenerate `docs/schema-reference.md`)
+# Handoff — Phase 2 complete
 
-Slice 17 closed. Every `*_test.go` in the project has been rewritten
-against the post-redesign IR; `go test ./...`, `go vet ./...`, and
-`go test -race ./client/...` are all green. The orphaned
-`client/requestcache_test.go` was deleted (the legacy `schema.RequestCache`
-type does not survive the redesign). Two `internal/testserver/`
-scenarios (`page_number.go`, `etag_conditional.go`) were updated to
-omit the `meta.has_next` field on the final page so the rewritten
-templates' `not: {present: response.body.meta.has_next}` termination
-predicate fires correctly.
+Phase 2 is closed. All eighteen slices in the cross-cutting schema-
+redesign rollout (slices 1–3 in Phase 1, slices 4–18 in Phase 2) have
+landed. There is no successor slice queued from this plan.
 
-See [`IMPL-17-tests.md`](IMPL-17-tests.md) for the per-package rewrite
-log, the per-file old → new line-count map, the build-state
-enumeration, and three walkthroughs (the request-level
-`terminate_when:` loop replacing the async-job phase machine, the
-unified `Cache` block + `on_status: invalidate_cache` interaction,
-the `TestSpecFixtures` golden-walk consolidation).
+The exit state of the project is:
 
-The next slice is **Slice 18 — regenerate `docs/schema-reference.md`**.
-This is the last slice in Phase 2. The schema package is fully
-rewritten, the validator covers every shape rule, and the test suite
-exercises every variant — the regenerator can walk `*schema.Doc`
-directly and produce a complete reference table.
+- **Schema package** (Slice 4 → Slice 7) — rewritten end-to-end around
+  the post-redesign IR: flat `Doc.State` map, unified `Cache` block,
+  4-named-plus-custom `Pagination`, flat `[]ProgressWrite`,
+  request-level `terminate_when:` loop, multi-mode auth, predicate
+  comparison verbs (gt / lt / gte / lte), Value arithmetic (add /
+  subtract) and reducers (max / min / first / last / count).
+- **Client runtime** (Slice 8 → Slice 14) — rewritten against the
+  same IR: per-drain scope wipe, lifetime inference for state fields,
+  reducer-aware Value evaluator, request-level loop, in-process cache,
+  fan-out flatten/wrap merge semantics, redaction over the new Value
+  graph, JSONL trace + sink.
+- **CLI** (Slice 15) — `validate` / `run` / `init` / `template
+  list|show` carry the new flag set; the `--state-file` round-trip
+  preserves only persistent state fields (scratch is wiped per drain).
+- **Bundled templates** (Slice 16) — 27 templates in
+  `templates/*.yml` plus 20 fixtures in `schema/testdata/*.yml`, every
+  one parses + validates + round-trips through
+  `schema/fixtures_test.go::TestSpecFixtures`.
+- **Test suite** (Slice 17) — every `*_test.go` rewritten; `go test
+  ./...`, `go vet ./...`, `go test -race ./client/...` are all green.
+- **Schema reference** (Slice 18) — `docs/schema-reference.md`
+  regenerated from `*schema.Doc` via `tools/gen-schema-doc`; the
+  `cmd/skopos/testdata/*.txt` testscript goldens regenerated against
+  the post-redesign templates; obsolete legacy-shape testscripts
+  (`testdata/errors/*`, `testdata/schema/*`, and the three
+  state-dependent scenarios `async_poll_latest_ts.txt`,
+  `async_poll_stateless.txt`, `session_login_cached.txt`) deleted.
+  Schema-level coverage of the deleted scenarios lives in
+  `schema/fixtures_test.go`.
 
----
-
-## Read first
-
-In this order:
-
-1. [`RESEARCH_PLAN.md` §"Global rules"](RESEARCH_PLAN.md#global-rules---apply-to-every-slice).
-   The eight global rules. Rules #4 / #5 (clean stale comments) apply
-   to the generator too — `tools/gen-schema-doc/*.go` may carry
-   stale-shape vocabulary that needs to go.
-2. [`PHASE-2-PLAN.md` §"Slice 18"](PHASE-2-PLAN.md#slice-18--regenerate-docsschema-referencemd).
-   The scope, the verification posture.
-3. [`docs/schema.md`](../schema.md) — the post-Phase-1 prose
-   description of the schema. The regenerated reference should match
-   the prose type-for-type.
-4. [`tools/gen-schema-doc/`](../../tools/gen-schema-doc/) — the
-   generator code itself. The build step is not yet wired into
-   `go generate ./...`; the slice agent reads `tools/gen-schema-doc/main.go`
-   to learn the invocation.
-5. The earlier `IMPL-04` through `IMPL-17` impl plans for the
-   per-domain shape decisions (cache block, pagination variants,
-   progress write list, namespace roots, secret propagation).
+See [`IMPL-18-schema-reference.md`](IMPL-18-schema-reference.md) for
+the per-file diff log, the generator invocation, the type-table
+old → new map, the three walkthrough verifications (Cache,
+Pagination, Value arithmetic + reducers), and the testscript-deletion
+rationale.
 
 ---
 
-## Your slice
-
-**Branch.** Develop on `claude/slice-18-schema-reference-<token>`.
-
-**Files you may touch (and only these — plus the new
-`IMPL-18-schema-reference.md`).**
-
-- `docs/schema-reference.md` (regenerated by running the generator).
-- `tools/gen-schema-doc/*.go` (only if the new struct shape needs the
-  generator updated to walk the post-redesign types — `Cache` block,
-  `ArithExpr`, reducer-shaped Values, `Predicate.Gt/Lt/Gte/Lte`,
-  `MultiModeAuth.Branches`, etc.).
-- `cmd/skopos/testdata/*.txt` (the testscript goldens still reference
-  legacy `cursor.*` trace lines — regenerating these is in scope for
-  this slice via `go test -tags integration -update
-  ./cmd/skopos/...`; the resulting goldens are committed alongside
-  the schema-reference regeneration).
-
-**Files you must NOT touch.**
-
-- `docs/schema.md`, `docs/runtime.md`, `docs/stores.md`,
-  `docs/usage.md`, `docs/api-methods.md` (Phase 1 prose docs — these
-  are the source of truth).
-- `docs/DESIGN_SUGGESTIONS.md` (design record, frozen).
-- Any `*.go` outside `tools/gen-schema-doc/`.
-- Any `*.yml` under `templates/` or `schema/testdata/`.
-- Any `*_test.go` file (Slice 17 closed the test rewrite).
-
-**Deliverables.**
-
-1. **`docs/schema-reference.md` regenerated.** Every declared type in
-   `schema/*.go` appears in the document with the post-redesign
-   shape: field name, type, JSON tag, YAML tag, brief description.
-2. **Type-for-type match against `docs/schema.md`.** Every shape
-   decision documented in the prose should appear in the reference;
-   no legacy types (`TokenCache`, `RequestCache`, `Defaults`, the
-   wrapper `State` struct, `CursorUpdateDirective`, `progress.async_job`,
-   the seven legacy pagination variants, `placeholder_event`) should
-   appear in either source.
-3. **Testscript goldens regenerated.** Run `go test -tags
-   integration -update ./cmd/skopos/...` from the slice branch.
-   Commit the resulting `cmd/skopos/testdata/*.txt` changes. The
-   trace lines should now reference `state.*` / `cache.*` /
-   `extract.*` / `steps.<id>.*` namespace roots (not `cursor.*`).
-4. **Hygiene pass.** Per global rules #4 / #5: no stale references
-   in the generator code or the regenerated doc.
-5. **New artefact `docs/planning/IMPL-18-schema-reference.md`** carrying:
-   - Scope (one sentence).
-   - The generator invocation (the exact command run to produce the
-     reference doc).
-   - Type-table diff (old → new — what types appeared, disappeared,
-     or were renamed).
-   - Build-state enumeration.
-   - Walkthrough verification — pick two or three types whose shape
-     changed substantially (`Cache`, `Pagination`, `Value` arith /
-     reducer additions) and walk the regenerated doc against the prose.
-6. Slice-table row 18 in `RESEARCH_PLAN.md` flipped to `[x]` with
-   the `IMPL-18-schema-reference.md` link.
-7. `HANDOFF.md` rewritten to declare Phase 2 complete (no further
-   slice).
-
-**Verification.**
-
-- `go generate ./...` (or whatever invocation the generator uses)
-  runs cleanly.
-- `go test ./...` is still green.
-- `go test -tags integration ./cmd/skopos/...` is green after the
-  golden regeneration.
-- `git diff docs/schema-reference.md` shows the post-redesign shape,
-  with the legacy types removed and the new ones (Cache, ArithExpr,
-  reducer Values, predicate comparison verbs, MultiModeAuth, etc.)
-  added.
-
----
-
-## Watch out for
-
-- **The generator may already work.** `tools/gen-schema-doc` walks
-  `*schema.Doc` reflectively; if the type tags are right the
-  output may need zero generator changes. Run it first and check
-  the diff before reaching for the generator code.
-- **The Phase 1 prose docs override the generator.** When the
-  regenerated reference disagrees with `docs/schema.md`, the prose
-  wins — fix the generator (or the JSON/YAML tags on the schema
-  types if the prose disagrees with the structs).
-- **Testscript goldens are large.** `cmd/skopos/testdata/*.txt`
-  contains ~50 files, each with embedded `want_trace.jsonl` /
-  `want_events.jsonl` payloads. The `-update` flag regenerates them
-  in place; check the diff for unexpected changes (e.g. a redaction
-  that should fire but doesn't).
-- **`docs/schema-reference.md` is generated, not authored.** If you
-  catch yourself hand-editing it, stop and fix the generator
-  instead. The generator output IS the document.
-- **Slice 17 deliberately left the testscript goldens stale.** The
-  expected diff is large but mechanical — every legacy `cursor.*`
-  trace ref becomes `state.*`, every `path: /foo` becomes
-  `url: http://.../foo`, every `latest_event_timestamp`-shaped
-  trace becomes the rewritten template's new shape. If anything
-  doesn't fit that mechanical pattern, flag it before committing.
-
----
-
-## When you finish
-
-`git add` the regenerated `docs/schema-reference.md`, any modified
-`tools/gen-schema-doc/*.go`, every regenerated `cmd/skopos/testdata/*.txt`,
-the new `IMPL-18-schema-reference.md`, the updated `RESEARCH_PLAN.md`,
-and the updated `HANDOFF.md`. Commit with a message like:
+## Verification commands
 
 ```
-docs(schema-reference): slice 18 — regenerate against post-redesign IR
-
-docs/schema-reference.md regenerated from *schema.Doc types via
-tools/gen-schema-doc. Every legacy type (TokenCache, RequestCache,
-Defaults, State wrapper, CursorUpdateDirective, async_job progress,
-the seven legacy pagination variants, placeholder_event) is gone;
-the post-redesign types (Cache, ArithExpr, reducer Values, predicate
-comparison verbs, MultiModeAuth) appear with full field tables.
-
-cmd/skopos/testdata/*.txt goldens regenerated to match the rewritten
-templates and trace shapes.
-
-Phase 2 closes here.
+go run ./tools/gen-schema-doc -check       # schema-reference drift gate
+go build ./...                              # green
+go vet ./...                                # clean
+go test ./...                               # green
+go test -tags integration ./cmd/skopos      # green (testscript goldens)
+go test -race ./client/...                  # green
 ```
 
-Push to `claude/slice-18-schema-reference-<token>` and open a PR.
-This is the last Phase 2 slice; after merge Phase 2 is complete.
+All commands above are green at HEAD on this branch.
 
-If you discover the slice is wider than the plan, **stop and flag it
-via `AskUserQuestion`** rather than widening scope silently.
+---
+
+## Next phase
+
+There is no Phase 3 in this plan. Future work (operator UI,
+observability roll-up, scheduler, multi-tenant config storage,
+etc.) is not scoped here. If a new phase is opened, plan a fresh
+`PHASE-3-PLAN.md` alongside `PHASE-2-PLAN.md` and reset the slice
+table in `RESEARCH_PLAN.md`.
+
+The existing implementation plan files
+([`IMPL-01-docs-schema.md`](IMPL-01-docs-schema.md) through
+[`IMPL-18-schema-reference.md`](IMPL-18-schema-reference.md)) are
+preserved as the executed record of the redesign rollout.

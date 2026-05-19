@@ -15,58 +15,42 @@ Regenerate with `go run ./tools/gen-schema-doc`; CI runs
 ## Index
 
 - [`APIKeyAuth`](#apikeyauth)
-- [`AsyncExtract`](#asyncextract)
-- [`AsyncFetchStep`](#asyncfetchstep)
-- [`AsyncJobProgress`](#asyncjobprogress)
-- [`AsyncOnComplete`](#asynconcomplete)
-- [`AsyncPollStep`](#asyncpollstep)
-- [`AsyncSubmitStep`](#asyncsubmitstep)
+- [`AdvanceWrite`](#advancewrite)
+- [`ArithExpr`](#arithexpr)
 - [`Auth`](#auth)
 - [`AuthBranch`](#authbranch)
-- [`AuthDefault`](#authdefault)
 - [`BasicAuth`](#basicauth)
 - [`BearerAuth`](#bearerauth)
 - [`Body`](#body)
+- [`Cache`](#cache)
 - [`ClientCredentialsGrant`](#clientcredentialsgrant)
+- [`CounterPagination`](#counterpagination)
 - [`CursorTokenPagination`](#cursortokenpagination)
-- [`CursorUpdateDirective`](#cursorupdatedirective)
 - [`CustomAuth`](#customauth)
-- [`Defaults`](#defaults)
+- [`CustomPagination`](#custompagination)
 - [`Diagnostic`](#diagnostic)
 - [`Doc`](#doc)
 - [`ErrorBlock`](#errorblock)
-- [`EventTime`](#eventtime)
 - [`ExtractVar`](#extractvar)
 - [`FanOut`](#fanout)
 - [`FieldDecl`](#fielddecl)
 - [`FormatValue`](#formatvalue)
-- [`GraphQLRelayPagination`](#graphqlrelaypagination)
-- [`Initial`](#initial)
-- [`LinkHeaderPagination`](#linkheaderpagination)
 - [`MultiModeAuth`](#multimodeauth)
-- [`NextURLInBodyPagination`](#nexturlinbodypagination)
+- [`NextURLPagination`](#nexturlpagination)
 - [`NowValue`](#nowvalue)
 - [`OAuth2Auth`](#oauth2auth)
-- [`OffsetPagination`](#offsetpagination)
-- [`PageNumberPagination`](#pagenumberpagination)
 - [`Pagination`](#pagination)
 - [`PasswordGrant`](#passwordgrant)
 - [`Path`](#path)
 - [`Predicate`](#predicate)
 - [`PredicateEq`](#predicateeq)
-- [`Progress`](#progress)
+- [`ProgressWrite`](#progresswrite)
 - [`RefValue`](#refvalue)
+- [`RegexExpr`](#regexexpr)
 - [`Request`](#request)
-- [`RequestCache`](#requestcache)
 - [`Response`](#response)
-- [`ScrollIDPagination`](#scrollidpagination)
 - [`SelectBranch`](#selectbranch)
 - [`SelectValue`](#selectvalue)
-- [`State`](#state)
-- [`TimeWindowProgress`](#timewindowprogress)
-- [`TimestampProgress`](#timestampprogress)
-- [`TokenCache`](#tokencache)
-- [`UseNowProgress`](#usenowprogress)
 - [`Value`](#value)
 
 ## `Path`
@@ -74,12 +58,31 @@ Regenerate with `go run ./tools/gen-schema-doc`; CI runs
 _Defined in `schema/path.go`._
 
 Path is a typed identifier for a dotted-string reference into one of the
-IR's defined namespaces (state, cursor, extract, steps, item, response).
+IR's defined namespaces. The closed set of namespace roots is:
+
+	state | cache | events | extract | steps | response
+
+Any other first segment is treated as an author-chosen fan_out.as alias
+at parse time and is accepted; the validator binds the alias to a
+concrete fan-out step at use-site time. Three names — cursor, body, item
+— are explicitly rejected at parse time as historical reserved roots
+that have been removed.
+
+The events root carries a small vocabulary of declared-order shortcuts:
+
+	events.first.<field>   first event in the active page
+	events.last.<field>    last event in the active page
+	events.<int>.<field>   positional access (zero-based)
+	events.count           cardinality of the active page
+	events.*.<field>       projection across every event
+
+These shortcut segments parse like any other identifier; the validator
+is what enforces their semantics.
 
 Primary form (dotted string):
 
 	events_at: response.body.data.issues.nodes
-	ref: cursor.last_timestamp
+	ref: events.last.timestamp
 
 Segment-escape form for field names containing dots or other special chars:
 
@@ -98,25 +101,31 @@ _Defined in `schema/predicate.go`._
 
 Predicate is the boolean condition type used in:
   - requests[].if
+  - requests[].terminate_when
   - auth.multi_mode.branches[].when
   - Value.select.branches[].when
-  - async_job.poll.complete_when
-  - pagination.scroll_id.complete_when
+  - pagination.*.terminate_when
 
 It is a discriminated union — exactly one form is active.
 
 Forms:
 
-	{eq:  {path: cursor.phase,  value: "submit"}}
-	{gt:  {path: cursor.page,   value: {ref: state.total_pages}}}
-	{lt:  {path: cursor.page,   value: {ref: state.total_pages}}}
-	{gte: {path: state.retries, value: 3}}
-	{lte: {path: state.retries, value: 3}}
+	{eq:  {path: state.phase,       value: "submit"}}
+	{gt:  {path: state.page,        value: {ref: state.total_pages}}}
+	{lt:  {path: state.page,        value: {ref: state.total_pages}}}
+	{gte: {path: state.retries,     value: 3}}
+	{lte: {path: state.retries,     value: 3}}
 	{present: state.etag}
 	{and: [{eq: ...}, {present: ...}]}
 	{or:  [{eq: ...}, {eq: ...}]}
 	{not: {eq: ...}}
 	{literal_bool: true}
+
+Predicates are absent-tolerant: {present: state.x} returns false when
+state.x is unset, and {eq: ...} / {gt: ...} / {lt: ...} / {gte: ...} /
+{lte: ...} return false when either side resolves to absent. No verb
+ever throws on a missing input; absence is policy, enforced by the
+runtime and the validator's lifetime inference.
 
 gt / lt / gte / lte share the PredicateEq shape — they compare a
 namespace-rooted Path against a Value. The verbs are ordered comparisons
@@ -142,10 +151,8 @@ must surface a lowering error rather than silently coercing.
 _Defined in `schema/predicate.go`._
 
 PredicateEq is the {<verb>: {path: <Path>, value: <Value>}} shape, shared
-by eq / gt / lt / gte / lte. The Go type name keeps the "Eq" prefix for
-historical reasons (eq was the first verb to use this shape); the right-
-hand-side field is named Value (renamed from Equal in slice 6) so the
-shape reads naturally under the ordered verbs too.
+by eq / gt / lt / gte / lte. Path is the left-hand-side namespace-rooted
+locator; Value is the right-hand-side compared against it.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
@@ -161,48 +168,28 @@ Doc is the top-level IR document.
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `IRVersion` | `ir_version` | `string` | no | IRVersion is the spec wire-format version. Must equal IRVersion. |
-| `State` | `state` | `*State` | yes | State declares typed field bindings for operator-supplied configuration and runtime-mutated cursor fields. Optional. |
-| `Defaults` | `defaults` | `*Defaults` | yes | Defaults holds cross-cutting defaults that apply to all requests. Optional. |
+| `State` | `state` | `map[string]FieldDecl` | yes | State is the flat map of typed field declarations. Optional — authors with no state at all may omit the block. |
 | `Auth` | `auth` | `Auth` | no | Auth is the discriminated-union auth block. Exactly one variant. |
-| `Requests` | `requests` | `[]Request` | no | Requests is the ordered list of HTTP requests that make up the chain. |
-| `Response` | `response` | `Response` | no | Response describes how to decode the producer step's response body. |
-| `Pagination` | `pagination` | `Pagination` | no | Pagination is the discriminated-union pagination block. |
-| `Progress` | `progress` | `Progress` | no | Progress is the discriminated-union progress (cursor-advancement) block. |
-| `Error` | `error` | `*ErrorBlock` | yes | Error configures how HTTP errors are surfaced. Optional. |
-
-## `State`
-
-_Defined in `schema/schema.go`._
-
-State holds typed field declarations for operator-supplied configuration
-and runtime-mutated cursor fields that authors need to name explicitly.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `Fields` | `fields` | `map[string]FieldDecl` | yes | Fields maps each state-field name to its declaration. The key is the name authors reference via {ref: state.<name>}. |
+| `Requests` | `requests` | `[]Request` | no | Requests is the ordered list of HTTP requests run on every iteration. |
+| `Response` | `response` | `Response` | no | Response describes how to decode the producer step's body and where the events list lives. |
+| `Pagination` | `pagination` | `Pagination` | no | Pagination is the discriminated-union pagination block. Exactly one variant. |
+| `Progress` | `progress` | `Progress` | yes | Progress is the flat list of state writes evaluated after each accepted page-response. An empty list (or omitted block) means no progress tracking. |
+| `Error` | `error` | `*ErrorBlock` | yes | Error configures how non-success HTTP responses are surfaced. Optional. |
 
 ## `FieldDecl`
 
 _Defined in `schema/schema.go`._
 
-FieldDecl is the declaration for a single state field.
+FieldDecl is the declaration for a single state field. A field's lifetime
+(operator-config / per-drain scratch / persistent) is inferred from its
+write sites; it is NOT carried on the declaration.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `Type` | `type` | `string` | no | Type is the field's declared shape. One of: string \| int \| bool \| secret \| duration \| url \| enum. |
-| `Default` | `default` | `interface{}` | yes | Default is the literal value used when the operator does not supply one. When set it must match Type. |
+| `Type` | `type` | `string` | no | Type is the field's declared shape. One of: string \| int \| bool \| secret \| duration \| timestamp \| url \| enum. |
+| `Default` | `default` | `*Value` | yes | Default is the Value used when no operator input is supplied. Any Value form, not just a literal — composing {now: true}, {subtract: [...]}, {ref: ...}, etc. is permitted. |
 | `Values` | `values` | `[]string` | yes | Values is the allowed enumeration. Only valid when Type == "enum". |
-| `Mutability` | `mutability` | `string` | yes | Mutability marks the field as "config" (operator-set; the default, not written back at runtime) or "runtime" (program-mutated; targets must persist the value across iterations, e.g. a token cached by an OAuth2 grant). Auto-registered runtime fields (the OAuth2 cache.store_in slot, request-level cache.store_in slots) carry "runtime" implicitly. |
-
-## `Defaults`
-
-_Defined in `schema/schema.go`._
-
-Defaults holds cross-cutting defaults that apply to all requests.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `BaseURL` | `base_url` | `Value` | no | BaseURL is prepended to each request's Path (ignored when a request uses URL instead). |
+| `Format` | `format` | `string` | yes | Format is the wire-format hint for Type == "timestamp" or Type == "duration". One of the closed-set verbs (rfc3339, rfc3339nano, unix_seconds, unix_millis) or a Go layout string. Ignored on other types. |
 
 ## `Auth`
 
@@ -213,7 +200,7 @@ be present.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `None` | `none` | `*struct{}` | yes | None selects the no-auth variant. The empty struct marks the variant. |
+| `None` | `none` | `*struct{}` | yes | None selects the no-auth variant. |
 | `Bearer` | `bearer` | `*BearerAuth` | yes | Bearer selects the bearer-token variant. |
 | `Basic` | `basic` | `*BasicAuth` | yes | Basic selects the HTTP basic-auth variant. |
 | `APIKey` | `api_key` | `*APIKeyAuth` | yes | APIKey selects the named-header (or named-query) API-key variant. |
@@ -246,7 +233,8 @@ BasicAuth sends "Authorization: Basic <base64(username:password)>".
 
 _Defined in `schema/schema.go`._
 
-APIKeyAuth sends the key in a named header (or query param when InQuery is true).
+APIKeyAuth sends the key in a named header (or query parameter when
+InQuery is true).
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
@@ -288,50 +276,37 @@ ClientCredentialsGrant is the OAuth2 client_credentials flow.
 | `TokenURL` | `token_url` | `Value` | no | TokenURL is the OAuth2 token endpoint. |
 | `ClientID` | `client_id` | `Value` | no | ClientID identifies the client to the authorization server. |
 | `ClientSecret` | `client_secret` | `Value` | no | ClientSecret authenticates the client to the authorization server. |
-| `Scopes` | `scopes` | `[]string` | yes | Scopes is the optional space-separated OAuth2 scope list sent in the token request (RFC 6749 §3.3). |
+| `Scopes` | `scopes` | `[]string` | yes | Scopes is the optional space-separated OAuth2 scope list (RFC 6749 §3.3). |
 | `Audience` | `audience` | `string` | yes | Audience is the optional RFC 8693 audience claim sent in the token request. |
-| `Cache` | `cache` | `*TokenCache` | yes | Cache describes how the fetched token is cached across iterations. |
+| `Cache` | `cache` | `*Cache` | yes | Cache, when set, writes the captured access token into a cache.<name> slot. |
 
 ## `PasswordGrant`
 
 _Defined in `schema/schema.go`._
 
 PasswordGrant is the OAuth2 password grant (RFC 6749 §4.3): exchange a
-username/password pair for a short-lived access token. The token is
-cached the same way as client_credentials.
+username/password pair for a short-lived access token.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `TokenURL` | `token_url` | `Value` | no | TokenURL is the OAuth2 token endpoint. |
 | `Username` | `username` | `Value` | no | Username is the resource-owner user name. |
 | `Password` | `password` | `Value` | no | Password is the resource-owner password. |
-| `ClientID` | `client_id` | `*Value` | yes | ClientID is optional because some servers authenticate the client via Basic auth on the token endpoint and do not require a form-encoded client_id alongside the user credentials. |
+| `ClientID` | `client_id` | `*Value` | yes | ClientID is optional because some servers authenticate the client via Basic auth on the token endpoint. |
 | `Scopes` | `scopes` | `[]string` | yes | Scopes is the optional space-separated OAuth2 scope list. |
-| `Cache` | `cache` | `*TokenCache` | yes | Cache describes how the fetched token is cached across iterations. |
-
-## `TokenCache`
-
-_Defined in `schema/schema.go`._
-
-TokenCache describes how the fetched OAuth2 token is cached across iterations.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `StoreIn` | `store_in` | `string` | no | StoreIn names the state key the cached token lives in (auto-registered as a runtime string field; not declared in state.fields). |
-| `ExpiryField` | `expiry_field` | `Path` | no | ExpiryField is a namespace-rooted Path locating the response field that carries the token's lifetime. Must be rooted at response.body.<path> (the token endpoint's own response) or steps.<id>.body.<path> (a labelled prior step). |
-| `ExpiryBuffer` | `expiry_buffer` | `string` | no | ExpiryBuffer is a Go-style duration; the runtime refreshes the cached token once the remaining lifetime drops below this buffer. |
+| `Cache` | `cache` | `*Cache` | yes | Cache, when set, writes the captured access token into a cache.<name> slot. |
 
 ## `MultiModeAuth`
 
 _Defined in `schema/schema.go`._
 
 MultiModeAuth dispatches between auth strategies at runtime based on a
-state or cursor field.
+Predicate over any namespace.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `Branches` | `branches` | `[]AuthBranch` | no | Branches is the ordered list of (when, auth) arms. The first arm whose predicate is true wins. |
-| `Default` | `default` | `AuthDefault` | no | Default is the fallback used when no branch matches. |
+| `Default` | `default` | `Auth` | no | Default is the bare Auth value applied when no branch matches. |
 
 ## `AuthBranch`
 
@@ -344,15 +319,20 @@ AuthBranch is one arm of a multi_mode auth dispatch.
 | `When` | `when` | `Predicate` | no | When is the predicate that selects this branch. |
 | `Auth` | `auth` | `Auth` | no | Auth is the variant applied while the predicate is true. |
 
-## `AuthDefault`
+## `Cache`
 
 _Defined in `schema/schema.go`._
 
-AuthDefault wraps the fallback Auth for a multi_mode dispatch.
+Cache is the unified cache block shared by OAuth2 grants
+(auth.oauth2.<grant>.cache) and step-level caches (requests[].cache). The
+captured value lives in cache.<name>; the slot is process memory only and
+is never persisted.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `Auth` | `auth` | `Auth` | no | Auth is the variant applied when no branch matches. |
+| `To` | `to` | `Path` | no | To is the cache.<name> destination slot. Reads use {ref: cache.<name>}. |
+| `ExpiresAt` | `expires_at` | `Value` | no | ExpiresAt is the Value resolving to a time.Time. Accepts a {ref: ..., default: ...} fallback for APIs that return no explicit expiry. |
+| `Buffer` | `buffer` | `string` | no | Buffer is a Go-style duration. Re-fetch when the remaining lifetime falls below this. |
 
 ## `Request`
 
@@ -362,50 +342,34 @@ Request describes a single HTTP request in the chain.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `ID` | `id` | `string` | yes | ID is the optional step label. When set it joins the steps.<id>.body.<path> and steps.<id>.header.<name> namespaces and can be named as an async_job role step. |
-| `Method` | `method` | `string` | no | Method is the HTTP verb (GET/POST/PUT/PATCH/DELETE/HEAD). |
-| `Path` | `path` | `*Value` | yes | Path is the request path; combined with defaults.base_url. Mutually exclusive with URL. |
-| `URL` | `url` | `*Value` | yes | URL is the absolute request URL. Mutually exclusive with Path. |
+| `ID` | `id` | `string` | yes | ID is the optional step label. Required for steps.<id>.body.<path> references and for fan_out. |
+| `Method` | `method` | `string` | no | Method is the HTTP verb (GET, POST, ...). |
+| `URL` | `url` | `Value` | no | URL is the absolute request URL Value. |
 | `Query` | `query` | `map[string]Value` | yes | Query is the URL query map; each value resolves to a string. |
 | `Headers` | `headers` | `map[string]Value` | yes | Headers is the wire header map; each value resolves to a string. |
 | `Body` | `body` | `*Body` | yes | Body is the request body. Discriminated-union (json/form/raw). |
 | `Extract` | `extract` | `[]ExtractVar` | yes | Extract pulls named values out of the response body or headers. |
-| `FanOut` | `fan_out` | `*FanOut` | yes | FanOut lifts the step into a per-item iteration over a list Value. |
+| `FanOut` | `fan_out` | `*FanOut` | yes | FanOut lifts the step into a per-item iteration over a list Value. Mutually exclusive with Cache. |
 | `ExpectStatus` | `expect_status` | `[]int` | yes | ExpectStatus is the set of status codes the runner treats as successful. Defaults to {200} when empty. |
-| `If` | `if` | `*Predicate` | yes | If is a predicate that gates execution of the step. |
+| `If` | `if` | `*Predicate` | yes | If is the predicate that gates execution of the step. |
+| `TerminateWhen` | `terminate_when` | `*Predicate` | yes | TerminateWhen is the request-level loop primitive: while the predicate is false, the same request is re-fired; when true the runner advances to the next request. |
 | `OnStatus` | `on_status` | `map[int]string` | yes | OnStatus maps a specific HTTP status code to a per-step dispatcher verb (skip / fail / empty_events / invalidate_cache). |
-| `ProducesEvents` | `produces_events` | `bool` | yes | ProducesEvents marks the step whose decoded body the response block (decode + events_at + placeholder_event) applies to. At most one request in a chain may set this to true; when no request sets it explicitly, the last request is the implicit producer. |
-| `Cache` | `cache` | `*RequestCache` | yes | Cache wraps a non-OAuth2 token-style step (custom JSON logins, session-cookie refreshes, etc.) in a per-step expiry cache. |
-
-## `RequestCache`
-
-_Defined in `schema/schema.go`._
-
-RequestCache is the generic step-level cache for non-OAuth2 token endpoints
-(custom JSON logins, session-cookie refreshes, etc.). It mirrors the
-contract of auth.oauth2.<grant>.cache: a successful response is captured
-into a runtime-mutable state slot and re-used until expiry_field minus
-expiry_buffer has passed.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `StoreIn` | `store_in` | `string` | no | StoreIn names the state slot (auto-registered as a runtime string field). Authors must NOT also declare this under state.fields. |
-| `ExpiryField` | `expiry_field` | `Path` | no | ExpiryField is a namespace-rooted Path locating the response field that carries the value's lifetime (a Go duration string when ExpiryFormat is "duration", a numeric Unix-second timestamp when "unix_seconds", etc.). Must be rooted at response.body.<path> (the cached step's own response) or steps.<id>.body.<path> (a labelled prior step). |
-| `ExpiryBuffer` | `expiry_buffer` | `string` | no | ExpiryBuffer is a Go-style duration; the runtime re-runs the step once the remaining lifetime drops below this buffer. |
-| `ExpiryFormat` | `expiry_format` | `string` | yes | ExpiryFormat is one of the format verbs; defaults to "duration". |
+| `ProducesEvents` | `produces_events` | `bool` | yes | ProducesEvents marks this step as the events producer. At most one in the chain; defaults to the last request. |
+| `Cache` | `cache` | `*Cache` | yes | Cache wraps the step in a generic step-level expiry cache. Mutually exclusive with FanOut. |
 
 ## `ExtractVar`
 
 _Defined in `schema/schema.go`._
 
-ExtractVar names a value to pull from a response.
+ExtractVar names a value to pull from a response into the state or
+extract namespace.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `Name` | `name` | `string` | no | Name is the destination key in the extract / cursor namespace. |
-| `From` | `from` | `Path` | no | From is the namespace-rooted Path locating the value to capture. Accepted roots: - response.body.<path> the active step's response body - response.header.<name> the active step's response headers - steps.<id>.body.<path> a labelled prior step's response body - steps.<id>.header.<name> a labelled prior step's response headers The runtime dispatches body-walk vs header-lookup based on the matched root rather than a side-channel discriminator. |
-| `Coerce` | `coerce` | `string` | yes | Coerce, when set, applies a format verb (rfc3339, unix_seconds, ...) to the extracted value before storing it. |
-| `Target` | `target` | `string` | yes | Target controls which namespace the extracted value lands in: "extract" (default) → extract.<name>, visible to subsequent steps in the same iteration and lost between iterations; "cursor" → cursor.<name>, auto-registers a cursor field that persists across iterations (use for multi-field cursors: worklists, freeze flags, rolling-max timestamps). |
+| `To` | `to` | `Path` | no | To is the destination slot: either state.<name> (persistent — must be declared under state:) or extract.<name> (per-iteration, no declaration needed). The namespace prefix decides persistence. |
+| `From` | `from` | `Path` | no | From is the namespace-rooted Path locating the value to capture. One of response.body.<path>, response.header.<name>, steps.<id>.body.<path>, steps.<id>.header.<name>. |
+| `Coerce` | `coerce` | `string` | yes | Coerce, when set, applies a format verb to the extracted value before storing it. |
+| `Regex` | `regex` | `string` | yes | Regex is an optional regular expression applied to the resolved string before writing. |
 
 ## `FanOut`
 
@@ -415,287 +379,141 @@ FanOut lifts a step into a per-item iteration over a list.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `Over` | `over` | `Value` | no | Over resolves to the list to iterate; must be a list-shaped Value at evaluation time. |
-| `As` | `as` | `string` | no | As is the per-item binding name introduced into the scope for the duration of the iteration. |
+| `Over` | `over` | `Value` | no | Over resolves to the list to iterate; must be list-shaped at evaluation time. |
+| `As` | `as` | `string` | no | As is the author-chosen per-item binding name; refs inside the step use {ref: <as>.<path>}. |
 | `Merge` | `merge` | `string` | yes | Merge controls how the per-iteration outputs combine: "flatten" (default) or "wrap". |
 
 ## `Body`
 
 _Defined in `schema/schema.go`._
 
-Body is the discriminated-union request body. Exactly one variant key must
-be present.
+Body is the discriminated-union request body. Exactly one variant key
+must be present.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `JSON` | `json` | `map[string]Value` | yes | JSON selects the application/json variant; values resolve and marshal as a JSON object. |
+| `JSON` | `json` | `map[string]Value` | yes | JSON selects the application/json variant. |
 | `Form` | `form` | `map[string]Value` | yes | Form selects the application/x-www-form-urlencoded variant. |
-| `Raw` | `raw` | `*Value` | yes | Raw selects the literal-body variant; the resolved string is sent as the request body. |
+| `Raw` | `raw` | `*Value` | yes | Raw selects the literal-body variant. |
 
 ## `Response`
 
 _Defined in `schema/schema.go`._
 
-Response describes how to decode the response body and locate events.
+Response describes how to decode the producer step's body and locate the
+events list.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `Decode` | `decode` | `string` | no | Decode is the body decoder verb: "json" or "ndjson". |
-| `EventsAt` | `events_at` | `Path` | no | EventsAt is a namespace-rooted Path locating the events list, rooted at response.body.<path> (the active producer step) or steps.<id>.body.<path> (a labelled prior step). The zero Path (empty / unset) means "body root": the entire decoded body IS the events list, with no nesting to traverse. |
-| `PlaceholderEvent` | `placeholder_event` | `*Value` | yes | PlaceholderEvent is the Value emitted in place of an empty page when the prior iteration produced zero events and pagination advanced. Optional. |
+| `EventsAt` | `events_at` | `Path` | no | EventsAt is the namespace-rooted Path locating the events list, rooted at response.body.<path> or steps.<id>.body.<path>. The zero (empty) Path means "the body root IS the events list". |
 
 ## `Pagination`
 
 _Defined in `schema/schema.go`._
 
-Pagination is the discriminated-union pagination block. Exactly one variant
-key must be present.
+Pagination is the discriminated-union pagination block. Exactly one
+variant key must be present.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `None` | `none` | `*struct{}` | yes | None disables pagination — exactly one page is fetched per drain. |
-| `CursorToken` | `cursor_token` | `*CursorTokenPagination` | yes | CursorToken advances via an opaque cursor token in the response body. |
-| `PageNumber` | `page_number` | `*PageNumberPagination` | yes | PageNumber advances by incrementing a page-number query param. |
-| `Offset` | `offset` | `*OffsetPagination` | yes | Offset advances by adding batch_size to an offset query param. |
-| `LinkHeader` | `link_header` | `*LinkHeaderPagination` | yes | LinkHeader follows RFC 5988 Link: <url>; rel="next" headers. |
-| `NextURLInBody` | `next_url_in_body` | `*NextURLInBodyPagination` | yes | NextURLInBody reads a fully-formed next-page URL from the body. |
-| `ScrollID` | `scroll_id` | `*ScrollIDPagination` | yes | ScrollID maintains a server-side scroll session. |
-| `GraphQLRelay` | `graphql_relay` | `*GraphQLRelayPagination` | yes | GraphQLRelay follows GraphQL Relay-style cursor pagination. |
+| `CursorToken` | `cursor_token` | `*CursorTokenPagination` | yes | CursorToken advances via a next-cursor token returned in the body or a header. |
+| `NextURL` | `next_url` | `*NextURLPagination` | yes | NextURL advances via a fully-formed next-page URL returned in the body or a header (e.g. Link: <url>; rel="next"). |
+| `Counter` | `counter` | `*CounterPagination` | yes | Counter advances via a client-incremented counter (page number or offset). |
+| `Custom` | `custom` | `*CustomPagination` | yes | Custom exposes the primitive form: an author-supplied list of advance writes plus an author-supplied terminate_when predicate. |
 
 ## `CursorTokenPagination`
 
 _Defined in `schema/schema.go`._
 
-CursorTokenPagination advances via an opaque cursor token in the response body.
+CursorTokenPagination advances via a next-cursor token returned by the
+server.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `TokenAt` | `token_at` | `Path` | no | TokenAt is a namespace-rooted Path locating the next-page cursor. Must be rooted at response.body.<path> (the producer step) or steps.<id>.body.<path> (a labelled prior step). |
+| `From` | `from` | `Path` | no | From is the Path to the next-cursor field, rooted at response.body.<path>, response.header.<name>, or steps.<id>.body.<path>. |
+| `To` | `to` | `Path` | no | To is the state.<name> destination (per-drain). |
+| `TerminateWhen` | `terminate_when` | `*Predicate` | yes | TerminateWhen overrides the default termination predicate ({not: {present: <from>}}). |
 
-## `PageNumberPagination`
+## `NextURLPagination`
 
 _Defined in `schema/schema.go`._
 
-PageNumberPagination advances by incrementing a page number query param.
+NextURLPagination advances via a fully-formed next-page URL.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `PageParam` | `page_param` | `string` | no | PageParam is the URL query parameter that carries the page number. |
-| `HasMoreAt` | `has_more_at` | `Path` | yes | HasMoreAt is the optional namespace-rooted Path to a boolean has-more flag, rooted at response.body.<path> or steps.<id>.body.<path>. When unset, pagination terminates when an empty page arrives. |
-| `BatchSize` | `batch_size` | `*Value` | yes | BatchSize is the optional per-page size value. |
+| `From` | `from` | `Path` | no | From is the Path to the next-URL field, rooted at response.body.<path>, response.header.<name>, or steps.<id>.body.<path>. |
+| `To` | `to` | `Path` | no | To is the state.<name> destination (per-drain, typed url). |
+| `Regex` | `regex` | `string` | yes | Regex is the optional regular expression applied to the resolved string before writing — used for parsing `Link: <url>; rel="next"` and similar. |
+| `Capture` | `capture` | `int` | yes | Capture is the optional capture-group index for Regex (1-based). |
+| `TerminateWhen` | `terminate_when` | `*Predicate` | yes | TerminateWhen overrides the default termination predicate ({not: {present: <from>}}). |
 
-## `OffsetPagination`
+## `CounterPagination`
 
 _Defined in `schema/schema.go`._
 
-OffsetPagination advances by adding batch_size to an offset query param.
+CounterPagination advances via a client-incremented counter.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `OffsetParam` | `offset_param` | `string` | no | OffsetParam is the URL query parameter that carries the offset. |
-| `BatchSize` | `batch_size` | `*Value` | yes | BatchSize is the optional batch size. Defaults to the number of events observed on the prior page when unset. |
+| `To` | `to` | `Path` | no | To is the state.<name> destination (per-drain, typed int). |
+| `Start` | `start` | `*Value` | yes | Start is the optional starting Value. Defaults to 1 (page number); use 0 for offset-style pagination. |
+| `Step` | `step` | `*Value` | yes | Step is the optional increment per accepted page. Defaults to 1. For offset-style pagination, set to {ref: state.page_size}. |
+| `TerminateWhen` | `terminate_when` | `*Predicate` | yes | TerminateWhen overrides the default termination predicate (short-page detection: events.count < step). |
 
-## `LinkHeaderPagination`
+## `CustomPagination`
 
 _Defined in `schema/schema.go`._
 
-LinkHeaderPagination follows RFC 5988 Link: <url>; rel="next" headers.
+CustomPagination is the author-controlled primitive form for APIs that
+don't fit the named variants.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `Pattern` | `pattern` | `string` | yes | Pattern is an optional URL-template filter; when set, only Link targets matching the pattern continue pagination. |
+| `Advance` | `advance` | `[]AdvanceWrite` | no | Advance is the ordered list of writes that run when TerminateWhen evaluates false. |
+| `TerminateWhen` | `terminate_when` | `Predicate` | no | TerminateWhen is required for custom pagination — it states the termination condition explicitly. |
 
-## `NextURLInBodyPagination`
+## `AdvanceWrite`
 
 _Defined in `schema/schema.go`._
 
-NextURLInBodyPagination reads a fully-formed next-page URL from the body.
+AdvanceWrite is one entry in CustomPagination.Advance — a {to, from,
+regex?, coerce?} write evaluated and applied per-page.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `NextURLAt` | `next_url_at` | `Path` | no | NextURLAt is a namespace-rooted Path to the next-page URL. Must be rooted at response.body.<path> (the producer step) or steps.<id>.body.<path> (a labelled prior step). |
+| `To` | `to` | `Path` | no | To is the state.<name> destination (per-drain). |
+| `From` | `from` | `Value` | no | From is the Value to resolve and write. |
+| `Coerce` | `coerce` | `string` | yes | Coerce, when set, applies a format verb to the resolved value before writing. |
+| `Regex` | `regex` | `string` | yes | Regex is the optional regular expression applied to the resolved string before writing. |
 
-## `ScrollIDPagination`
+## `ProgressWrite`
 
 _Defined in `schema/schema.go`._
 
-ScrollIDPagination maintains a server-side scroll session.
+ProgressWrite is one entry in Progress — a {to, from, coerce?, regex?}
+write evaluated per accepted page-response.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `ScrollIDAt` | `scroll_id_at` | `Path` | no | ScrollIDAt is a namespace-rooted Path locating the server-supplied scroll id. Must be rooted at response.body.<path> (the producer step) or steps.<id>.body.<path> (a labelled prior step). |
-| `CompleteWhen` | `complete_when` | `*Predicate` | yes | CompleteWhen is an optional predicate evaluated against the producer body that terminates the scroll early. |
-
-## `GraphQLRelayPagination`
-
-_Defined in `schema/schema.go`._
-
-GraphQLRelayPagination follows GraphQL Relay-style cursor pagination.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `HasNextPageAt` | `has_next_page_at` | `Path` | no | HasNextPageAt is a namespace-rooted Path to the boolean has-next-page flag, rooted at response.body.<path> or steps.<id>.body.<path>. |
-| `EndCursorAt` | `end_cursor_at` | `Path` | no | EndCursorAt is a namespace-rooted Path to the endCursor string, rooted at response.body.<path> or steps.<id>.body.<path>. |
-| `CursorVar` | `cursor_var` | `string` | no | CursorVar is the author-chosen GraphQL variable name that carries endCursor on the next request (typically "after"). |
-
-## `Progress`
-
-_Defined in `schema/schema.go`._
-
-Progress is the discriminated-union cursor-advancement block. Exactly one
-variant key must be present.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `Stateless` | `stateless` | `*struct{}` | yes | Stateless does not advance the cursor — every drain pulls the full page set. |
-| `LatestEventTimestamp` | `latest_event_timestamp` | `*TimestampProgress` | yes | LatestEventTimestamp advances cursor.last_timestamp to the max of the per-event timestamps in the current drain. |
-| `MaxEventField` | `max_event_field` | `*TimestampProgress` | yes | MaxEventField advances cursor.last_timestamp via the same max walk as LatestEventTimestamp; spelled differently for templates that already use "max event field" wording. |
-| `UseNow` | `use_now` | `*UseNowProgress` | yes | UseNow advances cursor.last_timestamp to now() on every drain. |
-| `TimeWindow` | `time_window` | `*TimeWindowProgress` | yes | TimeWindow slides a start/end window after each drain. |
-| `AsyncJob` | `async_job` | `*AsyncJobProgress` | yes | AsyncJob models a three-phase async job loop (submit → poll → fetch). |
-
-## `TimestampProgress`
-
-_Defined in `schema/schema.go`._
-
-TimestampProgress is the shared config for latest_event_timestamp and max_event_field.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `EventTime` | `event_time` | `EventTime` | no | EventTime holds the body path to the per-event timestamp field. |
-| `Initial` | `initial` | `*Initial` | yes | Initial holds the lookback duration applied on the first drain (when no prior cursor.last_timestamp exists). |
-| `Lookback` | `lookback` | `*Value` | yes | Lookback is a duration Value subtracted from the chosen reference on EVERY iteration (not just the first run). Pairs with Initial.Lookback for time cursors that need both a first-run lookback and an every-iteration lag. |
-
-## `UseNowProgress`
-
-_Defined in `schema/schema.go`._
-
-UseNowProgress advances cursor.last_timestamp to now() on every iteration.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `Lookback` | `lookback` | `*Value` | yes | Lookback is a duration Value subtracted from now() on every advance — the common "advance cursor to now() - lag so late events still land on the next iteration" pattern. |
-
-## `EventTime`
-
-_Defined in `schema/schema.go`._
-
-EventTime holds the body path to the per-event timestamp field.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `Path` | `path` | `Path` | no | Path is the body-relative locator inside the per-event object. |
-
-## `Initial`
-
-_Defined in `schema/schema.go`._
-
-Initial holds the lookback duration for the first run.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `Lookback` | `lookback` | `Value` | no | Lookback is the duration Value subtracted from now() on the first drain when cursor.last_timestamp is unset. |
-
-## `TimeWindowProgress`
-
-_Defined in `schema/schema.go`._
-
-TimeWindowProgress advances a start/end time window after each drain.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `InitialOffset` | `initial_offset` | `Value` | no | InitialOffset is the duration Value subtracted from now() to seed window_start on the first drain. |
-| `Format` | `format` | `string` | yes | Format is the format verb applied to window_start / window_end when serialised into requests. Defaults to "rfc3339" when empty. |
-
-## `AsyncJobProgress`
-
-_Defined in `schema/schema.go`._
-
-AsyncJobProgress models a three-phase async job loop (submit → poll → fetch).
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `Submit` | `submit` | `*AsyncSubmitStep` | yes | Submit names the submit step and its post-submit cursor extractions. |
-| `Poll` | `poll` | `*AsyncPollStep` | yes | Poll names the poll step, its completion predicate, and post-poll cursor extractions. |
-| `Fetch` | `fetch` | `*AsyncFetchStep` | yes | Fetch names the fetch step (the one that emits events). |
-| `OnComplete` | `on_complete` | `*AsyncOnComplete` | yes | OnComplete describes how the cursor advances after a completed async fetch. |
-
-## `AsyncSubmitStep`
-
-_Defined in `schema/schema.go`._
-
-AsyncSubmitStep names the submit step and its extractions.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `Step` | `step` | `string` | no | Step is the request id of the submit phase. |
-| `Extract` | `extract` | `map[string]AsyncExtract` | yes | Extract pulls fields out of the submit response into the cursor. |
-
-## `AsyncPollStep`
-
-_Defined in `schema/schema.go`._
-
-AsyncPollStep names the poll step, its completion predicate, and extractions.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `Step` | `step` | `string` | no | Step is the request id of the poll phase. |
-| `CompleteWhen` | `complete_when` | `*Predicate` | yes | CompleteWhen is the predicate (evaluated against the poll body) that terminates the poll loop. |
-| `Extract` | `extract` | `map[string]AsyncExtract` | yes | Extract pulls fields out of the poll response into the cursor. |
-
-## `AsyncFetchStep`
-
-_Defined in `schema/schema.go`._
-
-AsyncFetchStep names the fetch step.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `Step` | `step` | `string` | no | Step is the request id of the fetch phase. |
-
-## `AsyncExtract`
-
-_Defined in `schema/schema.go`._
-
-AsyncExtract extracts a single field from a step's decoded body into the cursor.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `From` | `from` | `Path` | no | From is the namespace-rooted Path locating the value to capture. Accepted roots: response.body.<path> (the named role step's response) and steps.<id>.body.<path> (a labelled prior step's response). The runner walks the named body at the trailing path segments and writes the result to cursor.<name>. |
-
-## `AsyncOnComplete`
-
-_Defined in `schema/schema.go`._
-
-AsyncOnComplete describes cursor advancement after a completed async fetch.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `CursorUpdate` | `cursor_update` | `*CursorUpdateDirective` | yes | CursorUpdate is the structured cursor-advance directive {kind, lookback?, event_time?}. The codec rejects the scalar shorthand (cursor_update: use_now); authors must use the map form (cursor_update: {kind: use_now}). |
-
-## `CursorUpdateDirective`
-
-_Defined in `schema/schema.go`._
-
-CursorUpdateDirective is the structured cursor-advance directive on
-async_job.on_complete.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `Kind` | `kind` | `string` | no | Kind selects the reference time the cursor advances to. One of: use_now \| latest_event_timestamp \| stateless. |
-| `Lookback` | `lookback` | `*Value` | yes | Lookback, when set, is a duration Value subtracted from the chosen reference (e.g. "advance cursor to now() − 5m so late events still land"). |
-| `EventTime` | `event_time` | `*EventTime` | yes | EventTime is required when Kind is latest_event_timestamp: it names the body path to the per-event timestamp field inside the events list located by response.events_at. The validator rejects EventTime for the other kinds (use_now / stateless) — it has no meaning there. |
+| `To` | `to` | `Path` | no | To is the state.<name> destination (persistent — must be declared under state:). |
+| `From` | `from` | `Value` | no | From is the Value to resolve and write. Has access to every namespace the request scope has (state, cache, events, response.body/header, steps.<id>.body/header). |
+| `Coerce` | `coerce` | `string` | yes | Coerce, when set, applies a format verb to the resolved value before writing. |
+| `Regex` | `regex` | `string` | yes | Regex is the optional regular expression applied to the resolved string before writing. |
 
 ## `ErrorBlock`
 
 _Defined in `schema/schema.go`._
 
-ErrorBlock configures how HTTP errors are surfaced.
+ErrorBlock configures how non-success HTTP responses (and network /
+decode failures) are surfaced.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `Mode` | `mode` | `string` | no | Mode is the document-level dispatcher: "standard" (default), "warn", or "fail". See the client.Runner package docs for the precise dispatch order. |
-| `IncludeBody` | `include_body` | `bool` | yes | IncludeBody, when true, includes the failing response body in the surfaced error/log line. Off by default to avoid leaking secrets from token-exchange responses. |
+| `Mode` | `mode` | `string` | no | Mode is the document-level dispatcher: "standard" (default), "warn", or "fail". |
+| `IncludeBody` | `include_body` | `bool` | yes | IncludeBody, when true, includes the response body in the surfaced error message. Off by default. |
 
 ## `Diagnostic`
 
@@ -705,11 +523,11 @@ Diagnostic is a single structural-validation finding.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `Path` | `path` | `string` | no | Path is a dotted IR path with array indices, e.g. "requests[0].extract[1].path". Empty for document-wide findings. |
+| `Path` | `path` | `string` | no | Path is a dotted IR path with array indices, e.g. "requests[0].extract[1].from". Empty for document-wide findings. |
 | `Message` | `message` | `string` | no | Message is the human-readable error or warning text. |
 | `Hint` | `hint` | `string` | yes | Hint is an optional follow-up sentence pointing at the fix. |
 | `Severity` | `severity` | `string` | no | Severity is "error" or "warning". |
-| `Line` | `line` | `int` | yes | Line is an optional source-location annotation. schema.Validate never sets it; callers that wrap Validate around raw YAML/JSON bytes (the CLI, the HTTP API) may set it from YAML parser error messages for richer output. |
+| `Line` | `line` | `int` | yes | Line is an optional source-location annotation. Validate never sets it; callers that wrap Validate around raw YAML/JSON bytes (the CLI, the HTTP API) may set it from YAML parser error messages for richer output. |
 | `Column` | `column` | `int` | yes | Column is the source-column counterpart to Line, with the same "set by callers, not Validate" contract. |
 
 ## `Value`
@@ -722,41 +540,62 @@ discriminated union — exactly one form is active after unmarshalling.
 YAML authoring rules:
 
 	/api/v1/events        → LiteralString ("/api/v1/events")
+	${state.url}/path     → desugared to Concat with interleaved Refs
 	100                   → LiteralInt(100)
 	true                  → LiteralBool(true)
 	null                  → IsZero
-	{literal_string: "x"} → LiteralString("x")  (explicit form)
-	{ref: cursor.last_timestamp}         → Ref
+	{literal_string: "x"} → LiteralString("x")  (no interpolation scan)
+	{ref: state.url}                     → Ref
 	{ref: state.url, default: "http://…"} → Ref with Default
-	{now: true, offset: "-1h", format: rfc3339} → Now
+	{now: true}                          → Now (current moment)
 	{concat: [<Value>, ...]}             → Concat
 	{select: {branches: [...], default: <Value>}} → Select
-	{format: string, value: {ref: state.page_size}} → Format
-	{base64: {concat: [...]}}            → Base64
+	{format: <verb-or-layout>, value: <Value>}    → Format
+	{base64: <Value>}                    → Base64
 	{list: [<Value>, ...]}               → List
 	{object: {<key>: <Value>, ...}}      → Object (explicit; required for any
 	                                       map-shaped Value)
+	{add: [<Value>, <Value>]}            → Add (positional 2-operand)
+	{subtract: [<Value>, <Value>]}       → Subtract (positional 2-operand)
+	{max: <list-or-projection>}          → Max (reducer)
+	{min: <list-or-projection>}          → Min (reducer)
+	{first: <list-or-projection>}        → First (reducer)
+	{last: <list-or-projection>}         → Last (reducer)
+	{count: <list-or-projection>}        → Count (reducer)
+	{regex: {pattern, from, capture?, default?}} → Regex
 
 A map-shaped Value MUST carry exactly one discriminator key. There is no
-silent fallback for an arbitrary mapping; authors who want a literal map
+silent fallback for arbitrary mappings; authors who want a literal map
 must wrap it in {object: {...}}. This isolates Object as the only form whose
 inner keys are NOT re-interpreted as discriminators (inner keys are literal
 strings; inner values still recurse as Values).
 
+Any YAML/JSON string scalar in a Value position is scanned for ${<path>}
+interpolation segments and desugared into a Concat. A scalar with no '$'
+is preserved as a plain LiteralString on the fast path.
+
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `LiteralString` | _(custom codec)_ | `*string` | yes | LiteralString is the scalar string form, set when the YAML/JSON node is a quoted or untagged scalar. |
+| `LiteralString` | _(custom codec)_ | `*string` | yes | LiteralString is the scalar string form, set when the YAML/JSON node is a quoted or untagged scalar with no interpolation segments. |
 | `LiteralInt` | _(custom codec)_ | `*int64` | yes | LiteralInt is the scalar integer form, set when the YAML/JSON node is an integer literal. |
 | `LiteralBool` | _(custom codec)_ | `*bool` | yes | LiteralBool is the scalar boolean form, set when the YAML/JSON node is a boolean literal. |
 | `IsZero` | _(custom codec)_ | `bool` | no | IsZero is true when the node was explicitly null / absent. |
 | `Ref` | _(custom codec)_ | `*RefValue` | yes | Ref is the {ref: <path>, default?: <Value>} form. |
-| `Now` | _(custom codec)_ | `*NowValue` | yes | Now is the {now: true, offset?: <Value>} form. |
-| `Concat` | _(custom codec)_ | `[]Value` | no | Concat is the {concat: [<Value>, ...]} form: concatenate the resolved string representation of each element. |
+| `Now` | _(custom codec)_ | `*NowValue` | yes | Now is the {now: true} form. |
+| `Concat` | _(custom codec)_ | `[]Value` | no | Concat is the {concat: [<Value>, ...]} form: concatenate the resolved string representation of each element. Also produced by the string-interpolation desugaring of any scalar containing ${...} segments. |
 | `Select` | _(custom codec)_ | `*SelectValue` | yes | Select is the {select: {branches: [...], default: <Value>}} form. |
-| `Format` | _(custom codec)_ | `*FormatValue` | yes | Format is the {format: <verb>, value: <Value>} form: apply a format verb (rfc3339, unix_seconds, ...) to the inner value. |
+| `Format` | _(custom codec)_ | `*FormatValue` | yes | Format is the {format: <verb-or-layout>, value: <Value>} form: apply a format verb to the inner value. The verb set is closed (string, int, bool, rfc3339, rfc3339nano, unix_seconds, unix_millis, duration, url_encode, parse_duration); any other verb-position string is treated as a Go date layout by downstream consumers. |
 | `Base64` | _(custom codec)_ | `*Value` | yes | Base64 is the {base64: <Value>} form: base64-encode the resolved inner value. |
 | `List` | _(custom codec)_ | `[]Value` | no | List is the {list: [<Value>, ...]} form. |
 | `Object` | _(custom codec)_ | `map[string]Value` | no | Object is the explicit map-literal form. Inner keys are literal strings (not re-interpreted as discriminators); inner values recurse as Values. Encoded as {object: {<key>: <Value>, ...}}. |
+| `Add` | _(custom codec)_ | `*ArithExpr` | yes | Add is the {add: [<Value>, <Value>]} form: positional 2-operand arithmetic. Type pairs: time + duration → time; duration + duration → duration; int + int → int. |
+| `Subtract` | _(custom codec)_ | `*ArithExpr` | yes | Subtract is the {subtract: [<Value>, <Value>]} form: positional 2-operand arithmetic. Type pairs: time - duration → time; time - time → duration; duration - duration → duration; int - int → int. |
+| `Max` | _(custom codec)_ | `*Value` | yes | Max is the {max: <list-or-projection>} reducer: largest element. The operand resolves to a list (either a literal {list: [...]} or a list-shaped projection such as {ref: events.*.timestamp}). |
+| `Min` | _(custom codec)_ | `*Value` | yes | Min is the {min: <list-or-projection>} reducer: smallest element. |
+| `First` | _(custom codec)_ | `*Value` | yes | First is the {first: <list-or-projection>} reducer: first element in declared order. |
+| `Last` | _(custom codec)_ | `*Value` | yes | Last is the {last: <list-or-projection>} reducer: last element in declared order. |
+| `Count` | _(custom codec)_ | `*Value` | yes | Count is the {count: <list-or-projection>} reducer: cardinality. |
+| `Regex` | _(custom codec)_ | `*RegexExpr` | yes | Regex is the {regex: {pattern, from, capture?, default?}} form: apply a Go regular expression to the resolved string of From, returning the matched substring (or the chosen capture group when Capture is set). |
 
 ## `RefValue`
 
@@ -770,21 +609,20 @@ the new field still propagates the secret marker.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `Path` | `ref` | `Path` | no | Path is the namespace-rooted locator. Legal roots: state.<name>, cursor.<name>, extract.<name>, steps.<id>.body.<path>, steps.<id>.header.<name>, response.body.<path>, response.header.<name>, item.<path>. The response.<...> roots are contextual: valid only at the call sites listed in docs/schema.md ("response.* call-site table") — most commonly inside complete_when predicates. |
+| `Path` | `ref` | `Path` | no | Path is the namespace-rooted locator. |
 | `Default` | `default` | `*Value` | yes | Default, when set, is the fallback Value used when the reference resolves to nil at evaluation time. |
 
 ## `NowValue`
 
 _Defined in `schema/value.go`._
 
-NowValue is the {now: true, offset?: <Value>} form. To coerce a Now value to
-a specific representation, wrap it with a Format Value:
-{format: rfc3339, value: {now: true}}. This keeps Now and Format orthogonal
-and avoids a discriminator-key clash between Now and the Format Value form.
+NowValue is the {now: true} form. To coerce a Now value to a specific
+representation, wrap it with a Format Value:
+{format: rfc3339, value: {now: true}}. To shift the moment by a duration,
+use Arithmetic: {add: [{now: true}, "1h"]} or
+{subtract: [{now: true}, "30m"]}.
 
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `Offset` | `offset` | `*Value` | yes | Offset, when set, is a duration Value added to (or subtracted from) now() before returning. Use a negative duration to look backwards (e.g. {offset: "-5m"}). |
+_No exported fields._
 
 ## `SelectBranch`
 
@@ -812,10 +650,34 @@ SelectValue is the {select: {branches: [...], default: <Value>}} form.
 
 _Defined in `schema/value.go`._
 
-FormatValue is the {format: <verb>, value: <Value>} form.
+FormatValue is the {format: <verb-or-layout>, value: <Value>} form.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `Verb` | `format` | `string` | no | Verb is the format-verb name: string, int, bool, rfc3339, rfc3339nano, unix_seconds, unix_millis, duration, url_encode, parse_duration. |
+| `Verb` | `format` | `string` | no | Verb is the format-verb name or a Go date layout string. |
 | `Value` | `value` | `Value` | no | Value is the inner Value the verb is applied to. |
+
+## `ArithExpr`
+
+_Defined in `schema/value.go`._
+
+ArithExpr is the operand pair for {add: [...]} and {subtract: [...]}. The
+codec enforces exactly two operands; operand order is significant.
+
+| Field | YAML | Type | Optional | Description |
+| --- | --- | --- | --- | --- |
+| `Operands` | _(custom codec)_ | `[]Value` | no | Operands holds the two positional operands. |
+
+## `RegexExpr`
+
+_Defined in `schema/value.go`._
+
+RegexExpr is the {regex: {pattern, from, capture?, default?}} form.
+
+| Field | YAML | Type | Optional | Description |
+| --- | --- | --- | --- | --- |
+| `Pattern` | `pattern` | `string` | no | Pattern is the Go regular expression source. |
+| `From` | `from` | `Value` | no | From is the Value whose resolved string the pattern matches. |
+| `Capture` | `capture` | `int` | yes | Capture, when non-zero, selects the 1-based capture group to return. Zero (or omitted) returns the full match. |
+| `Default` | `default` | `*Value` | yes | Default, when set, is the Value returned when the pattern does not match. Absent both match and default, the result is a zero Value. |
 

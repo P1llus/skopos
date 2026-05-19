@@ -11,9 +11,9 @@ cmp trace.jsonl want_trace.jsonl
 cmp events.jsonl want_events.jsonl
 
 -- want_trace.jsonl --
-{"elapsed":"<scrubbed>","iteration":1,"method":"POST","phase":"submit","request_body":"body 12 bytes, object-like","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>","Content-Type":"application/json"},"response_body":"body 27 bytes, object-like","started_at":"<scrubbed>","status":202,"step_id":"submit","url":"$URL_HOST/async_poll/exports"}
-{"elapsed":"<scrubbed>","iteration":2,"method":"GET","phase":"poll","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 90 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"poll","url":"$URL_HOST/async_poll/exports/exp-000001/status"}
-{"elapsed":"<scrubbed>","iteration":3,"method":"GET","phase":"fetch","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 347 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"fetch","url":"$URL_HOST/async_poll/results/exp-000001"}
+{"elapsed":"<scrubbed>","iteration":1,"method":"POST","request_body":"body 42 bytes, object-like","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>","Content-Type":"application/json"},"response_body":"body 27 bytes, object-like","started_at":"<scrubbed>","status":202,"step_id":"submit","url":"$URL_HOST/async_poll/exports"}
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 90 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"poll","url":"$URL_HOST/async_poll/exports/exp-000001/status"}
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 347 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"fetch","url":"$URL_HOST/async_poll/results/exp-000001"}
 -- want_events.jsonl --
 {"id":"evt-000001","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
 {"id":"evt-000002","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}
