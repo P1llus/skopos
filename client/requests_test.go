@@ -26,7 +26,7 @@ func TestRequest_QueryParams(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["since"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("2026-01-01"))}
+	doc.State["since"] = schema.FieldDecl{Type: "string", Default: new(vStr("2026-01-01"))}
 	doc.Requests[0].Query = map[string]schema.Value{
 		"since":  vRef("state.since"),
 		"limit":  vInt(50),
@@ -62,7 +62,7 @@ func TestRequest_BodyJSON(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["since"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("2026-01-01"))}
+	doc.State["since"] = schema.FieldDecl{Type: "string", Default: new(vStr("2026-01-01"))}
 	doc.Requests[0].Method = "POST"
 	doc.Requests[0].Body = &schema.Body{JSON: map[string]schema.Value{
 		"since":  vRef("state.since"),
@@ -159,7 +159,7 @@ func TestRequest_BodyRawInterpolation(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["tenant"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("acme"))}
+	doc.State["tenant"] = schema.FieldDecl{Type: "string", Default: new(vStr("acme"))}
 	doc.Requests[0].Method = "POST"
 	raw := mustInterp(`'{"tenant":"${state.tenant}","event":"hello"}'`)
 	doc.Requests[0].Body = &schema.Body{Raw: &raw}
@@ -183,10 +183,10 @@ func TestRequest_Headers(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["etag"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr(`"v42"`))}
+	doc.State["etag"] = schema.FieldDecl{Type: "string", Default: new(vStr(`"v42"`))}
 	doc.Requests[0].Headers = map[string]schema.Value{
-		"X-Custom":       vStr("hi"),
-		"If-None-Match":  vRef("state.etag"),
+		"X-Custom":      vStr("hi"),
+		"If-None-Match": vRef("state.etag"),
 	}
 
 	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
@@ -218,7 +218,7 @@ func TestRequest_IfPredicateGates(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["mode"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("b"))}
+	doc.State["mode"] = schema.FieldDecl{Type: "string", Default: new(vStr("b"))}
 	doc.Requests = []schema.Request{
 		{
 			ID:     "a",
@@ -290,7 +290,7 @@ func TestRequest_ExtractToExtractNamespace(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{

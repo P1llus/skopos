@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -360,9 +361,9 @@ func firstNonNil(list []any) any {
 // lastNonNil returns the last non-nil element of list, or nil when every
 // entry is nil / the list is empty.
 func lastNonNil(list []any) any {
-	for i := len(list) - 1; i >= 0; i-- {
-		if list[i] != nil {
-			return list[i]
+	for _, l := range slices.Backward(list) {
+		if l != nil {
+			return l
 		}
 	}
 	return nil

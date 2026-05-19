@@ -700,9 +700,9 @@ func parseInterpSegment(body string) (Value, error) {
 	pathStr := body
 	var defaultStr string
 	hasDefault := false
-	if idx := strings.IndexByte(body, '|'); idx >= 0 {
-		pathStr = body[:idx]
-		defaultStr = body[idx+1:]
+	if before, after, ok := strings.Cut(body, "|"); ok {
+		pathStr = before
+		defaultStr = after
 		hasDefault = true
 	}
 	pathStr = strings.TrimSpace(pathStr)
@@ -754,7 +754,7 @@ func parseInterpDefault(text string) (Value, error) {
 
 // MarshalYAML emits the canonical YAML representation.
 // Receiver is by value so map elements dispatch through this method.
-func (v Value) MarshalYAML() (interface{}, error) {
+func (v Value) MarshalYAML() (any, error) {
 	if v.IsZero {
 		return nil, nil
 	}
@@ -771,54 +771,54 @@ func (v Value) MarshalYAML() (interface{}, error) {
 	switch {
 	case v.Ref != nil:
 		if v.Ref.Default != nil {
-			return map[string]interface{}{"ref": v.Ref.Path, "default": v.Ref.Default}, nil
+			return map[string]any{"ref": v.Ref.Path, "default": v.Ref.Default}, nil
 		}
-		return map[string]interface{}{"ref": v.Ref.Path}, nil
+		return map[string]any{"ref": v.Ref.Path}, nil
 
 	case v.Now != nil:
-		return map[string]interface{}{"now": true}, nil
+		return map[string]any{"now": true}, nil
 
 	case len(v.Concat) > 0:
-		return map[string]interface{}{"concat": v.Concat}, nil
+		return map[string]any{"concat": v.Concat}, nil
 
 	case v.Select != nil:
-		return map[string]interface{}{"select": v.Select}, nil
+		return map[string]any{"select": v.Select}, nil
 
 	case v.Format != nil:
-		return map[string]interface{}{"format": v.Format.Verb, "value": v.Format.Value}, nil
+		return map[string]any{"format": v.Format.Verb, "value": v.Format.Value}, nil
 
 	case v.Base64 != nil:
-		return map[string]interface{}{"base64": v.Base64}, nil
+		return map[string]any{"base64": v.Base64}, nil
 
 	case v.List != nil:
-		return map[string]interface{}{"list": v.List}, nil
+		return map[string]any{"list": v.List}, nil
 
 	case v.Object != nil:
-		return map[string]interface{}{"object": v.Object}, nil
+		return map[string]any{"object": v.Object}, nil
 
 	case v.Add != nil:
-		return map[string]interface{}{"add": v.Add.Operands}, nil
+		return map[string]any{"add": v.Add.Operands}, nil
 
 	case v.Subtract != nil:
-		return map[string]interface{}{"subtract": v.Subtract.Operands}, nil
+		return map[string]any{"subtract": v.Subtract.Operands}, nil
 
 	case v.Max != nil:
-		return map[string]interface{}{"max": *v.Max}, nil
+		return map[string]any{"max": *v.Max}, nil
 
 	case v.Min != nil:
-		return map[string]interface{}{"min": *v.Min}, nil
+		return map[string]any{"min": *v.Min}, nil
 
 	case v.First != nil:
-		return map[string]interface{}{"first": *v.First}, nil
+		return map[string]any{"first": *v.First}, nil
 
 	case v.Last != nil:
-		return map[string]interface{}{"last": *v.Last}, nil
+		return map[string]any{"last": *v.Last}, nil
 
 	case v.Count != nil:
-		return map[string]interface{}{"count": *v.Count}, nil
+		return map[string]any{"count": *v.Count}, nil
 
 	case v.Regex != nil:
-		return map[string]interface{}{"regex": v.Regex}, nil
+		return map[string]any{"regex": v.Regex}, nil
 	}
 
 	return nil, fmt.Errorf("schema.Value: zero value cannot be marshalled; for an explicit absent value set IsZero, for an empty string use literal_string: \"\"")

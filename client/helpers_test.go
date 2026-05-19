@@ -40,7 +40,9 @@ func vRefDefault(p string, d schema.Value) schema.Value {
 func vNow() schema.Value { return schema.Value{Now: &schema.NowValue{}} }
 
 // ptrValue returns &v.
-func ptrValue(v schema.Value) *schema.Value { return &v }
+//
+//go:fix inline
+func ptrValue(v schema.Value) *schema.Value { return new(v) }
 
 // mustPath panics if s does not parse as a Path.
 func mustPath(s string) schema.Path {
@@ -80,7 +82,7 @@ func minimalDoc(baseURL string) *schema.Doc {
 	return &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(baseURL))},
+			"url": {Type: "url", Default: new(vStr(baseURL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{{
@@ -96,7 +98,7 @@ func minimalDoc(baseURL string) *schema.Doc {
 // given token.
 func bearerDoc(baseURL, token string) *schema.Doc {
 	d := minimalDoc(baseURL)
-	d.State["api_key"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr(token))}
+	d.State["api_key"] = schema.FieldDecl{Type: "secret", Default: new(vStr(token))}
 	d.Auth = schema.Auth{Bearer: &schema.BearerAuth{Token: vRef("state.api_key")}}
 	return d
 }

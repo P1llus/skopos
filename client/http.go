@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/p1llus/skopos/schema"
@@ -353,12 +354,7 @@ func (s *scope) expectStatusOK(expect []int, status int) bool {
 	if len(expect) == 0 {
 		return status == 200
 	}
-	for _, e := range expect {
-		if e == status {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(expect, status)
 }
 
 // unexpectedStatusError carries enough context for the runner's error.mode

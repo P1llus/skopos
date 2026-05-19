@@ -113,7 +113,7 @@ func filterScenarios(all []testserver.Scenario, filter string) []testserver.Scen
 		return all
 	}
 	names := make(map[string]bool)
-	for _, n := range strings.Split(filter, ",") {
+	for n := range strings.SplitSeq(filter, ",") {
 		names[strings.TrimSpace(n)] = true
 	}
 	var out []testserver.Scenario

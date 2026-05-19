@@ -4,6 +4,8 @@ package schema
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -103,9 +105,7 @@ func (v *validator) run(d *Doc) {
 		extract:    map[string]struct{}{},
 		cacheSlots: map[string]struct{}{},
 	}
-	for name, fd := range d.State {
-		sc.state[name] = fd
-	}
+	maps.Copy(sc.state, d.State)
 	for _, r := range d.Requests {
 		if r.ID != "" {
 			sc.stepIDs[r.ID] = struct{}{}
@@ -1072,11 +1072,9 @@ func (v *validator) checkResponseRef(path string, p Path) {
 // checkNoStarOutsideEvents rejects a `*` segment in any non-events path.
 // The events projection is the only site where `*` is meaningful.
 func (v *validator) checkNoStarOutsideEvents(path string, p Path) {
-	for _, seg := range p.Parts {
-		if seg == "*" {
-			v.errorf(path, "ref %q: the * projection segment is only legal in events.*.<field>", p.String())
-			return
-		}
+	if slices.Contains(p.Parts, "*") {
+		v.errorf(path, "ref %q: the * projection segment is only legal in events.*.<field>", p.String())
+		return
 	}
 }
 

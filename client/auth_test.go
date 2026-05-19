@@ -67,8 +67,8 @@ func TestAuth_BasicAttachesBase64(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["user"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("admin"))}
-	doc.State["pass"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("hunter2"))}
+	doc.State["user"] = schema.FieldDecl{Type: "string", Default: new(vStr("admin"))}
+	doc.State["pass"] = schema.FieldDecl{Type: "secret", Default: new(vStr("hunter2"))}
 	doc.Auth = schema.Auth{Basic: &schema.BasicAuth{
 		Username: vRef("state.user"),
 		Password: vRef("state.pass"),
@@ -94,7 +94,7 @@ func TestAuth_APIKeyHeader(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["k"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("api-token"))}
+	doc.State["k"] = schema.FieldDecl{Type: "secret", Default: new(vStr("api-token"))}
 	doc.Auth = schema.Auth{APIKey: &schema.APIKeyAuth{
 		Header: "X-API-Key",
 		Value:  vRef("state.k"),
@@ -120,7 +120,7 @@ func TestAuth_APIKeyInQuery(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["k"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("query-token"))}
+	doc.State["k"] = schema.FieldDecl{Type: "secret", Default: new(vStr("query-token"))}
 	doc.Auth = schema.Auth{APIKey: &schema.APIKeyAuth{
 		Header:  "apikey",
 		Value:   vRef("state.k"),
@@ -147,7 +147,7 @@ func TestAuth_CustomHeader(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["v"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("custom-value"))}
+	doc.State["v"] = schema.FieldDecl{Type: "secret", Default: new(vStr("custom-value"))}
 	doc.Auth = schema.Auth{Custom: &schema.CustomAuth{
 		Header: "X-Custom-Auth",
 		Value:  vRef("state.v"),
@@ -178,9 +178,9 @@ func TestAuth_MultiModeDispatch(t *testing.T) {
 
 	build := func(mode string) *schema.Doc {
 		doc := minimalDoc(server.URL)
-		doc.State["mode"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr(mode))}
-		doc.State["token"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("bearer-tok"))}
-		doc.State["key"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("api-tok"))}
+		doc.State["mode"] = schema.FieldDecl{Type: "string", Default: new(vStr(mode))}
+		doc.State["token"] = schema.FieldDecl{Type: "secret", Default: new(vStr("bearer-tok"))}
+		doc.State["key"] = schema.FieldDecl{Type: "secret", Default: new(vStr("api-tok"))}
 		doc.Auth = schema.Auth{MultiMode: &schema.MultiModeAuth{
 			Branches: []schema.AuthBranch{
 				{
@@ -276,9 +276,9 @@ func TestAuth_OAuth2ClientCredentials_CacheReusedAcrossPages(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: ptrValue(mustInterp(server.URL + "/oauth/token"))}
-	doc.State["client_id"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("test-client"))}
-	doc.State["client_secret"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("test-secret"))}
+	doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: new(mustInterp(server.URL + "/oauth/token"))}
+	doc.State["client_id"] = schema.FieldDecl{Type: "string", Default: new(vStr("test-client"))}
+	doc.State["client_secret"] = schema.FieldDecl{Type: "secret", Default: new(vStr("test-secret"))}
 	doc.State["next_token"] = schema.FieldDecl{Type: "string"}
 	doc.Requests[0].URL = mustInterp("${state.url}/data")
 	doc.Pagination = schema.Pagination{CursorToken: &schema.CursorTokenPagination{
@@ -332,9 +332,9 @@ func TestAuth_OAuth2_CacheNotPersisted(t *testing.T) {
 
 	build := func() *Runner {
 		doc := minimalDoc(server.URL)
-		doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: ptrValue(mustInterp(server.URL + "/oauth/token"))}
-		doc.State["client_id"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("c"))}
-		doc.State["client_secret"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("s"))}
+		doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: new(mustInterp(server.URL + "/oauth/token"))}
+		doc.State["client_id"] = schema.FieldDecl{Type: "string", Default: new(vStr("c"))}
+		doc.State["client_secret"] = schema.FieldDecl{Type: "secret", Default: new(vStr("s"))}
 		doc.Requests[0].URL = mustInterp("${state.url}/data")
 		doc.Auth = schema.Auth{OAuth2: &schema.OAuth2Auth{
 			ClientCredentials: &schema.ClientCredentialsGrant{
@@ -354,7 +354,7 @@ func TestAuth_OAuth2_CacheNotPersisted(t *testing.T) {
 
 	// Each fresh runner forces a token re-fetch because cache.* never
 	// rides through the store.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := build().Drain(context.Background()); err != nil {
 			t.Fatalf("Drain %d: %v", i, err)
 		}
@@ -385,9 +385,9 @@ func TestAuth_OAuth2_PasswordGrant(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: ptrValue(mustInterp(server.URL + "/oauth/token"))}
-	doc.State["user"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("alice"))}
-	doc.State["pass"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("hunter2"))}
+	doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: new(mustInterp(server.URL + "/oauth/token"))}
+	doc.State["user"] = schema.FieldDecl{Type: "string", Default: new(vStr("alice"))}
+	doc.State["pass"] = schema.FieldDecl{Type: "secret", Default: new(vStr("hunter2"))}
 	doc.Requests[0].URL = mustInterp("${state.url}/data")
 	doc.Auth = schema.Auth{OAuth2: &schema.OAuth2Auth{
 		PasswordGrant: &schema.PasswordGrant{
@@ -441,9 +441,9 @@ func TestAuth_OAuth2_InvalidateCacheRefetches(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: ptrValue(mustInterp(server.URL + "/oauth/token"))}
-	doc.State["client_id"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("c"))}
-	doc.State["client_secret"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("s"))}
+	doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: new(mustInterp(server.URL + "/oauth/token"))}
+	doc.State["client_id"] = schema.FieldDecl{Type: "string", Default: new(vStr("c"))}
+	doc.State["client_secret"] = schema.FieldDecl{Type: "secret", Default: new(vStr("s"))}
 	doc.Requests[0].URL = mustInterp("${state.url}/data")
 	doc.Requests[0].OnStatus = map[int]string{http.StatusUnauthorized: "invalidate_cache"}
 	doc.Auth = schema.Auth{OAuth2: &schema.OAuth2Auth{
@@ -504,7 +504,7 @@ func TestRequestCache_HitSkipsWireCall(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url":        {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url":        {Type: "url", Default: new(vStr(server.URL))},
 			"next_token": {Type: "string"},
 		},
 		Auth: schema.Auth{Bearer: &schema.BearerAuth{
@@ -577,7 +577,7 @@ func TestRequestCache_ExpiryRefetches(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url":        {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url":        {Type: "url", Default: new(vStr(server.URL))},
 			"next_token": {Type: "string"},
 		},
 		Auth: schema.Auth{Bearer: &schema.BearerAuth{
@@ -627,9 +627,9 @@ func TestOAuth2_TokenEndpointBodyNotLeaked(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: ptrValue(mustInterp(server.URL + "/token"))}
-	doc.State["client_id"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("c"))}
-	doc.State["client_secret"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("s"))}
+	doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: new(mustInterp(server.URL + "/token"))}
+	doc.State["client_id"] = schema.FieldDecl{Type: "string", Default: new(vStr("c"))}
+	doc.State["client_secret"] = schema.FieldDecl{Type: "secret", Default: new(vStr("s"))}
 	doc.Error = &schema.ErrorBlock{Mode: "fail"}
 	doc.Auth = schema.Auth{OAuth2: &schema.OAuth2Auth{
 		ClientCredentials: &schema.ClientCredentialsGrant{
@@ -670,9 +670,9 @@ func TestOAuth2_TokenResponseBodyBindForExpiresAt(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: ptrValue(mustInterp(server.URL + "/token"))}
-	doc.State["client_id"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("c"))}
-	doc.State["client_secret"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("s"))}
+	doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: new(mustInterp(server.URL + "/token"))}
+	doc.State["client_id"] = schema.FieldDecl{Type: "string", Default: new(vStr("c"))}
+	doc.State["client_secret"] = schema.FieldDecl{Type: "secret", Default: new(vStr("s"))}
 	doc.Requests[0].URL = mustInterp("${state.url}/data")
 	doc.Auth = schema.Auth{OAuth2: &schema.OAuth2Auth{
 		ClientCredentials: &schema.ClientCredentialsGrant{

@@ -29,7 +29,7 @@ func TestEndToEnd_NDJSON_DecodeErrorContext(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{{

@@ -41,7 +41,7 @@ func TestFanOut_FlattenMerge(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{
@@ -94,7 +94,7 @@ func TestFanOut_WrapMerge(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{
@@ -142,7 +142,7 @@ func TestFanOut_EmptyOverIsNoop(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{
@@ -209,7 +209,7 @@ func TestFanOut_PerItemSkipDoesNotStopChain(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{
@@ -271,7 +271,7 @@ func TestFanOut_ItemRefResolves(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{
@@ -327,7 +327,7 @@ func TestFanOut_FlattenRejectsNonListBody(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{
@@ -380,7 +380,7 @@ func TestFanOut_PerItemFailFatal(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{
@@ -449,10 +449,10 @@ func TestFanOut_PerItemInvalidateCacheSkipsPaginationAdvance(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url":           {Type: "url", Default: ptrValue(vStr(server.URL))},
-			"token_url":     {Type: "url", Default: ptrValue(mustInterp(server.URL + "/oauth/token"))},
-			"client_id":     {Type: "string", Default: ptrValue(vStr("c"))},
-			"client_secret": {Type: "secret", Default: ptrValue(vStr("s"))},
+			"url":           {Type: "url", Default: new(vStr(server.URL))},
+			"token_url":     {Type: "url", Default: new(mustInterp(server.URL + "/oauth/token"))},
+			"client_id":     {Type: "string", Default: new(vStr("c"))},
+			"client_secret": {Type: "secret", Default: new(vStr("s"))},
 		},
 		Auth: schema.Auth{OAuth2: &schema.OAuth2Auth{
 			ClientCredentials: &schema.ClientCredentialsGrant{

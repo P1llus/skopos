@@ -735,8 +735,7 @@ func errorMode(doc *schema.Doc) string {
 // asUnexpectedStatus extracts the unexpectedStatusError sentinel if err
 // wraps one. Mirrors errors.As with a typed return.
 func asUnexpectedStatus(err error) (*unexpectedStatusError, bool) {
-	var us *unexpectedStatusError
-	if errors.As(err, &us) {
+	if us, ok := errors.AsType[*unexpectedStatusError](err); ok {
 		return us, true
 	}
 	return nil, false

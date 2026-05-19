@@ -5,6 +5,7 @@ package schema
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -155,10 +156,8 @@ func ParsePath(s string) (Path, error) {
 		return Path{IsZero: true}, nil
 	}
 	parts := strings.Split(s, ".")
-	for _, seg := range parts {
-		if seg == "" {
-			return Path{}, fmt.Errorf("schema.Path: empty segment in %q", s)
-		}
+	if slices.Contains(parts, "") {
+		return Path{}, fmt.Errorf("schema.Path: empty segment in %q", s)
 	}
 	if err := validatePathRoot(parts[0]); err != nil {
 		return Path{}, fmt.Errorf("schema.Path %q: %w", s, err)
@@ -195,10 +194,8 @@ func (p *Path) UnmarshalYAML(node *yaml.Node) error {
 		if len(m.Parts) == 0 {
 			return fmt.Errorf("schema.Path map at line %d: parts must be non-empty", node.Line)
 		}
-		for _, seg := range m.Parts {
-			if seg == "" {
-				return fmt.Errorf("schema.Path map at line %d: empty segment in parts", node.Line)
-			}
+		if slices.Contains(m.Parts, "") {
+			return fmt.Errorf("schema.Path map at line %d: empty segment in parts", node.Line)
 		}
 		if err := validatePathRoot(m.Parts[0]); err != nil {
 			return fmt.Errorf("schema.Path map at line %d: %w", node.Line, err)
@@ -216,12 +213,12 @@ func (p *Path) UnmarshalYAML(node *yaml.Node) error {
 // Paths whose segments contain '.' are emitted in the {parts: [...]} escape
 // form so they round-trip safely through the dotted parser. All other paths
 // → dotted string.
-func (p Path) MarshalYAML() (interface{}, error) {
+func (p Path) MarshalYAML() (any, error) {
 	if p.IsEmpty() {
 		return nil, nil
 	}
 	if p.needsEscape() {
-		return map[string]interface{}{"parts": p.Parts}, nil
+		return map[string]any{"parts": p.Parts}, nil
 	}
 	return p.String(), nil
 }
@@ -240,7 +237,7 @@ func (p Path) needsEscape() bool {
 
 // UnmarshalJSON implements json.Unmarshaler with the same rules as YAML.
 func (p *Path) UnmarshalJSON(data []byte) error {
-	var raw interface{}
+	var raw any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("schema.Path: %w", err)
 	}
@@ -255,12 +252,12 @@ func (p *Path) UnmarshalJSON(data []byte) error {
 		}
 		*p = parsed
 		return nil
-	case map[string]interface{}:
+	case map[string]any:
 		raw, ok := v["parts"]
 		if !ok {
 			return fmt.Errorf("schema.Path: JSON object must have a 'parts' key")
 		}
-		arr, ok := raw.([]interface{})
+		arr, ok := raw.([]any)
 		if !ok {
 			return fmt.Errorf("schema.Path: 'parts' must be an array")
 		}

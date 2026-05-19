@@ -3,6 +3,7 @@
 package client
 
 import (
+	"maps"
 	"net/http"
 	"reflect"
 	"testing"
@@ -193,12 +194,9 @@ func TestEvalValue(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestScope(t, tc.state)
-			for k, v := range tc.cache {
-				s.cache[k] = v
-			}
+			maps.Copy(s.cache, tc.cache)
 			if tc.setup != nil {
 				tc.setup(s)
 			}
@@ -329,52 +327,52 @@ func TestEvalValueReducers(t *testing.T) {
 	}{
 		{
 			name: "max_literal_list",
-			v:    schema.Value{Max: ptrValue(vList(vInt(3), vInt(7), vInt(5)))},
+			v:    schema.Value{Max: new(vList(vInt(3), vInt(7), vInt(5)))},
 			want: int64(7),
 		},
 		{
 			name: "min_literal_list",
-			v:    schema.Value{Min: ptrValue(vList(vInt(3), vInt(7), vInt(5)))},
+			v:    schema.Value{Min: new(vList(vInt(3), vInt(7), vInt(5)))},
 			want: int64(3),
 		},
 		{
 			name: "count_literal_list",
-			v:    schema.Value{Count: ptrValue(vList(vInt(3), vInt(7), vInt(5)))},
+			v:    schema.Value{Count: new(vList(vInt(3), vInt(7), vInt(5)))},
 			want: int64(3),
 		},
 		{
 			name: "first_literal_list",
-			v:    schema.Value{First: ptrValue(vList(vInt(3), vInt(7), vInt(5)))},
+			v:    schema.Value{First: new(vList(vInt(3), vInt(7), vInt(5)))},
 			want: int64(3),
 		},
 		{
 			name: "last_literal_list",
-			v:    schema.Value{Last: ptrValue(vList(vInt(3), vInt(7), vInt(5)))},
+			v:    schema.Value{Last: new(vList(vInt(3), vInt(7), vInt(5)))},
 			want: int64(5),
 		},
 		{
 			name: "max_over_events_projection",
-			v:    schema.Value{Max: ptrValue(vRef("events.*.ts"))},
+			v:    schema.Value{Max: new(vRef("events.*.ts"))},
 			want: "2026-01-01T00:00:03Z",
 		},
 		{
 			name: "min_over_events_projection",
-			v:    schema.Value{Min: ptrValue(vRef("events.*.ts"))},
+			v:    schema.Value{Min: new(vRef("events.*.ts"))},
 			want: "2026-01-01T00:00:01Z",
 		},
 		{
 			name: "first_over_events_projection",
-			v:    schema.Value{First: ptrValue(vRef("events.*.ts"))},
+			v:    schema.Value{First: new(vRef("events.*.ts"))},
 			want: "2026-01-01T00:00:01Z",
 		},
 		{
 			name: "last_over_events_projection",
-			v:    schema.Value{Last: ptrValue(vRef("events.*.ts"))},
+			v:    schema.Value{Last: new(vRef("events.*.ts"))},
 			want: "2026-01-01T00:00:02Z",
 		},
 		{
 			name: "count_over_events_projection",
-			v:    schema.Value{Count: ptrValue(vRef("events.*.ts"))},
+			v:    schema.Value{Count: new(vRef("events.*.ts"))},
 			want: int64(3),
 		},
 	}

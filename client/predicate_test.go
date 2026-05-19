@@ -166,7 +166,6 @@ func TestEvalPredicate(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestScope(t, tc.state)
 			if tc.setup != nil {

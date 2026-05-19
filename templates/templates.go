@@ -38,8 +38,8 @@ func Names() []string {
 			continue
 		}
 		name := e.Name()
-		if strings.HasSuffix(name, ".yml") {
-			names = append(names, strings.TrimSuffix(name, ".yml"))
+		if before, ok := strings.CutSuffix(name, ".yml"); ok {
+			names = append(names, before)
 		}
 	}
 	sort.Strings(names)

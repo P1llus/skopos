@@ -39,10 +39,7 @@ func (postJSONBodyScenario) Register(mux *http.ServeMux, opts Options) {
 		// drain-start default.
 		_ = json.NewDecoder(r.Body).Decode(&body)
 
-		offset := body.SearchFrom
-		if offset < 0 {
-			offset = 0
-		}
+		offset := max(body.SearchFrom, 0)
 		limit := body.SearchTo - body.SearchFrom
 		if limit <= 0 {
 			limit = opts.PageSize

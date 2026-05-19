@@ -38,7 +38,7 @@ func TestApplyProgress_FlatWriteList(t *testing.T) {
 	writes := schema.Progress{
 		{
 			To:   mustPath("state.last_timestamp"),
-			From: schema.Value{Max: ptrValue(vRef("events.*.ts"))},
+			From: schema.Value{Max: new(vRef("events.*.ts"))},
 		},
 		{
 			To:   mustPath("state.last_seen_at"),
@@ -145,7 +145,7 @@ func TestApplyProgress_PersistsAcrossDrains(t *testing.T) {
 	doc.Progress = schema.Progress{
 		{
 			To:   mustPath("state.last_timestamp"),
-			From: schema.Value{Max: ptrValue(vRef("events.*.ts"))},
+			From: schema.Value{Max: new(vRef("events.*.ts"))},
 		},
 	}
 
@@ -187,12 +187,12 @@ func TestApplyProgress_SinkFailureSkipsCommit(t *testing.T) {
 	doc := minimalDoc(server.URL)
 	doc.State["last_timestamp"] = schema.FieldDecl{
 		Type:    "timestamp",
-		Default: ptrValue(vStr("seed-value")),
+		Default: new(vStr("seed-value")),
 	}
 	doc.Progress = schema.Progress{
 		{
 			To:   mustPath("state.last_timestamp"),
-			From: schema.Value{Max: ptrValue(vRef("events.*.ts"))},
+			From: schema.Value{Max: new(vRef("events.*.ts"))},
 		},
 	}
 
@@ -290,7 +290,7 @@ func TestPersistentVsScratchClassification(t *testing.T) {
 		State: map[string]schema.FieldDecl{
 			"persistent": {Type: "string"},
 			"scratch":    {Type: "string"},
-			"opconfig":   {Type: "string", Default: ptrValue(vStr("hi"))},
+			"opconfig":   {Type: "string", Default: new(vStr("hi"))},
 		},
 		Progress: schema.Progress{
 			{To: mustPath("state.persistent"), From: vStr("x")},
@@ -410,10 +410,10 @@ func TestSeedDefaults(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"defaulted":      {Type: "string", Default: ptrValue(vStr("from-default"))},
-			"from_snapshot":  {Type: "string", Default: ptrValue(vStr("default-replaced"))},
-			"snapshot_only":  {Type: "string"},
-			"unset":          {Type: "string"},
+			"defaulted":     {Type: "string", Default: new(vStr("from-default"))},
+			"from_snapshot": {Type: "string", Default: new(vStr("default-replaced"))},
+			"snapshot_only": {Type: "string"},
+			"unset":         {Type: "string"},
 		},
 	}
 	snap := Snapshot{State: map[string]any{

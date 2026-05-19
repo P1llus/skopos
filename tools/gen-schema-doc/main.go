@@ -66,7 +66,7 @@ func main() {
 	}
 }
 
-func fail(format string, args ...interface{}) {
+func fail(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "gen-schema-doc: "+format+"\n", args...)
 	os.Exit(1)
 }
