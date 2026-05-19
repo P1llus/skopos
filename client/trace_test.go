@@ -6,264 +6,253 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/p1llus/skopos/schema"
 )
 
-// recordingTracer captures every Exchange the runner emits. Single-Drain
-// access is serial inside Runner.Drain; the mutex is defensive in case a
-// future test shares one tracer across runners.
-type recordingTracer struct {
-	mu        sync.Mutex
-	exchanges []Exchange
-}
-
-func (r *recordingTracer) OnExchange(ex Exchange) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.exchanges = append(r.exchanges, ex)
-}
-
-func (r *recordingTracer) get() []Exchange {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]Exchange, len(r.exchanges))
-	copy(out, r.exchanges)
-	return out
-}
-
-// TestTracer_TransportError_RedactsURL shows the trace records transport
-// errors safely: when client.Do fails (here: a closed server / nonexistent
-// port), the error string passes through redactURLError so any
-// query-string credential cannot leak. We also check that Status stays 0.
-func TestTracer_TransportError_RedactsURL(t *testing.T) {
-	// Bind a port, then close immediately so a subsequent dial fails.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	addr := server.URL
-	server.Close()
-
-	doc := bearerSimpleDoc(addr, "test-token")
-	doc.Error = &schema.ErrorBlock{Mode: "warn"} // surface the error via trace, keep drain non-fatal
-
-	tr := &recordingTracer{}
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Tracer: tr}
-	// drain swallows transport errors under warn mode (logs them), so we
-	// don't fail on Drain error.
-	_ = r.Drain(context.Background())
-
-	exs := tr.get()
-	if len(exs) != 1 {
-		t.Fatalf("traces = %d, want 1", len(exs))
-	}
-	ex := exs[0]
-	if ex.Status != 0 {
-		t.Errorf("Status = %d on transport failure, want 0", ex.Status)
-	}
-	if ex.Error == "" {
-		t.Fatalf("Error empty; expected a transport error description")
-	}
-	// The error must not include a query string. The bearer template has
-	// since=<RFC3339>, which Go's *url.Error would otherwise embed.
-	if strings.Contains(ex.Error, "since=") {
-		t.Errorf("Error leaked query string: %q", ex.Error)
-	}
-}
-
-// TestTracer_APIKeyInQuery_Redacted covers the in-URL credential case:
-// auth.api_key with in_query=true puts the credential into RawQuery. The
-// trace must redact the api-key parameter name's value (and the URL must
-// not carry it either via safeURL).
-func TestTracer_APIKeyInQuery_Redacted(t *testing.T) {
+// TestTracer_BasicExchange pins the Tracer interface: every HTTP
+// exchange surfaces as an Exchange record with method, URL, status, and
+// timing fields populated.
+func TestTracer_BasicExchange(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
 	}))
 	defer server.Close()
 
-	doc := &schema.Doc{
-		IRVersion: "1",
-		State: &schema.State{Fields: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: server.URL},
-			"key": {Type: "secret", Default: "super-sensitive-api-key"},
-		}},
-		Defaults: &schema.Defaults{BaseURL: vRef("state.url")},
-		Auth: schema.Auth{APIKey: &schema.APIKeyAuth{
-			Header:  "api_key",
-			Value:   vRef("state.key"),
-			InQuery: true,
-		}},
-		Requests: []schema.Request{{
-			Method: "GET",
-			Path:   ptrValue(vStr("/api/v1/events")),
-		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
-		Pagination: schema.Pagination{None: &struct{}{}},
-		Progress:   schema.Progress{Stateless: &struct{}{}},
-	}
-
-	tr := &recordingTracer{}
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client(), Tracer: tr}
+	tracer := &captureTracer{}
+	r := &Runner{Doc: minimalDoc(server.URL), Sink: &captureSink{}, Now: fixedNow(), Client: server.Client(), Tracer: tracer}
 	if err := r.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-
-	exs := tr.get()
-	if len(exs) != 1 {
-		t.Fatalf("traces = %d, want 1", len(exs))
+	if len(tracer.exchanges) != 1 {
+		t.Fatalf("exchanges = %d, want 1", len(tracer.exchanges))
 	}
-	ex := exs[0]
-	if strings.Contains(ex.URL, "super-sensitive-api-key") {
-		t.Errorf("URL leaked api key: %q", ex.URL)
+	ex := tracer.exchanges[0]
+	if ex.Method != "GET" {
+		t.Errorf("Method = %q, want GET", ex.Method)
 	}
-	got := ex.Query["api_key"]
-	if got != redactedValue {
-		t.Errorf("Query[api_key] = %q, want %q", got, redactedValue)
+	if ex.Status != http.StatusOK {
+		t.Errorf("Status = %d, want 200", ex.Status)
+	}
+	if ex.Iteration != 1 {
+		t.Errorf("Iteration = %d, want 1", ex.Iteration)
+	}
+	if !strings.Contains(ex.URL, "/events") {
+		t.Errorf("URL = %q", ex.URL)
+	}
+	// safeURL strips userinfo + query; URL should not include any query.
+	if strings.Contains(ex.URL, "?") {
+		t.Errorf("URL leaks query string: %q", ex.URL)
 	}
 }
 
-// TestTracer_SecretHeader_Redacted covers req.Headers entries whose IR
-// Value transitively reaches a secret-typed state field — those values
-// must be redacted in the trace by schema.IsSecret, not by header name.
-func TestTracer_SecretHeader_Redacted(t *testing.T) {
+// TestTracer_AuthorizationRedacted pins the always-sensitive header
+// allowlist: Authorization is replaced with <redacted>.
+func TestTracer_AuthorizationRedacted(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
 	}))
 	defer server.Close()
 
+	tracer := &captureTracer{}
+	doc := bearerDoc(server.URL, "leaky-token")
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client(), Tracer: tracer}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if len(tracer.exchanges) != 1 {
+		t.Fatalf("exchanges = %d", len(tracer.exchanges))
+	}
+	ex := tracer.exchanges[0]
+	if got := ex.RequestHeaders["Authorization"]; got != "<redacted>" {
+		t.Errorf("Authorization = %q, want <redacted>", got)
+	}
+}
+
+// TestTracer_SecretHeaderRedacted pins the IsSecret-driven header
+// redaction: a custom header whose Value is a secret-typed ref is
+// redacted by name.
+func TestTracer_SecretHeaderRedacted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["api_key"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("xyz"))}
+	doc.Requests[0].Headers = map[string]schema.Value{
+		"X-Token":  vRef("state.api_key"),
+		"X-Public": vStr("ok"),
+	}
+
+	tracer := &captureTracer{}
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client(), Tracer: tracer}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	ex := tracer.exchanges[0]
+	if got := ex.RequestHeaders["X-Token"]; got != "<redacted>" {
+		t.Errorf("X-Token = %q, want <redacted>", got)
+	}
+	if got := ex.RequestHeaders["X-Public"]; got != "ok" {
+		t.Errorf("X-Public = %q, want ok", got)
+	}
+}
+
+// TestTracer_APIKeyInQueryRedacted pins the in_query=true api_key
+// branch: the named query key appears with value <redacted>.
+func TestTracer_APIKeyInQueryRedacted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["k"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("super-secret"))}
+	doc.Auth = schema.Auth{APIKey: &schema.APIKeyAuth{
+		Header:  "apikey",
+		Value:   vRef("state.k"),
+		InQuery: true,
+	}}
+
+	tracer := &captureTracer{}
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client(), Tracer: tracer}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	ex := tracer.exchanges[0]
+	if got := ex.Query["apikey"]; got != "<redacted>" {
+		t.Errorf("Query[apikey] = %q, want <redacted>", got)
+	}
+}
+
+// TestTracer_BodyMetadataOnly pins the redaction-safe body surface: the
+// trace carries only length + content-class, never raw bytes.
+func TestTracer_BodyMetadataOnly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"events": []any{},
+			"secret": "would-leak-without-meta",
+		})
+	}))
+	defer server.Close()
+
+	tracer := &captureTracer{}
+	r := &Runner{Doc: minimalDoc(server.URL), Sink: &captureSink{}, Now: fixedNow(), Client: server.Client(), Tracer: tracer}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	ex := tracer.exchanges[0]
+	if !strings.Contains(ex.ResponseBody, "bytes") || !strings.Contains(ex.ResponseBody, "object-like") {
+		t.Errorf("ResponseBody = %q, want metadata format", ex.ResponseBody)
+	}
+	if strings.Contains(ex.ResponseBody, "would-leak-without-meta") {
+		t.Errorf("ResponseBody leaks payload: %q", ex.ResponseBody)
+	}
+}
+
+// TestTracer_CacheHitTombstone pins the cache-HIT tombstone shape: a
+// step served from cache.* surfaces as a minimal Exchange (Iteration +
+// StepID + CacheHit=true), wire fields stay zero.
+func TestTracer_CacheHitTombstone(t *testing.T) {
+	var loginHits atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", func(w http.ResponseWriter, _ *http.Request) {
+		loginHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token":      "sess",
+			"expires_in": float64(3600),
+		})
+	})
+	var eventsHits atomic.Int32
+	mux.HandleFunc("/events", func(w http.ResponseWriter, _ *http.Request) {
+		n := eventsHits.Add(1)
+		body := map[string]any{"events": []any{map[string]any{"id": "e"}}}
+		if n < 3 {
+			body["next_cursor"] = "p"
+		}
+		writeJSON(w, http.StatusOK, body)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
 	doc := &schema.Doc{
 		IRVersion: "1",
-		State: &schema.State{Fields: map[string]schema.FieldDecl{
-			"url":   {Type: "url", Default: server.URL},
-			"creds": {Type: "secret", Default: "very-secret"},
+		State: map[string]schema.FieldDecl{
+			"url":        {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"next_token": {Type: "string"},
+		},
+		Auth: schema.Auth{Bearer: &schema.BearerAuth{
+			Token: vRefDefault("cache.session.token", vStr("p")),
 		}},
-		Defaults: &schema.Defaults{BaseURL: vRef("state.url")},
-		Auth:     schema.Auth{None: &struct{}{}},
-		Requests: []schema.Request{{
-			Method: "GET",
-			Path:   ptrValue(vStr("/api/v1/events")),
-			Headers: map[string]schema.Value{
-				"X-Custom-Auth": vRef("state.creds"),
-				"X-Tenant-Id":   vStr("tenant-42"),
+		Requests: []schema.Request{
+			{
+				ID:     "login",
+				Method: "POST",
+				URL:    mustInterp("${state.url}/login"),
+				Cache: &schema.Cache{
+					To:        mustPath("cache.session"),
+					ExpiresAt: vRefDefault("response.body.expires_in", vStr("1h")),
+					Buffer:    "60s",
+				},
 			},
+			{
+				ID:             "events",
+				Method:         "GET",
+				URL:            mustInterp("${state.url}/events"),
+				ProducesEvents: true,
+			},
+		},
+		Response: schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
+		Pagination: schema.Pagination{CursorToken: &schema.CursorTokenPagination{
+			From: mustPath("response.body.next_cursor"),
+			To:   mustPath("state.next_token"),
 		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
-		Pagination: schema.Pagination{None: &struct{}{}},
-		Progress:   schema.Progress{Stateless: &struct{}{}},
 	}
 
-	tr := &recordingTracer{}
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client(), Tracer: tr}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-
-	exs := tr.get()
-	if len(exs) != 1 {
-		t.Fatalf("traces = %d, want 1", len(exs))
-	}
-	got := exs[0].RequestHeaders["X-Custom-Auth"]
-	if got != redactedValue {
-		t.Errorf("X-Custom-Auth = %q, want %q", got, redactedValue)
-	}
-	if exs[0].RequestHeaders["X-Tenant-Id"] != "tenant-42" {
-		t.Errorf("X-Tenant-Id = %q, want tenant-42 (non-secret passes through)", exs[0].RequestHeaders["X-Tenant-Id"])
-	}
-}
-
-// TestJSONLTracer_WritesOneLinePerExchange covers the bundled JSONL
-// tracer: each exchange must be one valid JSON object on its own line.
-func TestJSONLTracer_WritesOneLinePerExchange(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"events": []map[string]any{{"id": "e1", "timestamp": "2026-05-12T08:00:00Z"}}})
-	}))
-	defer server.Close()
-
-	var buf bytes.Buffer
-	tracer := NewJSONLTracer(&buf)
-	doc := bearerSimpleDoc(server.URL, "test-token")
+	tracer := &captureTracer{}
 	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client(), Tracer: tracer}
 	if err := r.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
 
-	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("got %d output lines, want 1", len(lines))
+	// Look for at least one cache-HIT tombstone among the login step's
+	// exchanges (iteration 2+).
+	var hitFound bool
+	for _, ex := range tracer.exchanges {
+		if ex.StepID == "login" && ex.CacheHit {
+			hitFound = true
+			if ex.Method != "" || ex.URL != "" || ex.Status != 0 {
+				t.Errorf("cache-HIT tombstone leaks wire fields: %+v", ex)
+			}
+		}
 	}
-	var got Exchange
-	if err := json.Unmarshal([]byte(lines[0]), &got); err != nil {
-		t.Fatalf("JSON decode: %v\nline: %s", err, lines[0])
-	}
-	if got.Method != "GET" {
-		t.Errorf("decoded Method = %q, want GET", got.Method)
-	}
-	if got.RequestHeaders["Authorization"] != redactedValue {
-		t.Errorf("decoded Authorization = %q, want %q", got.RequestHeaders["Authorization"], redactedValue)
+	if !hitFound {
+		t.Errorf("expected at least one cache-HIT tombstone for login step; exchanges: %+v", tracer.exchanges)
 	}
 }
 
-// TestTracer_RequestBodyMetadata covers the body-metadata surface: when
-// a request carries a body (e.g. async_job submit's JSON), the trace
-// describes its length and classification without surfacing bytes.
-func TestTracer_RequestBodyMetadata(t *testing.T) {
-	var requestBody []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestBody, _ = io.ReadAll(r.Body)
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-	}))
-	defer server.Close()
+// TestJSONLTracer_RoundTripJSONL pins the JSONLTracer: one Exchange per
+// line, valid JSON.
+func TestJSONLTracer_RoundTripJSONL(t *testing.T) {
+	var buf bytes.Buffer
+	tracer := NewJSONLTracer(&buf)
+	tracer.OnExchange(Exchange{Iteration: 1, StepID: "a", Method: "GET", URL: "http://x/y", Status: 200})
+	tracer.OnExchange(Exchange{Iteration: 2, StepID: "b", CacheHit: true})
 
-	doc := &schema.Doc{
-		IRVersion: "1",
-		State: &schema.State{Fields: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: server.URL},
-		}},
-		Defaults: &schema.Defaults{BaseURL: vRef("state.url")},
-		Auth:     schema.Auth{None: &struct{}{}},
-		Requests: []schema.Request{{
-			Method: "POST",
-			Path:   ptrValue(vStr("/echo")),
-			Body:   &schema.Body{JSON: map[string]schema.Value{"hello": vStr("world")}},
-		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
-		Pagination: schema.Pagination{None: &struct{}{}},
-		Progress:   schema.Progress{Stateless: &struct{}{}},
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("lines = %d, want 2", len(lines))
 	}
-
-	tr := &recordingTracer{}
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client(), Tracer: tr}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-
-	exs := tr.get()
-	if len(exs) != 1 {
-		t.Fatalf("traces = %d, want 1", len(exs))
-	}
-	if exs[0].RequestBody == "" {
-		t.Fatalf("RequestBody empty; expected metadata")
-	}
-	if !strings.Contains(exs[0].RequestBody, "object-like") {
-		t.Errorf("RequestBody = %q, want object-like classifier", exs[0].RequestBody)
-	}
-	if !strings.Contains(exs[0].RequestBody, strconv.Itoa(len(requestBody))) {
-		t.Errorf("RequestBody = %q, want byte count %d", exs[0].RequestBody, len(requestBody))
-	}
-	// Body content must NOT appear in the trace.
-	if strings.Contains(exs[0].RequestBody, "world") || strings.Contains(exs[0].RequestBody, "hello") {
-		t.Errorf("RequestBody leaked content: %q", exs[0].RequestBody)
-	}
-	// The server must still have received the actual body (the
-	// io-replay rewind is sound).
-	if !bytes.Contains(requestBody, []byte("world")) {
-		t.Errorf("server received body %q, missing expected hello=world payload", requestBody)
+	for i, line := range lines {
+		var got Exchange
+		if err := json.Unmarshal([]byte(line), &got); err != nil {
+			t.Errorf("line %d not valid JSON: %v", i, err)
+		}
 	}
 }

@@ -3,15 +3,10 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,507 +15,475 @@ import (
 	"github.com/p1llus/skopos/schema"
 )
 
-// captureSink is a Sink that just appends emitted events into a slice. The
-// runner.go contract says Emit is called once per event from a single
-// goroutine inside Drain, so no locking is needed for the test sink.
-type captureSink struct {
-	events []any
-	flushN int
+// TestDrain_EmitsEvents pins the happy-path: one drain, one accepted
+// page, every event walked through the sink in declared order.
+func TestDrain_EmitsEvents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{
+			map[string]any{"id": "e1"},
+			map[string]any{"id": "e2"},
+		}})
+	}))
+	defer server.Close()
+
+	sink := &captureSink{}
+	r := &Runner{Doc: minimalDoc(server.URL), Sink: sink, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if len(sink.events) != 2 {
+		t.Errorf("events = %d, want 2", len(sink.events))
+	}
+	if sink.flushN != 1 {
+		t.Errorf("flushN = %d, want 1", sink.flushN)
+	}
 }
 
-func (c *captureSink) Emit(ev any) error { c.events = append(c.events, ev); return nil }
-func (c *captureSink) Flush() error      { c.flushN++; return nil }
-
-// ---- Safety floor: max-pages guardrail ----
-
-// TestMaxPagesGuardrail exercises a buggy server that always returns the
-// same next_cursor — without the guard, Drain would loop forever. With
-// MaxPages set, Drain returns errMaxPagesExceeded after the cap.
-func TestMaxPagesGuardrail(t *testing.T) {
-	var hits atomic.Int32
+// TestDrain_EmptyPageStillFiresProgress pins the redesigned contract:
+// progress fires once per accepted page-response INCLUDING empty pages.
+// docs/runtime.md §5.
+func TestDrain_EmptyPageStillFiresProgress(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["last_seen_at"] = schema.FieldDecl{Type: "timestamp"}
+	doc.Progress = schema.Progress{
+		{To: mustPath("state.last_seen_at"), From: vNow()},
+	}
+
+	store := &MemoryStore{}
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+
+	snap, _ := store.Load()
+	if got := snap.State["last_seen_at"]; got == nil {
+		t.Errorf("progress write did not fire on empty page; snapshot=%#v", snap.State)
+	}
+}
+
+// TestDrain_StandardModeKeepsProgress pins the "deferred Save runs on
+// every exit" contract: progress writes that already fired on completed
+// pages survive a mid-drain error. docs/runtime.md §6.
+func TestDrain_StandardModeKeepsProgress(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"events":      []any{map[string]any{"id": "e1", "ts": "2026-01-01T00:00:01Z"}},
+				"next_cursor": "page-2",
+			})
+			return
+		}
+		// Second page: 500.
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["next_token"] = schema.FieldDecl{Type: "string"}
+	doc.State["last_timestamp"] = schema.FieldDecl{Type: "timestamp"}
+	doc.Requests[0].URL = mustInterp("${state.url}/events?cursor=${state.next_token|}")
+	doc.Pagination = schema.Pagination{CursorToken: &schema.CursorTokenPagination{
+		From: mustPath("response.body.next_cursor"),
+		To:   mustPath("state.next_token"),
+	}}
+	doc.Progress = schema.Progress{
+		{To: mustPath("state.last_timestamp"), From: vRef("events.last.ts")},
+	}
+
+	store := &MemoryStore{}
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain (standard mode): %v", err)
+	}
+
+	snap, _ := store.Load()
+	if got := snap.State["last_timestamp"]; got != "2026-01-01T00:00:01Z" {
+		t.Errorf("last_timestamp = %v, want progress write from first page to survive", got)
+	}
+}
+
+// TestDrain_FailModeReturnsError pins error.mode: fail surfacing through
+// the Drain return.
+func TestDrain_FailModeReturnsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.Error = &schema.ErrorBlock{Mode: "fail"}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err == nil {
+		t.Error("Drain: expected error in fail mode, got nil")
+	}
+}
+
+// TestDrain_OnStatusSkip pins on_status: <code>: skip — log the skip,
+// emit no events, but advance progress and pagination.
+func TestDrain_OnStatusSkip(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "rate limit", http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.Requests[0].OnStatus = map[int]string{http.StatusTooManyRequests: "skip"}
+	doc.State["last_seen_at"] = schema.FieldDecl{Type: "timestamp"}
+	doc.Progress = schema.Progress{
+		{To: mustPath("state.last_seen_at"), From: vNow()},
+	}
+
+	store := &MemoryStore{}
+	sink := &captureSink{}
+	r := &Runner{Doc: doc, Sink: sink, Store: store, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Errorf("Drain: %v, want nil (skip)", err)
+	}
+	if len(sink.events) != 0 {
+		t.Errorf("skip should emit no events; got %d", len(sink.events))
+	}
+	snap, _ := store.Load()
+	if snap.State["last_seen_at"] == nil {
+		t.Error("skip should still fire progress writes")
+	}
+}
+
+// TestDrain_OnStatusFail pins on_status: <code>: fail — the drain aborts
+// with an error regardless of error.mode.
+func TestDrain_OnStatusFail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "gone", http.StatusGone)
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.Requests[0].OnStatus = map[int]string{http.StatusGone: "fail"}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err == nil {
+		t.Error("on_status: fail should surface a Drain error")
+	}
+}
+
+// TestDrain_TerminateWhenLoop pins the request-level loop primitive: a
+// step with terminate_when: re-fires until the predicate evaluates true.
+// docs/runtime.md §4 — the three-request submit/poll/fetch pattern.
+func TestDrain_TerminateWhenLoop(t *testing.T) {
+	var polls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/submit", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"export_id": "exp-1"})
+	})
+	mux.HandleFunc("/poll", func(w http.ResponseWriter, _ *http.Request) {
+		n := polls.Add(1)
+		status := "running"
+		if n >= 3 {
+			status = "complete"
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"findings":    []map[string]any{{"id": "x", "created_at": "2026-05-12T08:00:00Z"}},
-			"next_cursor": "same-token-forever",
+			"status":     status,
+			"result_url": "/fetch",
+		})
+	})
+	mux.HandleFunc("/fetch", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{
+			map[string]any{"id": "e1"},
+		}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	doc := &schema.Doc{
+		IRVersion: "1",
+		State: map[string]schema.FieldDecl{
+			"url":        {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"export_id":  {Type: "string"},
+			"result_url": {Type: "url"},
+		},
+		Auth: schema.Auth{None: &struct{}{}},
+		Requests: []schema.Request{
+			{
+				ID:     "submit",
+				Method: "POST",
+				URL:    mustInterp("${state.url}/submit"),
+				Extract: []schema.ExtractVar{
+					{To: mustPath("state.export_id"), From: mustPath("response.body.export_id")},
+				},
+			},
+			{
+				ID:     "poll",
+				Method: "GET",
+				URL:    mustInterp("${state.url}/poll"),
+				TerminateWhen: &schema.Predicate{Eq: &schema.PredicateEq{
+					Path:  mustPath("response.body.status"),
+					Value: vStr("complete"),
+				}},
+				Extract: []schema.ExtractVar{
+					{To: mustPath("state.result_url"), From: mustPath("response.body.result_url")},
+				},
+			},
+			{
+				ID:             "fetch",
+				Method:         "GET",
+				URL:            mustInterp("${state.url}/fetch"),
+				ProducesEvents: true,
+			},
+		},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
+		Pagination: schema.Pagination{None: &struct{}{}},
+	}
+
+	sink := &captureSink{}
+	r := &Runner{Doc: doc, Sink: sink, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if polls.Load() != 3 {
+		t.Errorf("poll fired %d times, want 3 (re-fire until status=complete)", polls.Load())
+	}
+	if len(sink.events) != 1 {
+		t.Errorf("events = %d, want 1 (from fetch)", len(sink.events))
+	}
+}
+
+// TestMaxPagesGuardrail pins the iteration-cap behaviour: a pagination
+// loop that never terminates is bounded by Runner.MaxPages.
+func TestMaxPagesGuardrail(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		// Always return a next_cursor so cursor_token pagination never
+		// terminates on its own.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"events":      []any{},
+			"next_cursor": "tok",
 		})
 	}))
 	defer server.Close()
 
+	doc := minimalDoc(server.URL)
+	doc.State["next_token"] = schema.FieldDecl{Type: "string"}
+	doc.Pagination = schema.Pagination{CursorToken: &schema.CursorTokenPagination{
+		From: mustPath("response.body.next_cursor"),
+		To:   mustPath("state.next_token"),
+	}}
+
 	r := &Runner{
-		Doc:      cursorTokenDoc(server.URL, "test-token"),
+		Doc:      doc,
 		Sink:     &captureSink{},
 		Now:      fixedNow(),
 		Client:   server.Client(),
 		MaxPages: 5,
 	}
 	err := r.Drain(context.Background())
-	if !errors.Is(err, errMaxPagesExceeded) {
-		t.Fatalf("Drain err = %v, want errMaxPagesExceeded", err)
+	if err == nil {
+		t.Fatal("Drain: expected MaxPages cap error, got nil")
 	}
-	if got := hits.Load(); got != 5 {
-		t.Errorf("server saw %d requests, want 5 (MaxPages cap)", got)
+	if !errors.Is(err, errMaxPagesExceeded) {
+		t.Errorf("err = %v, want errMaxPagesExceeded", err)
+	}
+	if calls.Load() != 5 {
+		t.Errorf("server calls = %d, want 5 (MaxPages)", calls.Load())
 	}
 }
 
-// ---- §5.2: two-pass placeholder_event for cursor variants ----
-
-// TestPlaceholderEvent_CursorToken_TwoPass exercises the two-pass detector
-// described in §5.2. Two consecutive empty pages carry next_cursor → both
-// queue a placeholder, each confirmed when the FOLLOWING iteration is
-// entered. The terminal page (events present, next_cursor="") emits its
-// events and ends the drain without queuing another placeholder. Expected
-// emission order: [placeholder, placeholder, real event] — confirming that
-// placeholders for empty intermediate pages emit in wire order, ahead of
-// the next page's events.
-func TestPlaceholderEvent_CursorToken_TwoPass(t *testing.T) {
-	pages := []map[string]any{
-		{"findings": []map[string]any{}, "next_cursor": "tok-2"},
-		{"findings": []map[string]any{}, "next_cursor": "tok-3"},
-		{
-			"findings":    []map[string]any{{"id": "f1", "created_at": "2026-05-12T08:10:00Z"}},
-			"next_cursor": "",
-		},
-	}
-	var hits atomic.Int32
+// TestDrain_ContextCancellationStops pins the ctx-cancellation contract:
+// Drain returns the ctx.Err() and the deferred Save still fires.
+func TestDrain_ContextCancellationStops(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		idx := int(hits.Add(1)) - 1
-		writeJSON(w, http.StatusOK, pages[idx])
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
 	}))
 	defer server.Close()
 
-	doc := cursorTokenDoc(server.URL, "test-token")
-	doc.Response.PlaceholderEvent = ptrValue(vObject(map[string]schema.Value{
-		"kind": vStr("heartbeat"),
-	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already done
 
-	sink := &captureSink{}
-	r := &Runner{Doc: doc, Sink: sink, Now: fixedNow(), Client: server.Client()}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if got := hits.Load(); got != 3 {
-		t.Fatalf("server saw %d requests, want 3", got)
-	}
-	if len(sink.events) != 3 {
-		t.Fatalf("emitted %d events, want 3 (placeholder, placeholder, real)", len(sink.events))
-	}
-	// Wire order: placeholders for the two empty pages come before the
-	// real event, each fired at the START of the following iteration.
-	for i := 0; i < 2; i++ {
-		ev, ok := sink.events[i].(map[string]any)
-		if !ok || ev["kind"] != "heartbeat" {
-			t.Errorf("event[%d] = %v, want placeholder {kind: heartbeat}", i, sink.events[i])
-		}
-	}
-	last, ok := sink.events[2].(map[string]any)
-	if !ok || last["id"] != "f1" {
-		t.Errorf("event[2] = %v, want real event with id=f1", sink.events[2])
-	}
-}
-
-// TestPlaceholderEvent_TwoPass_SuppressedOnMaxPages pins the conservative
-// side of the two-pass design: when iter N is empty + paginationMore=true
-// but the drain exits BEFORE iter N+1 starts (here via MaxPages), the
-// placeholder for N is NOT emitted. We only claim "drain made progress
-// past an empty page" when the next iteration is actually entered. Per
-// §5.2 / B-03.
-func TestPlaceholderEvent_TwoPass_SuppressedOnMaxPages(t *testing.T) {
-	var hits atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"findings":    []map[string]any{},
-			"next_cursor": "same-token-forever",
-		})
-	}))
-	defer server.Close()
-
-	doc := cursorTokenDoc(server.URL, "test-token")
-	doc.Response.PlaceholderEvent = ptrValue(vObject(map[string]schema.Value{
-		"kind": vStr("heartbeat"),
-	}))
-
-	sink := &captureSink{}
-	r := &Runner{Doc: doc, Sink: sink, Now: fixedNow(), Client: server.Client(), MaxPages: 2}
-	err := r.Drain(context.Background())
-	if !errors.Is(err, errMaxPagesExceeded) {
-		t.Fatalf("Drain err = %v, want errMaxPagesExceeded", err)
-	}
-	// Page 1 (empty) → queue placeholder. Page 2 starts → confirm + emit
-	// page 1's placeholder, then page 2 is also empty → queue. Page 3
-	// would confirm page 2's placeholder, but MaxPages=2 trips before
-	// we enter it: page 2's placeholder is correctly suppressed.
-	if len(sink.events) != 1 {
-		t.Fatalf("emitted %d events, want 1 (only page 1's confirmed placeholder)", len(sink.events))
-	}
-	ev, ok := sink.events[0].(map[string]any)
-	if !ok || ev["kind"] != "heartbeat" {
-		t.Errorf("event[0] = %v, want placeholder {kind: heartbeat}", sink.events[0])
-	}
-}
-
-// ---- Safety floor: default HTTP client timeout ----
-
-// TestDefaultClientTimeoutIsFinite asserts that when the caller does not
-// supply a client, the runner does not hand out http.DefaultClient (which
-// has no timeout). This is a structural test — we don't wait 30s for the
-// real default to fire; we verify the runner's exposed default constant
-// is finite and the constructed client picks it up.
-func TestDefaultClientTimeoutIsFinite(t *testing.T) {
-	if defaultHTTPTimeout <= 0 {
-		t.Errorf("defaultHTTPTimeout = %v, want > 0", defaultHTTPTimeout)
-	}
-	if defaultHTTPTimeout > 5*time.Minute {
-		t.Errorf("defaultHTTPTimeout = %v, suspiciously large", defaultHTTPTimeout)
-	}
-}
-
-// TestClientTimeoutFiresOnHang exercises the timeout against a server that
-// hangs forever. The runner's client must surface the timeout as a
-// transport-level error within a bounded test window. We use error.mode:
-// "fail" so the timeout propagates as a Drain error (the default "standard"
-// mode logs and silently exits, which is intentional but uninformative here).
-func TestClientTimeoutFiresOnHang(t *testing.T) {
-	hung := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		<-hung
-	}))
-	// Cleanup order matters: unblock the handler BEFORE Close drains
-	// connections, or Close hangs waiting for in-flight requests.
-	t.Cleanup(func() { close(hung); server.Close() })
-
-	doc := bearerSimpleDoc(server.URL, "test-token")
-	doc.Error = &schema.ErrorBlock{Mode: "fail"}
-
-	r := &Runner{
-		Doc:    doc,
-		Sink:   &captureSink{},
-		Now:    fixedNow(),
-		Client: &http.Client{Timeout: 50 * time.Millisecond},
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
+	r := &Runner{Doc: minimalDoc(server.URL), Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
 	err := r.Drain(ctx)
-	if err == nil {
-		t.Fatal("Drain returned nil; expected timeout error")
-	}
-	if !strings.Contains(err.Error(), "Client.Timeout") && !strings.Contains(err.Error(), "timeout") && !strings.Contains(err.Error(), "deadline") {
-		t.Errorf("Drain err = %v, expected a timeout-shaped message", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Drain returned %v, want context.Canceled", err)
 	}
 }
 
-// ---- Safety floor: response-body redaction ----
-
-// TestBodyMetadataRedactsContent asserts the response-body error helper
-// returns a length+class description without the raw bytes. A future change
-// that puts the body back into errors must update this assertion explicitly.
-func TestBodyMetadataRedactsContent(t *testing.T) {
-	secret := []byte(`{"access_token":"super-sensitive-bearer"}`)
-	got := bodyMetadata(secret)
-	if strings.Contains(got, "super-sensitive-bearer") {
-		t.Errorf("bodyMetadata leaked content: %q", got)
-	}
-	if !strings.Contains(got, strconv.Itoa(len(secret))) {
-		t.Errorf("bodyMetadata = %q, want byte count for triage", got)
-	}
-	if !strings.Contains(got, "object-like") {
-		t.Errorf("bodyMetadata = %q, want object-like classification", got)
-	}
-}
-
-func TestBodyMetadataClassifications(t *testing.T) {
-	cases := []struct {
-		name string
-		body []byte
-		want string
-	}{
-		{"empty", []byte{}, "body empty"},
-		{"object", []byte(`{"a":1}`), "object-like"},
-		{"array", []byte(`[1,2]`), "array-like"},
-		{"html", []byte(`<html>`), "html-like"},
-		{"string", []byte(`"hi"`), "string-like"},
-		{"plain", []byte(`yikes`), "non-json"},
-	}
-	for _, tc := range cases {
-		got := bodyMetadata(tc.body)
-		if !strings.Contains(got, tc.want) {
-			t.Errorf("%s: bodyMetadata = %q, want substring %q", tc.name, got, tc.want)
+// TestDrain_RequiresDocAndSink pins the structural preconditions: Doc
+// and Sink are required; Store / Client / Logger / MaxPages get
+// defaults.
+func TestDrain_RequiresDocAndSink(t *testing.T) {
+	t.Run("missing_doc", func(t *testing.T) {
+		r := &Runner{Sink: &captureSink{}}
+		err := r.Drain(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "Doc") {
+			t.Errorf("missing Doc err = %v", err)
 		}
-	}
+	})
+	t.Run("missing_sink", func(t *testing.T) {
+		r := &Runner{Doc: &schema.Doc{IRVersion: "1"}}
+		err := r.Drain(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "Sink") {
+			t.Errorf("missing Sink err = %v", err)
+		}
+	})
 }
 
-// TestDecodeErrorDoesNotLeakBody runs a non-JSON server through the runner
-// and checks the error returned to the runner caller does not contain the
-// raw body bytes — only metadata. error.mode "fail" makes the decode error
-// propagate (the default "standard" mode would log and silently exit).
-func TestDecodeErrorDoesNotLeakBody(t *testing.T) {
-	leakingBody := `<html><body>access_token=super-sensitive</body></html>`
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, leakingBody)
+// TestDrain_HTTPTimeoutFires pins the default client timeout: a hung
+// server cannot wedge Drain indefinitely.
+func TestDrain_HTTPTimeoutFires(t *testing.T) {
+	// httptest server that hangs forever (ctx-based block).
+	hung := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
 	}))
-	defer server.Close()
+	defer hung.Close()
 
-	doc := bearerSimpleDoc(server.URL, "test-token")
+	doc := minimalDoc(hung.URL)
 	doc.Error = &schema.ErrorBlock{Mode: "fail"}
 
 	r := &Runner{
 		Doc:    doc,
 		Sink:   &captureSink{},
 		Now:    fixedNow(),
-		Client: server.Client(),
+		Client: &http.Client{Timeout: 100 * time.Millisecond},
 	}
+	start := time.Now()
 	err := r.Drain(context.Background())
 	if err == nil {
-		t.Fatal("Drain returned nil; expected decode error")
+		t.Error("Drain on hung server: expected timeout error, got nil")
 	}
-	if strings.Contains(err.Error(), "super-sensitive") {
-		t.Errorf("error leaked body content: %v", err)
+	if time.Since(start) > 2*time.Second {
+		t.Errorf("Drain did not honour 100ms client timeout; elapsed %s", time.Since(start))
 	}
 }
 
-// ---- Producer-by-index fix: regression test ----
-
-// TestProducerByIndex_NotByLabel: two unlabeled requests with identical
-// method+path should NOT collide when the runner picks the producer body
-// for the implicit "last request" case. Before the fix, both reqLabel(req)
-// strings were identical and the index of the implicit producer was
-// ambiguous. After the fix the index decides.
-func TestProducerByIndex_NotByLabel(t *testing.T) {
-	var hits atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hit := int(hits.Add(1))
-		// Each call returns a distinct body so the test can tell which
-		// body was treated as the producer.
-		writeJSON(w, http.StatusOK, map[string]any{
-			"events": []map[string]any{{"id": fmt.Sprintf("hit-%d", hit), "timestamp": "2026-05-12T08:00:00Z"}},
-		})
-	}))
+// TestDrain_ProducerByIndex pins the "implicit producer = last request"
+// fallback: two unlabelled requests are distinguished by slice index, not
+// any string-identity match.
+func TestDrain_ProducerByIndex(t *testing.T) {
+	var firstHit, secondHit atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/first", func(w http.ResponseWriter, _ *http.Request) {
+		firstHit.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{
+			map[string]any{"id": "from-first"},
+		}})
+	})
+	mux.HandleFunc("/second", func(w http.ResponseWriter, _ *http.Request) {
+		secondHit.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{
+			map[string]any{"id": "from-second"},
+		}})
+	})
+	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	doc := bearerSimpleDoc(server.URL, "test-token")
-	// Duplicate the request: two unlabeled identical entries. The producer
-	// must be the LAST one, identified by slice index.
-	doc.Requests = append(doc.Requests, doc.Requests[0])
+	doc := minimalDoc(server.URL)
+	doc.Requests = []schema.Request{
+		{Method: "GET", URL: mustInterp("${state.url}/first")},
+		{Method: "GET", URL: mustInterp("${state.url}/second")},
+	}
 
 	sink := &captureSink{}
 	r := &Runner{Doc: doc, Sink: sink, Now: fixedNow(), Client: server.Client()}
 	if err := r.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-	if hits.Load() != 2 {
-		t.Errorf("server hits = %d, want 2", hits.Load())
+	if firstHit.Load() != 1 || secondHit.Load() != 1 {
+		t.Errorf("first=%d second=%d, want both 1", firstHit.Load(), secondHit.Load())
 	}
 	if len(sink.events) != 1 {
-		t.Fatalf("emitted %d events, want 1 (only the last request is the producer)", len(sink.events))
+		t.Fatalf("events = %d, want 1 (from last request)", len(sink.events))
 	}
-	ev, ok := sink.events[0].(map[string]any)
-	if !ok {
-		t.Fatalf("event not a map: %T", sink.events[0])
-	}
-	if ev["id"] != "hit-2" {
-		t.Errorf("event id = %v, want hit-2 (last request body wins)", ev["id"])
+	if got, _ := sink.events[0].(map[string]any)["id"].(string); got != "from-second" {
+		t.Errorf("events[0].id = %q, want from-second", got)
 	}
 }
 
-// ---- doc builders ----
-//
-// These factories produce minimal schema.Doc values that mirror the curated
-// templates/ + schema/testdata/ fixtures. They are NOT a substitute for the
-// fixtures (the IR-roundtrip suite covers those); they isolate the runner
-// test from the fixture directories so an example author can iterate
-// without retro-fitting tests.
-
-func bearerSimpleDoc(baseURL, token string) *schema.Doc {
-	return &schema.Doc{
-		IRVersion: "1",
-		State: &schema.State{
-			Fields: map[string]schema.FieldDecl{
-				"url":     {Type: "url", Default: baseURL},
-				"api_key": {Type: "secret", Default: token},
-			},
-		},
-		Defaults: &schema.Defaults{BaseURL: vRef("state.url")},
-		Auth:     schema.Auth{Bearer: &schema.BearerAuth{Token: vRef("state.api_key")}},
-		Requests: []schema.Request{{
-			Method: "GET",
-			Path:   ptrValue(vStr("/api/v1/events")),
-			Query: map[string]schema.Value{
-				"since": vRef("cursor.last_timestamp"),
-			},
-		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
-		Pagination: schema.Pagination{None: &struct{}{}},
-		Progress: schema.Progress{
-			LatestEventTimestamp: &schema.TimestampProgress{
-				EventTime: schema.EventTime{Path: mustPath("timestamp")},
-				Initial:   &schema.Initial{Lookback: vStr("24h")},
-			},
-		},
-	}
-}
-
-func cursorTokenDoc(baseURL, token string) *schema.Doc {
-	return &schema.Doc{
-		IRVersion: "1",
-		State: &schema.State{Fields: map[string]schema.FieldDecl{
-			"url":     {Type: "url", Default: baseURL},
-			"api_key": {Type: "secret", Default: token},
-		}},
-		Defaults: &schema.Defaults{BaseURL: vRef("state.url")},
-		Auth:     schema.Auth{Bearer: &schema.BearerAuth{Token: vRef("state.api_key")}},
-		Requests: []schema.Request{{
-			Method: "GET",
-			Path:   ptrValue(vStr("/api/v1/findings")),
-			Query: map[string]schema.Value{
-				"cursor": vRef("cursor.token"),
-			},
-		}},
-		Response: schema.Response{Decode: "json", EventsAt: mustPath("response.body.findings")},
-		Pagination: schema.Pagination{CursorToken: &schema.CursorTokenPagination{
-			TokenAt: mustPath("response.body.next_cursor"),
-		}},
-		Progress: schema.Progress{
-			LatestEventTimestamp: &schema.TimestampProgress{
-				EventTime: schema.EventTime{Path: mustPath("created_at")},
-			},
-		},
-	}
-}
-
-// ---- B-01 / B-20: standard mode does NOT advance the cursor ----
-
-// TestStandardModeOnFailureDoesNotAdvanceProgress drives a cursor_token drain
-// where pages 1 and 2 succeed and page 3 returns 500 in error.mode=standard.
-// Per §3.4 + B-20, progress.advance MUST NOT run — cursor.last_timestamp
-// should still be at the seed (initial.lookback) value, not the max event
-// time from pages 1-2. Pagination cursor mid-state IS expected to persist
-// (so the next drain resumes from the failed page, not the start of the
-// window).
-func TestStandardModeOnFailureDoesNotAdvanceProgress(t *testing.T) {
-	var hits atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hit := int(hits.Add(1))
-		switch hit {
-		case 1:
-			writeJSON(w, http.StatusOK, map[string]any{
-				"findings":    []map[string]any{{"id": "a", "created_at": "2026-05-12T08:00:00Z"}},
-				"next_cursor": "tok-2",
-			})
-		case 2:
-			writeJSON(w, http.StatusOK, map[string]any{
-				"findings":    []map[string]any{{"id": "b", "created_at": "2026-05-12T08:01:00Z"}},
-				"next_cursor": "tok-3",
-			})
-		default:
-			http.Error(w, "boom", http.StatusInternalServerError)
-		}
-	}))
+// TestDrain_ProducesEventsTrue pins the explicit producer override: the
+// request with produces_events:true wins, even if it's not last.
+func TestDrain_ProducesEventsTrue(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/data", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{
+			map[string]any{"id": "the-events"},
+		}})
+	})
+	mux.HandleFunc("/sentinel", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	})
+	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	doc := cursorTokenDoc(server.URL, "test-token")
-	doc.Progress.LatestEventTimestamp.Initial = &schema.Initial{Lookback: vStr("24h")}
-	store := &MemoryStore{}
-	r := &Runner{Doc: doc, Store: store, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	doc := minimalDoc(server.URL)
+	doc.Requests = []schema.Request{
+		{ID: "data", Method: "GET", URL: mustInterp("${state.url}/data"), ProducesEvents: true},
+		{ID: "sentinel", Method: "GET", URL: mustInterp("${state.url}/sentinel")},
+	}
+
+	sink := &captureSink{}
+	r := &Runner{Doc: doc, Sink: sink, Now: fixedNow(), Client: server.Client()}
 	if err := r.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-	snap, _ := store.Load()
-	// Seed wrote cursor.last_timestamp = (fixedNow - 24h); progress.advance
-	// would have overwritten it with the max event time across pages 1-2.
-	// Assert the seed value survived.
-	wantSeed := fixedNow()().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
-	got, _ := snap.Cursor["last_timestamp"].(string)
-	if got != wantSeed {
-		t.Errorf("cursor.last_timestamp = %q, want seed value %q (standard-mode failure must skip progress.advance)", got, wantSeed)
-	}
-	maxEventTS := "2026-05-12T08:01:00Z"
-	if got == maxEventTS {
-		t.Errorf("cursor.last_timestamp advanced to max event timestamp %q — exactly what §3.4 forbids on standard-mode failure", got)
+	if len(sink.events) != 1 {
+		t.Fatalf("events = %d, want 1 (the-events from non-last producer)", len(sink.events))
 	}
 }
 
-// ---- B-02 / B-21: empty_events does not run extracts / phaseTransition ----
-
-// TestEmptyEventsDoesNotBindStaleSteps drives an iteration where a step
-// configured with `on_status: {429: empty_events}` returns 429. The step
-// has an extract pointing at a body path; per B-02 the extract MUST NOT
-// run against the nil body, so the named state field stays at its default.
-func TestEmptyEventsDoesNotBindStaleSteps(t *testing.T) {
+// TestDrain_ExtractToStatePersistsAcrossDrains pins the persistence
+// classification: an extract whose to: is state.<name> is recorded in
+// the snapshot.
+func TestDrain_ExtractToStatePersistsAcrossDrains(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "rate-limit", http.StatusTooManyRequests)
+		w.Header().Set("ETag", `"v42"`)
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
 	}))
 	defer server.Close()
 
-	doc := &schema.Doc{
-		IRVersion: "1",
-		State: &schema.State{Fields: map[string]schema.FieldDecl{
-			"url":     {Type: "url", Default: server.URL},
-			"api_key": {Type: "secret", Default: "tok"},
-			"marker":  {Type: "string", Default: "pristine"},
-		}},
-		Defaults: &schema.Defaults{BaseURL: vRef("state.url")},
-		Auth:     schema.Auth{Bearer: &schema.BearerAuth{Token: vRef("state.api_key")}},
-		Requests: []schema.Request{{
-			ID:     "probe",
-			Method: "GET",
-			Path:   ptrValue(vStr("/api/v1/events")),
-			OnStatus: map[int]string{
-				429: "empty_events",
-			},
-			Extract: []schema.ExtractVar{{
-				Name: "marker",
-				From: mustPath("response.body.body_marker"),
-			}},
-		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
-		Pagination: schema.Pagination{None: &struct{}{}},
-		Progress:   schema.Progress{Stateless: &struct{}{}},
+	doc := minimalDoc(server.URL)
+	doc.State["etag"] = schema.FieldDecl{Type: "string"}
+	doc.Requests[0].Extract = []schema.ExtractVar{
+		{To: mustPath("state.etag"), From: mustPath("response.header.ETag")},
 	}
+
 	store := &MemoryStore{}
-	r := &Runner{Doc: doc, Store: store, Sink: &captureSink{}, Client: server.Client()}
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: server.Client()}
 	if err := r.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
+
 	snap, _ := store.Load()
-	if got := snap.State["marker"]; got != "pristine" && got != nil {
-		t.Errorf("state.marker = %v, want pristine/unset (empty_events must skip extracts)", got)
+	if got, _ := snap.State["etag"].(string); got != `"v42"` {
+		t.Errorf("state.etag = %v, want \"v42\"", snap.State["etag"])
 	}
 }
 
-// ---- B-19: MaxPages error carries the iteration count ----
-
-func TestMaxPagesErrorWrapsIterationCount(t *testing.T) {
+// TestDrain_BodyMetadataRedactsContent pins the redaction-safe error
+// path: a decode error never includes the raw response body — only
+// length and content classification.
+func TestDrain_BodyMetadataRedactsContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"findings":    []map[string]any{{"id": "x", "created_at": "2026-05-12T08:00:00Z"}},
-			"next_cursor": "same-token-forever",
-		})
+		w.Header().Set("Content-Type", "application/json")
+		// Embed an obvious secret in the body that must not appear in
+		// the error.
+		_, _ = w.Write([]byte("not-json-but-contains-SECRET-TOKEN-xyz"))
 	}))
 	defer server.Close()
 
-	r := &Runner{Doc: cursorTokenDoc(server.URL, "test-token"), Sink: &captureSink{}, Now: fixedNow(), Client: server.Client(), MaxPages: 5}
+	doc := minimalDoc(server.URL)
+	doc.Error = &schema.ErrorBlock{Mode: "fail"}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
 	err := r.Drain(context.Background())
 	if err == nil {
-		t.Fatalf("expected MaxPages error")
+		t.Fatal("Drain: expected decode error, got nil")
 	}
-	if !strings.Contains(err.Error(), "5 iterations") {
-		t.Errorf("error %q does not contain iteration count", err.Error())
+	if strings.Contains(err.Error(), "SECRET-TOKEN-xyz") {
+		t.Errorf("err leaks raw body: %v", err)
 	}
-	if !strings.Contains(err.Error(), "MaxPages") {
-		t.Errorf("error %q does not contain MaxPages label", err.Error())
-	}
-}
-
-// writeJSON is a small helper for the httptest handlers.
-func writeJSON(w http.ResponseWriter, code int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	buf := &bytes.Buffer{}
-	if err := json.NewEncoder(buf).Encode(payload); err != nil {
-		panic(err)
-	}
-	_, _ = w.Write(buf.Bytes())
 }

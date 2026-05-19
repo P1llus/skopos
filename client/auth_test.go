@@ -6,625 +6,692 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/p1llus/skopos/schema"
 )
 
-// ---- oauth2 helpers ----
+// TestAuth_NoneAttachesNothing pins the none variant: no Authorization
+// header is added.
+func TestAuth_NoneAttachesNothing(t *testing.T) {
+	var seenAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenAuth = r.Header.Get("Authorization")
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	}))
+	defer server.Close()
 
-// oauth2TokenServer constructs a token endpoint that returns the supplied
-// access_token + lifetime. tokenCalls counts how many times the endpoint
-// fired so tests can assert cache hit/miss behaviour. wantGrant is the
-// grant_type the test expects; mismatches fail the test (mostly a sanity
-// check that the runner actually issued the right grant).
-type oauth2TokenServer struct {
-	server     *httptest.Server
-	tokenCalls atomic.Int32
+	r := &Runner{Doc: minimalDoc(server.URL), Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if seenAuth != "" {
+		t.Errorf("Authorization = %q, want empty", seenAuth)
+	}
 }
 
-func newOAuth2TokenServer(t *testing.T, accessToken string, expiresIn int, wantGrant string, validate func(*http.Request) bool) *oauth2TokenServer {
-	t.Helper()
-	out := &oauth2TokenServer{}
-	out.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		out.tokenCalls.Add(1)
-		if r.Method != http.MethodPost {
-			t.Errorf("token endpoint method = %s, want POST", r.Method)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
+// TestAuth_BearerAttachesToken pins the bearer variant: the token Value
+// is evaluated and prefixed with "Bearer ".
+func TestAuth_BearerAttachesToken(t *testing.T) {
+	var seen string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get("Authorization")
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	}))
+	defer server.Close()
+
+	doc := bearerDoc(server.URL, "tok-abc")
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if seen != "Bearer tok-abc" {
+		t.Errorf("Authorization = %q, want Bearer tok-abc", seen)
+	}
+}
+
+// TestAuth_BasicAttachesBase64 pins the basic variant: Authorization
+// header = "Basic " + base64(user:pass).
+func TestAuth_BasicAttachesBase64(t *testing.T) {
+	var seen string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get("Authorization")
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["user"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("admin"))}
+	doc.State["pass"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("hunter2"))}
+	doc.Auth = schema.Auth{Basic: &schema.BasicAuth{
+		Username: vRef("state.user"),
+		Password: vRef("state.pass"),
+	}}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("admin:hunter2"))
+	if seen != want {
+		t.Errorf("Authorization = %q, want %q", seen, want)
+	}
+}
+
+// TestAuth_APIKeyHeader pins the api_key (header) variant.
+func TestAuth_APIKeyHeader(t *testing.T) {
+	var seen string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get("X-API-Key")
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["k"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("api-token"))}
+	doc.Auth = schema.Auth{APIKey: &schema.APIKeyAuth{
+		Header: "X-API-Key",
+		Value:  vRef("state.k"),
+	}}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if seen != "api-token" {
+		t.Errorf("X-API-Key = %q, want api-token", seen)
+	}
+}
+
+// TestAuth_APIKeyInQuery pins the api_key in_query=true variant: the key
+// is added to the URL query string instead of a header.
+func TestAuth_APIKeyInQuery(t *testing.T) {
+	var seenQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenQuery = r.URL.Query().Get("apikey")
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["k"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("query-token"))}
+	doc.Auth = schema.Auth{APIKey: &schema.APIKeyAuth{
+		Header:  "apikey",
+		Value:   vRef("state.k"),
+		InQuery: true,
+	}}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if seenQuery != "query-token" {
+		t.Errorf("?apikey = %q, want query-token", seenQuery)
+	}
+}
+
+// TestAuth_CustomHeader pins the custom variant: a single custom-named
+// header carries the value.
+func TestAuth_CustomHeader(t *testing.T) {
+	var seen string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get("X-Custom-Auth")
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["v"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("custom-value"))}
+	doc.Auth = schema.Auth{Custom: &schema.CustomAuth{
+		Header: "X-Custom-Auth",
+		Value:  vRef("state.v"),
+	}}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if seen != "custom-value" {
+		t.Errorf("X-Custom-Auth = %q, want custom-value", seen)
+	}
+}
+
+// TestAuth_MultiModeDispatch pins the multi_mode variant: the first
+// branch whose predicate is true wins; otherwise the default Auth.
+func TestAuth_MultiModeDispatch(t *testing.T) {
+	type sample struct{ Bearer, APIKey string }
+	var got sample
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = sample{
+			Bearer: r.Header.Get("Authorization"),
+			APIKey: r.Header.Get("X-API-Key"),
 		}
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form", http.StatusBadRequest)
-			return
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	}))
+	defer server.Close()
+
+	build := func(mode string) *schema.Doc {
+		doc := minimalDoc(server.URL)
+		doc.State["mode"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr(mode))}
+		doc.State["token"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("bearer-tok"))}
+		doc.State["key"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("api-tok"))}
+		doc.Auth = schema.Auth{MultiMode: &schema.MultiModeAuth{
+			Branches: []schema.AuthBranch{
+				{
+					When: schema.Predicate{Eq: &schema.PredicateEq{
+						Path: mustPath("state.mode"), Value: vStr("bearer"),
+					}},
+					Auth: schema.Auth{Bearer: &schema.BearerAuth{Token: vRef("state.token")}},
+				},
+				{
+					When: schema.Predicate{Eq: &schema.PredicateEq{
+						Path: mustPath("state.mode"), Value: vStr("api_key"),
+					}},
+					Auth: schema.Auth{APIKey: &schema.APIKeyAuth{Header: "X-API-Key", Value: vRef("state.key")}},
+				},
+			},
+			Default: schema.Auth{None: &struct{}{}},
+		}}
+		return doc
+	}
+
+	t.Run("bearer_branch_wins", func(t *testing.T) {
+		got = sample{}
+		r := &Runner{Doc: build("bearer"), Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+		if err := r.Drain(context.Background()); err != nil {
+			t.Fatalf("Drain: %v", err)
 		}
-		if got := r.FormValue("grant_type"); got != wantGrant {
-			t.Errorf("grant_type = %q, want %q", got, wantGrant)
+		if got.Bearer != "Bearer bearer-tok" {
+			t.Errorf("bearer mode Authorization = %q", got.Bearer)
 		}
-		if validate != nil && !validate(r) {
-			http.Error(w, "validation failed", http.StatusUnauthorized)
-			return
+	})
+
+	t.Run("api_key_branch_wins", func(t *testing.T) {
+		got = sample{}
+		r := &Runner{Doc: build("api_key"), Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+		if err := r.Drain(context.Background()); err != nil {
+			t.Fatalf("Drain: %v", err)
+		}
+		if got.APIKey != "api-tok" {
+			t.Errorf("api_key mode X-API-Key = %q", got.APIKey)
+		}
+	})
+
+	t.Run("default_when_no_branch_matches", func(t *testing.T) {
+		got = sample{}
+		r := &Runner{Doc: build("other"), Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+		if err := r.Drain(context.Background()); err != nil {
+			t.Fatalf("Drain: %v", err)
+		}
+		if got.Bearer != "" || got.APIKey != "" {
+			t.Errorf("default branch should attach nothing; got %+v", got)
+		}
+	})
+}
+
+// TestAuth_OAuth2ClientCredentials_CacheReusedAcrossPages pins the
+// unified Cache block path within one drain: the first iteration
+// fetches a fresh token, writes cache.<name>, and the subsequent
+// pagination iterations re-use it without re-hitting the token
+// endpoint.
+func TestAuth_OAuth2ClientCredentials_CacheReusedAcrossPages(t *testing.T) {
+	var tokenHits atomic.Int32
+	var dataHits atomic.Int32
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		tokenHits.Add(1)
+		if got := r.Header.Get("Authorization"); !strings.HasPrefix(got, "Basic ") {
+			t.Errorf("token endpoint Authorization = %q, want Basic ...", got)
+		}
+		bs, _ := io.ReadAll(r.Body)
+		form, _ := url.ParseQuery(string(bs))
+		if form.Get("grant_type") != "client_credentials" {
+			t.Errorf("grant_type = %q, want client_credentials", form.Get("grant_type"))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"access_token": accessToken,
-			"token_type":   "bearer",
-			"expires_in":   expiresIn,
+			"access_token": "fresh-tok",
+			"expires_in":   float64(3600),
+			"token_type":   "Bearer",
 		})
-	}))
-	t.Cleanup(out.server.Close)
-	return out
-}
+	})
+	mux.HandleFunc("/data", func(w http.ResponseWriter, r *http.Request) {
+		n := dataHits.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer fresh-tok" {
+			t.Errorf("data Authorization = %q", got)
+		}
+		body := map[string]any{"events": []any{map[string]any{"id": "e"}}}
+		if n < 3 {
+			body["next_cursor"] = "page"
+		}
+		writeJSON(w, http.StatusOK, body)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
 
-type oauth2GrantSpec struct {
-	kind         string
-	clientID     string
-	clientSecret string
-	username     string
-	password     string
-}
+	doc := minimalDoc(server.URL)
+	doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: ptrValue(mustInterp(server.URL + "/oauth/token"))}
+	doc.State["client_id"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("test-client"))}
+	doc.State["client_secret"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("test-secret"))}
+	doc.State["next_token"] = schema.FieldDecl{Type: "string"}
+	doc.Requests[0].URL = mustInterp("${state.url}/data")
+	doc.Pagination = schema.Pagination{CursorToken: &schema.CursorTokenPagination{
+		From: mustPath("response.body.next_cursor"),
+		To:   mustPath("state.next_token"),
+	}}
+	doc.Auth = schema.Auth{OAuth2: &schema.OAuth2Auth{
+		ClientCredentials: &schema.ClientCredentialsGrant{
+			TokenURL:     vRef("state.token_url"),
+			ClientID:     vRef("state.client_id"),
+			ClientSecret: vRef("state.client_secret"),
+			Cache: &schema.Cache{
+				To:        mustPath("cache.access_token"),
+				ExpiresAt: vRefDefault("response.body.expires_in", vStr("1h")),
+				Buffer:    "60s",
+			},
+		},
+	}}
 
-// oauth2Doc builds a one-request Doc with an OAuth2 auth block targeting
-// the given token URL. The API server (apiURL) is hit on every iteration.
-// cache controls whether the token-cache block is wired up.
-func oauth2Doc(apiURL, tokenURL string, grant oauth2GrantSpec, cache *schema.TokenCache) *schema.Doc {
-	doc := &schema.Doc{
-		IRVersion: "1",
-		State: &schema.State{Fields: map[string]schema.FieldDecl{
-			"url":       {Type: "url", Default: apiURL},
-			"token_url": {Type: "url", Default: tokenURL},
-		}},
-		Defaults: &schema.Defaults{BaseURL: vRef("state.url")},
-		Requests: []schema.Request{{
-			Method: "GET",
-			Path:   ptrValue(vStr("/api/v1/events")),
-		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
-		Pagination: schema.Pagination{None: &struct{}{}},
-		Progress:   schema.Progress{Stateless: &struct{}{}},
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
 	}
-	switch grant.kind {
-	case "client_credentials":
-		doc.State.Fields["client_id"] = schema.FieldDecl{Type: "string", Default: grant.clientID}
-		doc.State.Fields["client_secret"] = schema.FieldDecl{Type: "secret", Default: grant.clientSecret}
+	if dataHits.Load() < 2 {
+		t.Fatalf("dataHits = %d, want >= 2 (pagination loop didn't fire)", dataHits.Load())
+	}
+	if tokenHits.Load() != 1 {
+		t.Errorf("tokenHits = %d, want 1 (cache HIT on subsequent iterations of the same drain)", tokenHits.Load())
+	}
+}
+
+// TestAuth_OAuth2_CacheNotPersisted pins the post-redesign semantic: a
+// fresh Runner does NOT inherit the previous run's cache slot. Cache is
+// process memory only; a runner restart forces a token re-fetch.
+func TestAuth_OAuth2_CacheNotPersisted(t *testing.T) {
+	var tokenHits atomic.Int32
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, _ *http.Request) {
+		tokenHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"access_token": "tok-from-fresh-runner",
+			"expires_in":   float64(3600),
+		})
+	})
+	mux.HandleFunc("/data", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	build := func() *Runner {
+		doc := minimalDoc(server.URL)
+		doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: ptrValue(mustInterp(server.URL + "/oauth/token"))}
+		doc.State["client_id"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("c"))}
+		doc.State["client_secret"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("s"))}
+		doc.Requests[0].URL = mustInterp("${state.url}/data")
 		doc.Auth = schema.Auth{OAuth2: &schema.OAuth2Auth{
 			ClientCredentials: &schema.ClientCredentialsGrant{
 				TokenURL:     vRef("state.token_url"),
 				ClientID:     vRef("state.client_id"),
 				ClientSecret: vRef("state.client_secret"),
-				Cache:        cache,
+				Cache: &schema.Cache{
+					To:        mustPath("cache.access_token"),
+					ExpiresAt: vRefDefault("response.body.expires_in", vStr("1h")),
+					Buffer:    "60s",
+				},
 			},
 		}}
-	case "password":
-		doc.State.Fields["username"] = schema.FieldDecl{Type: "string", Default: grant.username}
-		doc.State.Fields["password"] = schema.FieldDecl{Type: "secret", Default: grant.password}
-		doc.Auth = schema.Auth{OAuth2: &schema.OAuth2Auth{
-			PasswordGrant: &schema.PasswordGrant{
-				TokenURL: vRef("state.token_url"),
-				Username: vRef("state.username"),
-				Password: vRef("state.password"),
-				Cache:    cache,
-			},
-		}}
+		// Persistent shared store (FileStore-like behaviour).
+		return &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client(), Store: &MemoryStore{}}
 	}
-	// When cache is set, schema.Validate would auto-register the store_in
-	// field and its paired <store_in>_expires_at slot (slice 7); emulate
-	// that here so newScope sees both slots as runtime-mutable.
-	if cache != nil && cache.StoreIn != "" {
-		doc.State.Fields[cache.StoreIn] = schema.FieldDecl{Type: "string", Mutability: "runtime"}
-		doc.State.Fields[cache.StoreIn+"_expires_at"] = schema.FieldDecl{Type: "string", Mutability: "runtime"}
-	}
-	return doc
-}
 
-// TestAuth_OAuth2_ClientCredentials_NoCache asserts the runner fetches a
-// fresh access token before every IR-described request when the grant has
-// no cache: block.
-func TestAuth_OAuth2_ClientCredentials_NoCache(t *testing.T) {
-	tok := newOAuth2TokenServer(t, "tok-cc-1", 3600, "client_credentials", func(r *http.Request) bool {
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Basic ") {
-			t.Errorf("Authorization = %q, want Basic prefix", auth)
-			return false
+	// Each fresh runner forces a token re-fetch because cache.* never
+	// rides through the store.
+	for i := 0; i < 3; i++ {
+		if err := build().Drain(context.Background()); err != nil {
+			t.Fatalf("Drain %d: %v", i, err)
 		}
-		decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(auth, "Basic "))
-		if err != nil {
-			t.Errorf("Basic decode: %v", err)
-			return false
-		}
-		if string(decoded) != "test-client:test-secret" {
-			t.Errorf("Basic creds = %q, want test-client:test-secret", string(decoded))
-			return false
-		}
-		return true
-	})
-
-	var apiCalls atomic.Int32
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiCalls.Add(1)
-		if got := r.Header.Get("Authorization"); got != "Bearer tok-cc-1" {
-			t.Errorf("Authorization = %q, want Bearer tok-cc-1", got)
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-	}))
-	defer api.Close()
-
-	doc := oauth2Doc(api.URL, tok.server.URL, oauth2GrantSpec{
-		kind:         "client_credentials",
-		clientID:     "test-client",
-		clientSecret: "test-secret",
-	}, nil)
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: api.Client()}
-
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain 1: %v", err)
 	}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain 2: %v", err)
-	}
-
-	if got := tok.tokenCalls.Load(); got != 2 {
-		t.Errorf("token endpoint hits = %d, want 2 (no cache: one fetch per drain)", got)
-	}
-	if got := apiCalls.Load(); got != 2 {
-		t.Errorf("api hits = %d, want 2", got)
+	if tokenHits.Load() != 3 {
+		t.Errorf("tokenHits = %d, want 3 (each fresh Runner re-fetches)", tokenHits.Load())
 	}
 }
 
-// TestAuth_OAuth2_ClientCredentials_Cache_Hit asserts the cached token is
-// re-used on a second drain while it's still inside its expiry buffer.
-func TestAuth_OAuth2_ClientCredentials_Cache_Hit(t *testing.T) {
-	tok := newOAuth2TokenServer(t, "tok-cc-cache", 3600, "client_credentials", nil)
-
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer tok-cc-cache" {
-			t.Errorf("Authorization = %q, want Bearer tok-cc-cache", got)
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-	}))
-	defer api.Close()
-
-	doc := oauth2Doc(api.URL, tok.server.URL, oauth2GrantSpec{
-		kind:         "client_credentials",
-		clientID:     "test-client",
-		clientSecret: "test-secret",
-	}, &schema.TokenCache{StoreIn: "token", ExpiryField:  mustPath("response.body.expires_in"), ExpiryBuffer: "60s"})
-
-	store := &MemoryStore{}
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: api.Client()}
-
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain 1: %v", err)
-	}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain 2: %v", err)
-	}
-
-	if got := tok.tokenCalls.Load(); got != 1 {
-		t.Errorf("token endpoint hits = %d, want 1 (cache hit on second drain)", got)
-	}
-	snap, _ := store.Load()
-	if got, ok := snap.State["token"].(string); !ok || got != "tok-cc-cache" {
-		t.Errorf("state.token = %v (ok=%v), want tok-cc-cache", snap.State["token"], ok)
-	}
-	if _, ok := snap.State["token_expires_at"].(string); !ok {
-		t.Errorf("state.token_expires_at = %v, want RFC 3339 string", snap.State["token_expires_at"])
-	}
-}
-
-// TestAuth_OAuth2_ClientCredentials_Cache_ExpiredRefetch advances the
-// clock past the cached token's expiry buffer and asserts the next drain
-// fetches a fresh token.
-func TestAuth_OAuth2_ClientCredentials_Cache_ExpiredRefetch(t *testing.T) {
-	tok := newOAuth2TokenServer(t, "tok-cc-fresh", 60, "client_credentials", nil)
-
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer tok-cc-fresh" {
-			t.Errorf("Authorization = %q, want Bearer tok-cc-fresh", got)
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-	}))
-	defer api.Close()
-
-	doc := oauth2Doc(api.URL, tok.server.URL, oauth2GrantSpec{
-		kind:         "client_credentials",
-		clientID:     "test-client",
-		clientSecret: "test-secret",
-	}, &schema.TokenCache{StoreIn: "token", ExpiryField:  mustPath("response.body.expires_in"), ExpiryBuffer: "30s"})
-
-	clock := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
-	advance := time.Duration(0)
-	now := func() time.Time { return clock.Add(advance) }
-
-	store := &MemoryStore{}
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: now, Client: api.Client()}
-
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain 1: %v", err)
-	}
-	// Token valid for 60s; buffer 30s. Advance 45s → now+buffer (75s) >
-	// expiry (60s) → re-fetch.
-	advance = 45 * time.Second
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain 2: %v", err)
-	}
-
-	if got := tok.tokenCalls.Load(); got != 2 {
-		t.Errorf("token endpoint hits = %d, want 2 (cached token expired)", got)
-	}
-}
-
-// TestAuth_OAuth2_ClientCredentials_Cache_PersistsAcrossRunners asserts the
-// cached token survives a process restart: the second drain re-instantiates
-// the Runner on the same Store and does NOT re-fetch.
-func TestAuth_OAuth2_ClientCredentials_Cache_PersistsAcrossRunners(t *testing.T) {
-	tok := newOAuth2TokenServer(t, "tok-persisted", 3600, "client_credentials", nil)
-
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer tok-persisted" {
-			t.Errorf("Authorization = %q, want Bearer tok-persisted", got)
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-	}))
-	defer api.Close()
-
-	store := &MemoryStore{}
-	mkRunner := func() *Runner {
-		doc := oauth2Doc(api.URL, tok.server.URL, oauth2GrantSpec{
-			kind:         "client_credentials",
-			clientID:     "test-client",
-			clientSecret: "test-secret",
-		}, &schema.TokenCache{StoreIn: "token", ExpiryField:  mustPath("response.body.expires_in"), ExpiryBuffer: "60s"})
-		return &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: api.Client()}
-	}
-
-	if err := mkRunner().Drain(context.Background()); err != nil {
-		t.Fatalf("Drain 1: %v", err)
-	}
-	if err := mkRunner().Drain(context.Background()); err != nil {
-		t.Fatalf("Drain 2: %v", err)
-	}
-	if got := tok.tokenCalls.Load(); got != 1 {
-		t.Errorf("token endpoint hits = %d, want 1 (cache hit across Runner instances)", got)
-	}
-}
-
-// TestAuth_OAuth2_TokenEndpoint_NonSuccess asserts a non-2xx response from
-// the token endpoint surfaces as an auth error AND does NOT leak the
-// response body into the error string.
-func TestAuth_OAuth2_TokenEndpoint_NonSuccess(t *testing.T) {
-	const secretBody = `{"error":"invalid_client","leaked_secret":"DO-NOT-LOG"}`
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(secretBody))
-	}))
-	defer server.Close()
-
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		t.Errorf("api hit after failed token fetch")
-		http.Error(w, "should not reach api", http.StatusInternalServerError)
-	}))
-	defer api.Close()
-
-	doc := oauth2Doc(api.URL, server.URL, oauth2GrantSpec{
-		kind:         "client_credentials",
-		clientID:     "test-client",
-		clientSecret: "test-secret",
-	}, nil)
-	// error.mode=fail so the token-endpoint 401 surfaces as a Drain error
-	// rather than being logged + swallowed by the default "standard" mode.
-	doc.Error = &schema.ErrorBlock{Mode: "fail"}
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: api.Client()}
-
-	err := r.Drain(context.Background())
-	if err == nil {
-		t.Fatal("Drain returned nil, want auth error")
-	}
-	if strings.Contains(err.Error(), "leaked_secret") || strings.Contains(err.Error(), "DO-NOT-LOG") {
-		t.Errorf("error string %q leaks response body", err.Error())
-	}
-}
-
-// TestAuth_OAuth2_CustomExpiryField asserts cache.expiry_field is honoured
-// for a non-default body shape (here the token endpoint reports lifetime
-// nested under "ttl.seconds" rather than the RFC 6749 expires_in).
-func TestAuth_OAuth2_CustomExpiryField(t *testing.T) {
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls.Add(1)
+// TestAuth_OAuth2_PasswordGrant pins the password_grant variant: the
+// token endpoint receives grant_type=password and the user credentials
+// in the form body.
+func TestAuth_OAuth2_PasswordGrant(t *testing.T) {
+	var form url.Values
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		bs, _ := io.ReadAll(r.Body)
+		form, _ = url.ParseQuery(string(bs))
 		writeJSON(w, http.StatusOK, map[string]any{
-			"access_token": "tok-nested",
-			"token_type":   "bearer",
-			"ttl":          map[string]any{"seconds": 3600},
+			"access_token": "pw-tok",
+			"expires_in":   float64(3600),
 		})
-	}))
+	})
+	mux.HandleFunc("/data", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	})
+	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-	}))
-	defer api.Close()
-
-	doc := oauth2Doc(api.URL, server.URL, oauth2GrantSpec{
-		kind:         "client_credentials",
-		clientID:     "test-client",
-		clientSecret: "test-secret",
-	}, &schema.TokenCache{StoreIn: "token", ExpiryField: mustPath("response.body.ttl.seconds"), ExpiryBuffer: "60s"})
-
-	store := &MemoryStore{}
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: api.Client()}
-
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain 1: %v", err)
-	}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain 2: %v", err)
-	}
-	if got := calls.Load(); got != 1 {
-		t.Errorf("token endpoint hits = %d, want 1 (cache hit via ttl.seconds)", got)
-	}
-}
-
-// TestExtractOAuth2Lifetime pins the closed set of expires_in value
-// shapes the runtime accepts (RFC 6749 number, stringified integer, Go
-// duration string).
-func TestExtractOAuth2Lifetime(t *testing.T) {
-	cases := []struct {
-		name string
-		body string
-		want time.Duration
-	}{
-		{name: "rfc6749_integer_seconds", body: `{"expires_in":3600}`, want: 3600 * time.Second},
-		{name: "stringified_integer", body: `{"expires_in":"3600"}`, want: 3600 * time.Second},
-		{name: "duration_string", body: `{"expires_in":"1h"}`, want: time.Hour},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var body map[string]any
-			if err := json.Unmarshal([]byte(tc.body), &body); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			got, err := extractOAuth2Lifetime(body, nil)
-			if err != nil {
-				t.Fatalf("extractOAuth2Lifetime: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("got %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-// TestAuth_MultiMode_FirstMatchWins asserts that when two branch
-// predicates would both match, the earlier-declared branch wins and the
-// later branch does NOT fire.
-func TestAuth_MultiMode_FirstMatchWins(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer sentinel-key" {
-			t.Errorf("Authorization = %q, want Bearer sentinel-key (first branch should win)", got)
-		}
-		if got := r.Header.Get("X-API-Key"); got != "" {
-			t.Errorf("second branch fired despite first match: X-API-Key = %q", got)
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-	}))
-	defer server.Close()
-
-	doc := &schema.Doc{
-		IRVersion: "1",
-		State: &schema.State{Fields: map[string]schema.FieldDecl{
-			"url":     {Type: "url", Default: server.URL},
-			"api_key": {Type: "secret", Default: "sentinel-key"},
-		}},
-		Defaults: &schema.Defaults{BaseURL: vRef("state.url")},
-		Auth: schema.Auth{MultiMode: &schema.MultiModeAuth{
-			Branches: []schema.AuthBranch{
-				{
-					When: schema.Predicate{LiteralBool: ptrBool(true)},
-					Auth: schema.Auth{Bearer: &schema.BearerAuth{Token: vRef("state.api_key")}},
-				},
-				{
-					When: schema.Predicate{LiteralBool: ptrBool(true)},
-					Auth: schema.Auth{APIKey: &schema.APIKeyAuth{Header: "X-API-Key", Value: vRef("state.api_key")}},
-				},
+	doc := minimalDoc(server.URL)
+	doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: ptrValue(mustInterp(server.URL + "/oauth/token"))}
+	doc.State["user"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("alice"))}
+	doc.State["pass"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("hunter2"))}
+	doc.Requests[0].URL = mustInterp("${state.url}/data")
+	doc.Auth = schema.Auth{OAuth2: &schema.OAuth2Auth{
+		PasswordGrant: &schema.PasswordGrant{
+			TokenURL: vRef("state.token_url"),
+			Username: vRef("state.user"),
+			Password: vRef("state.pass"),
+			Cache: &schema.Cache{
+				To:        mustPath("cache.access_token"),
+				ExpiresAt: vRefDefault("response.body.expires_in", vStr("1h")),
+				Buffer:    "60s",
 			},
-			Default: schema.AuthDefault{Auth: schema.Auth{None: &struct{}{}}},
-		}},
-		Requests: []schema.Request{{
-			Method: "GET",
-			Path:   ptrValue(vStr("/api/v1/events")),
-		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
-		Pagination: schema.Pagination{None: &struct{}{}},
-		Progress:   schema.Progress{Stateless: &struct{}{}},
-	}
+		},
+	}}
+
 	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
 	if err := r.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
+	if form.Get("grant_type") != "password" {
+		t.Errorf("grant_type = %q, want password", form.Get("grant_type"))
+	}
+	if form.Get("username") != "alice" || form.Get("password") != "hunter2" {
+		t.Errorf("password grant form: %v", form)
+	}
 }
 
-func ptrBool(b bool) *bool { return &b }
+// TestAuth_OAuth2_InvalidateCacheRefetches pins on_status:
+// invalidate_cache: a 401 from the data endpoint clears cache.<name>
+// and the next iteration re-fetches the token.
+func TestAuth_OAuth2_InvalidateCacheRefetches(t *testing.T) {
+	var tokenHits atomic.Int32
+	var dataHits atomic.Int32
 
-// TestOnStatus_InvalidateCache_OAuth2_ClearsSlots asserts that when the API
-// returns a 401 dispatched through `on_status: invalidate_cache`, the
-// runner drops the cached OAuth2 token from state.<store_in> AND the
-// paired expiry timestamp from state.<store_in>_expires_at. The snapshot
-// persisted by the deferred Save MUST not carry either key, so the next
-// drain refetches.
-func TestOnStatus_InvalidateCache_OAuth2_ClearsSlots(t *testing.T) {
-	tok := newOAuth2TokenServer(t, "tok-fresh", 3600, "client_credentials", nil)
-
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer api.Close()
-
-	doc := oauth2Doc(api.URL, tok.server.URL, oauth2GrantSpec{
-		kind:         "client_credentials",
-		clientID:     "test-client",
-		clientSecret: "test-secret",
-	}, &schema.TokenCache{StoreIn: "token", ExpiryField:  mustPath("response.body.expires_in"), ExpiryBuffer: "60s"})
-	// Surface the 401 through on_status so it dispatches as invalidate_cache.
-	doc.Requests[0].ExpectStatus = []int{200}
-	doc.Requests[0].OnStatus = map[int]string{401: "invalidate_cache"}
-
-	// Pre-prime the snapshot with a stale token + expiry far in the future.
-	// The cache would otherwise hit and skip the token fetch; we want to
-	// prove invalidate_cache clears both slots regardless of cache state.
-	farFuture := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
-	store := &MemoryStore{}
-	_ = store.Save(Snapshot{
-		State: map[string]any{"token": "stale-token", "token_expires_at": farFuture},
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, _ *http.Request) {
+		tokenHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"access_token": "tok",
+			"expires_in":   float64(3600),
+		})
 	})
+	mux.HandleFunc("/data", func(w http.ResponseWriter, _ *http.Request) {
+		n := dataHits.Add(1)
+		if n == 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
 
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: api.Client()}
+	doc := minimalDoc(server.URL)
+	doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: ptrValue(mustInterp(server.URL + "/oauth/token"))}
+	doc.State["client_id"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("c"))}
+	doc.State["client_secret"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("s"))}
+	doc.Requests[0].URL = mustInterp("${state.url}/data")
+	doc.Requests[0].OnStatus = map[int]string{http.StatusUnauthorized: "invalidate_cache"}
+	doc.Auth = schema.Auth{OAuth2: &schema.OAuth2Auth{
+		ClientCredentials: &schema.ClientCredentialsGrant{
+			TokenURL:     vRef("state.token_url"),
+			ClientID:     vRef("state.client_id"),
+			ClientSecret: vRef("state.client_secret"),
+			Cache: &schema.Cache{
+				To:        mustPath("cache.access_token"),
+				ExpiresAt: vRefDefault("response.body.expires_in", vStr("1h")),
+				Buffer:    "60s",
+			},
+		},
+	}}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
 	if err := r.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-
-	snap, _ := store.Load()
-	if _, ok := snap.State["token"]; ok {
-		t.Errorf("state.token = %v after invalidate_cache; want missing", snap.State["token"])
+	if tokenHits.Load() != 2 {
+		t.Errorf("tokenHits = %d, want 2 (initial + after invalidate)", tokenHits.Load())
 	}
-	if _, ok := snap.State["token_expires_at"]; ok {
-		t.Errorf("state.token_expires_at = %v after invalidate_cache; want missing",
-			snap.State["token_expires_at"])
+	if dataHits.Load() != 2 {
+		t.Errorf("dataHits = %d, want 2 (401 + 200)", dataHits.Load())
 	}
 }
 
-// TestOnStatus_InvalidateCache_OAuth2_RefetchesOnNextDrain runs back-to-back
-// drains over the same Store: drain 1 fetches a token, fires the API,
-// receives a 401 + invalidate_cache (which drops the cache). Drain 2 must
-// then fetch a fresh token (token endpoint count moves from 1 → 2) rather
-// than reusing the cleared slot.
-func TestOnStatus_InvalidateCache_OAuth2_RefetchesOnNextDrain(t *testing.T) {
-	tok := newOAuth2TokenServer(t, "tok-roundtrip", 3600, "client_credentials", nil)
+// TestRequestCache_HitSkipsWireCall pins requests[].cache within one
+// drain: the first iteration runs the login step, writes
+// cache.<name>; subsequent iterations re-use the cache slot without an
+// HTTP round trip.
+func TestRequestCache_HitSkipsWireCall(t *testing.T) {
+	var loginHits atomic.Int32
+	var eventsHits atomic.Int32
 
-	var apiCalls atomic.Int32
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiCalls.Add(1)
-		// First call: pretend the cached creds were revoked → 401.
-		// Second call: serve events normally.
-		if apiCalls.Load() == 1 {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", func(w http.ResponseWriter, _ *http.Request) {
+		loginHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token":      "session-xyz",
+			"expires_in": float64(3600),
+		})
+	})
+	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+		n := eventsHits.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer session-xyz" {
+			t.Errorf("Authorization = %q, want Bearer session-xyz", got)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer tok-roundtrip" {
-			t.Errorf("Authorization = %q, want Bearer tok-roundtrip on drain 2", got)
+		body := map[string]any{"events": []any{map[string]any{"id": "e"}}}
+		if n < 3 {
+			body["next_cursor"] = "p"
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-	}))
-	defer api.Close()
-
-	doc := oauth2Doc(api.URL, tok.server.URL, oauth2GrantSpec{
-		kind:         "client_credentials",
-		clientID:     "test-client",
-		clientSecret: "test-secret",
-	}, &schema.TokenCache{StoreIn: "token", ExpiryField:  mustPath("response.body.expires_in"), ExpiryBuffer: "60s"})
-	doc.Requests[0].ExpectStatus = []int{200}
-	doc.Requests[0].OnStatus = map[int]string{401: "invalidate_cache"}
-
-	store := &MemoryStore{}
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: api.Client()}
-
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain 1: %v", err)
-	}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain 2: %v", err)
-	}
-
-	if got := tok.tokenCalls.Load(); got != 2 {
-		t.Errorf("token endpoint hits = %d, want 2 (cache cleared between drains forces refetch)", got)
-	}
-	if got := apiCalls.Load(); got != 2 {
-		t.Errorf("api hits = %d, want 2", got)
-	}
-}
-
-// TestOnStatus_InvalidateCache_MultiMode_ClearsOAuth2Branch asserts the
-// verb walks into auth.multi_mode and clears the OAuth2 cache slots of
-// whichever branch carries one — even when a different (non-OAuth2)
-// branch is the active dispatch target. The invalidate verb is conservative
-// by design: cached credentials in unfired arms are dropped too so a
-// future predicate flip doesn't reuse a token the operator marked stale.
-func TestOnStatus_InvalidateCache_MultiMode_ClearsOAuth2Branch(t *testing.T) {
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer api.Close()
+		writeJSON(w, http.StatusOK, body)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
 
 	doc := &schema.Doc{
 		IRVersion: "1",
-		State: &schema.State{Fields: map[string]schema.FieldDecl{
-			"url":           {Type: "url", Default: api.URL},
-			"token_url":     {Type: "url", Default: "http://unreachable.invalid/token"},
-			"client_id":     {Type: "string", Default: "cid"},
-			"client_secret": {Type: "secret", Default: "csecret"},
-			"static_token":  {Type: "secret", Default: "static-bearer"},
-			"auth_mode":     {Type: "string", Default: "static"},
-			// Auto-registered emulation: when multi_mode wraps an oauth2 cache
-			// the IR pre-pass does not auto-register the slots today, so we
-			// declare them explicitly here to mirror what an operator would do.
-			// Slice 7 pairs the cached token with state.<store_in>_expires_at
-			// (formerly cursor.__oauth2_<store_in>_expires_at).
-			"token":            {Type: "string", Mutability: "runtime"},
-			"token_expires_at": {Type: "string", Mutability: "runtime"},
+		State: map[string]schema.FieldDecl{
+			"url":        {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"next_token": {Type: "string"},
+		},
+		Auth: schema.Auth{Bearer: &schema.BearerAuth{
+			Token: vRefDefault("cache.session.token", vStr("pending")),
 		}},
-		Defaults: &schema.Defaults{BaseURL: vRef("state.url")},
-		Auth: schema.Auth{MultiMode: &schema.MultiModeAuth{
-			Branches: []schema.AuthBranch{
-				{
-					When: schema.Predicate{Eq: &schema.PredicateEq{Path: mustPath("state.auth_mode"), Value: vStr("oauth2")}},
-					Auth: schema.Auth{OAuth2: &schema.OAuth2Auth{
-						ClientCredentials: &schema.ClientCredentialsGrant{
-							TokenURL:     vRef("state.token_url"),
-							ClientID:     vRef("state.client_id"),
-							ClientSecret: vRef("state.client_secret"),
-							Cache:        &schema.TokenCache{StoreIn: "token", ExpiryField:  mustPath("response.body.expires_in"), ExpiryBuffer: "60s"},
-						},
-					}},
-				},
-				{
-					When: schema.Predicate{Eq: &schema.PredicateEq{Path: mustPath("state.auth_mode"), Value: vStr("static")}},
-					Auth: schema.Auth{Bearer: &schema.BearerAuth{Token: vRef("state.static_token")}},
+		Requests: []schema.Request{
+			{
+				ID:     "login",
+				Method: "POST",
+				URL:    mustInterp("${state.url}/login"),
+				Cache: &schema.Cache{
+					To:        mustPath("cache.session"),
+					ExpiresAt: vRefDefault("response.body.expires_in", vStr("1h")),
+					Buffer:    "60s",
 				},
 			},
-			Default: schema.AuthDefault{Auth: schema.Auth{None: &struct{}{}}},
+			{
+				ID:             "events",
+				Method:         "GET",
+				URL:            mustInterp("${state.url}/events"),
+				ProducesEvents: true,
+			},
+		},
+		Response: schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
+		Pagination: schema.Pagination{CursorToken: &schema.CursorTokenPagination{
+			From: mustPath("response.body.next_cursor"),
+			To:   mustPath("state.next_token"),
 		}},
-		Requests: []schema.Request{{
-			Method:       "GET",
-			Path:         ptrValue(vStr("/api/v1/events")),
-			ExpectStatus: []int{200},
-			OnStatus:     map[int]string{401: "invalidate_cache"},
-		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
-		Pagination: schema.Pagination{None: &struct{}{}},
-		Progress:   schema.Progress{Stateless: &struct{}{}},
 	}
 
-	farFuture := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
-	store := &MemoryStore{}
-	_ = store.Save(Snapshot{
-		State: map[string]any{"token": "stale-multi", "token_expires_at": farFuture},
-	})
-
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: api.Client()}
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
 	if err := r.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
+	if loginHits.Load() != 1 {
+		t.Errorf("loginHits = %d, want 1 (cache HIT on subsequent iterations)", loginHits.Load())
+	}
+	if eventsHits.Load() < 2 {
+		t.Errorf("eventsHits = %d, want >= 2", eventsHits.Load())
+	}
+}
 
-	snap, _ := store.Load()
-	if _, ok := snap.State["token"]; ok {
-		t.Errorf("state.token = %v after multi_mode invalidate_cache; want missing", snap.State["token"])
+// TestRequestCache_ExpiryRefetches pins the cache expiry semantics: a
+// short expires_in means the buffer immediately invalidates the cache;
+// every iteration re-fetches.
+func TestRequestCache_ExpiryRefetches(t *testing.T) {
+	var loginHits atomic.Int32
+	var eventsHits atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", func(w http.ResponseWriter, _ *http.Request) {
+		loginHits.Add(1)
+		// expires_in=1s + buffer 60s → always stale at the next
+		// iteration; every iteration's login step misses cache.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token":      "s",
+			"expires_in": float64(1),
+		})
+	})
+	mux.HandleFunc("/events", func(w http.ResponseWriter, _ *http.Request) {
+		n := eventsHits.Add(1)
+		body := map[string]any{"events": []any{map[string]any{"id": "e"}}}
+		if n < 3 {
+			body["next_cursor"] = "p"
+		}
+		writeJSON(w, http.StatusOK, body)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	doc := &schema.Doc{
+		IRVersion: "1",
+		State: map[string]schema.FieldDecl{
+			"url":        {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"next_token": {Type: "string"},
+		},
+		Auth: schema.Auth{Bearer: &schema.BearerAuth{
+			Token: vRefDefault("cache.session.token", vStr("p")),
+		}},
+		Requests: []schema.Request{
+			{
+				ID:     "login",
+				Method: "POST",
+				URL:    mustInterp("${state.url}/login"),
+				Cache: &schema.Cache{
+					To:        mustPath("cache.session"),
+					ExpiresAt: vRefDefault("response.body.expires_in", vStr("1s")),
+					Buffer:    "60s",
+				},
+			},
+			{
+				ID:             "events",
+				Method:         "GET",
+				URL:            mustInterp("${state.url}/events"),
+				ProducesEvents: true,
+			},
+		},
+		Response: schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
+		Pagination: schema.Pagination{CursorToken: &schema.CursorTokenPagination{
+			From: mustPath("response.body.next_cursor"),
+			To:   mustPath("state.next_token"),
+		}},
 	}
-	if _, ok := snap.State["token_expires_at"]; ok {
-		t.Errorf("state.token_expires_at = %v after multi_mode invalidate_cache; want missing",
-			snap.State["token_expires_at"])
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
 	}
+	if loginHits.Load() != eventsHits.Load() {
+		t.Errorf("loginHits=%d eventsHits=%d; want equal (every iteration's cache is stale)", loginHits.Load(), eventsHits.Load())
+	}
+}
+
+// TestOAuth2_TokenEndpointBodyNotLeaked pins the redaction-safe error
+// path: a non-2xx token endpoint response does not include the raw body
+// in the error.
+func TestOAuth2_TokenEndpointBodyNotLeaked(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"invalid_client","leaky_secret":"hunter2"}`, http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: ptrValue(mustInterp(server.URL + "/token"))}
+	doc.State["client_id"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("c"))}
+	doc.State["client_secret"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("s"))}
+	doc.Error = &schema.ErrorBlock{Mode: "fail"}
+	doc.Auth = schema.Auth{OAuth2: &schema.OAuth2Auth{
+		ClientCredentials: &schema.ClientCredentialsGrant{
+			TokenURL:     vRef("state.token_url"),
+			ClientID:     vRef("state.client_id"),
+			ClientSecret: vRef("state.client_secret"),
+		},
+	}}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	err := r.Drain(context.Background())
+	if err == nil {
+		t.Fatal("Drain: expected token endpoint error")
+	}
+	if strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("token endpoint error leaks body: %v", err)
+	}
+}
+
+// TestOAuth2_TokenResponseBodyBindForExpiresAt pins the cache.expires_at
+// evaluation: the resolved body of the token endpoint feeds the
+// expires_at Value. A response.body.expires_in ref reads from there.
+func TestOAuth2_TokenResponseBodyBindForExpiresAt(t *testing.T) {
+	tokenBody := map[string]any{
+		"access_token": "tok",
+		"expires_in":   float64(7200),
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		bs, _ := json.Marshal(tokenBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(bs)
+	})
+	mux.HandleFunc("/data", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["token_url"] = schema.FieldDecl{Type: "url", Default: ptrValue(mustInterp(server.URL + "/token"))}
+	doc.State["client_id"] = schema.FieldDecl{Type: "string", Default: ptrValue(vStr("c"))}
+	doc.State["client_secret"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("s"))}
+	doc.Requests[0].URL = mustInterp("${state.url}/data")
+	doc.Auth = schema.Auth{OAuth2: &schema.OAuth2Auth{
+		ClientCredentials: &schema.ClientCredentialsGrant{
+			TokenURL:     vRef("state.token_url"),
+			ClientID:     vRef("state.client_id"),
+			ClientSecret: vRef("state.client_secret"),
+			Cache: &schema.Cache{
+				To:        mustPath("cache.access_token"),
+				ExpiresAt: vRef("response.body.expires_in"),
+				Buffer:    "60s",
+			},
+		},
+	}}
+
+	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	// No assertion beyond "no error" — the proof is that the token's
+	// expires_in body field was used; a regression here surfaces as
+	// "cache.expires_at: cannot interpret <nil> as time".
 }

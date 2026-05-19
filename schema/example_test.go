@@ -10,30 +10,25 @@ import (
 )
 
 // Load parses an IR document from a YAML (or JSON) reader. The returned
-// *schema.Doc still needs to be passed through schema.Validate before it can be
-// handed to a runner.
+// *schema.Doc still needs to be passed through schema.Validate before it
+// can be handed to a runner.
 func ExampleLoad() {
-	const yaml = `
+	const src = `
 ir_version: "1"
 state:
-  fields:
-    url: {type: url, default: "https://api.example.com"}
-defaults:
-  base_url: {ref: state.url}
+  url: {type: url, default: "https://api.example.com"}
 auth:
   none: {}
 requests:
   - method: GET
-    path: /events
+    url: "${state.url}/events"
 response:
   decode: json
-  events_at: ""
+  events_at: response.body.events
 pagination:
   none: {}
-progress:
-  stateless: {}
 `
-	doc, err := schema.Load(strings.NewReader(yaml))
+	doc, err := schema.Load(strings.NewReader(src))
 	if err != nil {
 		fmt.Println("load:", err)
 		return
@@ -48,20 +43,18 @@ progress:
 // Validate reports structural errors. A clean document returns an empty
 // slice; otherwise each Diagnostic names the path that failed.
 func ExampleValidate() {
-	const yaml = `
+	const src = `
 ir_version: "1"
 auth:
   none: {}
 requests: []
 response:
   decode: json
-  events_at: ""
+  events_at: response.body.events
 pagination:
   none: {}
-progress:
-  stateless: {}
 `
-	doc, err := schema.Load(strings.NewReader(yaml))
+	doc, err := schema.Load(strings.NewReader(src))
 	if err != nil {
 		fmt.Println("load:", err)
 		return

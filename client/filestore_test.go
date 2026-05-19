@@ -12,14 +12,20 @@ import (
 )
 
 // TestFileStore_RoundTrip pins the round-trip contract: Save then Load
-// returns a Snapshot semantically equal to the one written.
+// returns a Snapshot semantically equal to the one written. The on-disk
+// shape is a single {"state": {...}} object — cache, events, extract,
+// steps, response, and per-evaluation roots all live in process memory
+// only.
 func TestFileStore_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	fs := NewFileStore(filepath.Join(dir, "state.json"))
 
 	in := Snapshot{
-		State:  map[string]any{"oauth_token": "tok-abc"},
-		Cursor: map[string]any{"last_timestamp": "2026-05-12T08:00:00Z", "page": float64(3)},
+		State: map[string]any{
+			"last_timestamp": "2026-05-12T08:00:00Z",
+			"page":           float64(3),
+			"window_start":   "2026-05-12T07:55:00Z",
+		},
 	}
 	if err := fs.Save(in); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -31,13 +37,10 @@ func TestFileStore_RoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(out.State, in.State) {
 		t.Errorf("State round-trip mismatch: got %#v, want %#v", out.State, in.State)
 	}
-	if !reflect.DeepEqual(out.Cursor, in.Cursor) {
-		t.Errorf("Cursor round-trip mismatch: got %#v, want %#v", out.Cursor, in.Cursor)
-	}
 }
 
-// TestFileStore_LoadMissingIsZero pins the "absent file → zero
-// Snapshot" contract used to bootstrap a first run.
+// TestFileStore_LoadMissingIsZero pins the "absent file → zero Snapshot"
+// contract used to bootstrap a first run.
 func TestFileStore_LoadMissingIsZero(t *testing.T) {
 	dir := t.TempDir()
 	fs := NewFileStore(filepath.Join(dir, "never-written.json"))
@@ -45,15 +48,15 @@ func TestFileStore_LoadMissingIsZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load on missing file: %v, want nil", err)
 	}
-	if got.State != nil || got.Cursor != nil {
+	if got.State != nil {
 		t.Errorf("Load on missing returned %#v, want zero Snapshot", got)
 	}
 }
 
 // TestFileStore_AtomicWrite pins the atomic-rename contract: after Save
-// returns, the on-disk file is always a complete, valid Snapshot. We
-// also assert no temp file is left behind once Save succeeds — the
-// "temp + rename" sequence must clean up after itself.
+// returns, the on-disk file is always a complete, valid Snapshot. We also
+// assert no temp file is left behind once Save succeeds — the "temp +
+// rename" sequence must clean up after itself.
 func TestFileStore_AtomicWrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
@@ -61,13 +64,11 @@ func TestFileStore_AtomicWrite(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		in := Snapshot{
-			State:  map[string]any{"i": float64(i)},
-			Cursor: map[string]any{"page": float64(i)},
+			State: map[string]any{"page": float64(i)},
 		}
 		if err := fs.Save(in); err != nil {
 			t.Fatalf("Save %d: %v", i, err)
 		}
-		// File must be valid JSON Snapshot at every observable moment.
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %d: %v", i, err)
@@ -77,7 +78,6 @@ func TestFileStore_AtomicWrite(t *testing.T) {
 			t.Fatalf("partial / invalid JSON observed after Save %d: %v; raw=%q", i, err, string(raw))
 		}
 	}
-	// No temp files left over.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("read dir: %v", err)
@@ -86,5 +86,26 @@ func TestFileStore_AtomicWrite(t *testing.T) {
 		if strings.Contains(e.Name(), ".tmp-") {
 			t.Errorf("temp file leaked after Save: %s", e.Name())
 		}
+	}
+}
+
+// TestFileStore_LoadDropsUnknownKeys pins the codec's "unknown top-level
+// keys are silently dropped" contract: a file written by an out-of-band
+// rev that carried an extra top-level key still loads cleanly under the
+// current Snapshot.
+func TestFileStore_LoadDropsUnknownKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	raw := []byte(`{"state": {"page": 1}, "obsolete": {"x": 1}}`)
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	fs := NewFileStore(path)
+	snap, err := fs.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if page, _ := snap.State["page"].(float64); page != 1 {
+		t.Errorf("State.page = %v, want 1", snap.State["page"])
 	}
 }

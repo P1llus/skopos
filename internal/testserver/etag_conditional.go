@@ -55,11 +55,15 @@ func (etagConditionalScenario) Register(mux *http.ServeMux, opts Options) {
 		page := store.Slice(offset, opts.PageSize)
 		hasNext := (offset + opts.PageSize) < store.Len()
 
+		// The template terminates on `not: {present: response.body.meta.has_next}`,
+		// so the field is omitted on the final page.
+		meta := map[string]any{}
+		if hasNext {
+			meta["has_next"] = true
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"items": page,
-			"meta": map[string]any{
-				"has_next": hasNext,
-			},
+			"meta":  meta,
 		})
 	})
 }
