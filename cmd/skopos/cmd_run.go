@@ -99,6 +99,13 @@ func runRun(args []string) error {
 		cfg.MaxPages = *maxPages
 	}
 
+	// Fleet mode: a config with `runs:` and no explicit -i fans out one
+	// Runner per entry. Explicit -i forces single-run mode, so the two
+	// modes never compete for the same invocation.
+	if len(cfg.Runs) > 0 && !explicit["i"] {
+		return runFleet(cfg)
+	}
+
 	// Validate the resolved config.
 	if cfg.Input == "" {
 		return errors.New("skopos run: -i (or config.input) is required")
