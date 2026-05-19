@@ -46,6 +46,11 @@ func Main() int {
 			fmt.Fprintln(os.Stderr, "skopos:", err)
 			return 1
 		}
+	case "version", "--version", "-V":
+		if err := runVersion(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "skopos:", err)
+			return 1
+		}
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -84,6 +89,12 @@ Usage:
       Print a bundled spec template to stdout (or write to -o path).
       The name may be given with or without the .yml extension.
           skopos template show -o spec.yml bearer_simple
+
+  skopos version
+      Print build metadata (version, commit, build date, Go toolchain,
+      OS/arch). Also accessible via --version / -V. Paste the output
+      into issue reports so the maintainer can reproduce against the
+      same revision.
 
 Flags (validate):
   -i path     Input file (YAML or JSON). Omit or use "-" for stdin.

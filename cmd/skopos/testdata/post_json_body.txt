@@ -12,7 +12,7 @@ cmp events.jsonl want_events.jsonl
 
 -- want_trace.jsonl --
 {"elapsed":"<scrubbed>","iteration":1,"method":"POST","request_body":"body 63 bytes, object-like","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>","Content-Type":"application/json"},"response_body":"body 357 bytes, object-like","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/post_json_body/search"}
-{"elapsed":"<scrubbed>","iteration":2,"method":"POST","request_body":"body 120 bytes, object-like","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>","Content-Type":"application/json"},"response_body":"body 25 bytes, object-like","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/post_json_body/search"}
+{"elapsed":"<scrubbed>","iteration":2,"method":"POST","request_body":"body 129 bytes, object-like","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>","Content-Type":"application/json"},"response_body":"body 25 bytes, object-like","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/post_json_body/search"}
 -- want_events.jsonl --
 {"id":"evt-000001","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
 {"id":"evt-000002","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}
