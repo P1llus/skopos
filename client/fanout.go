@@ -16,12 +16,17 @@ import (
 // returns: mergedBody is what binds into scope.steps[req.ID] and what
 // locateEvents walks when the fan_out step is the producer; lastHeaders
 // mirrors the single-request producer headers; advance/fatal carry the
-// on_status / error.mode dispatch decisions.
+// on_status / error.mode dispatch decisions. invalidated marks the
+// iteration as on_status: invalidate_cache — runIteration translates that
+// into iterInvalidate so pagination does NOT advance and the same page
+// retries on the next iteration (same contract as the single-request
+// stepInvalidate path).
 type fanOutResult struct {
 	mergedBody  any
 	lastHeaders http.Header
 	advance     bool
 	fatal       bool
+	invalidated bool
 }
 
 // runFanOut executes req once per element of req.FanOut.Over, binds
@@ -36,8 +41,11 @@ type fanOutResult struct {
 //   - on_status: skip            drop this item and continue with the next.
 //   - on_status: fail            abort the drain (fatal=true).
 //   - on_status: empty_events    drop this item (no body contribution).
-//   - on_status: invalidate_cache clear every reachable cache.<name> slot
-//     and stop the fan-out early; pagination still advances normally.
+//   - on_status: invalidate_cache clear every reachable cache.<name> slot,
+//     stop the fan-out early, and mark the iteration as invalidated so
+//     pagination does NOT advance — the next iteration retries the same
+//     page with the freshly-evicted cache slots. Matches the single-request
+//     stepInvalidate contract documented in runner.go.
 //   - error.mode: standard       end the drain iteration here; advance=false
 //     so neither pagination.advance nor the per-iteration progress writes run.
 //   - error.mode: warn           log and drop the item.
@@ -120,12 +128,15 @@ func (r *Runner) runFanOut(
 			case "invalidate_cache":
 				cleared := dropReachableCaches(s, r.Doc)
 				if len(cleared) == 0 {
-					logger.Printf("client: %s[%d] status %d → invalidate_cache (no cache to invalidate; stopping fan_out)", reqLabel(req), idx, usErr.status)
+					logger.Printf("client: %s[%d] status %d → invalidate_cache (no cache to invalidate; stopping fan_out, retry next iteration)", reqLabel(req), idx, usErr.status)
 				} else {
-					logger.Printf("client: %s[%d] status %d → invalidate_cache (cleared %v; stopping fan_out)", reqLabel(req), idx, usErr.status, cleared)
+					logger.Printf("client: %s[%d] status %d → invalidate_cache (cleared %v; stopping fan_out, retry next iteration)", reqLabel(req), idx, usErr.status, cleared)
 				}
-				// Stop the fan-out early; the merged body is whatever we
-				// collected so far. Same end-state as a normal cache-flush.
+				// Mark the iteration as invalidated and stop the fan-out
+				// early. The runner translates this into iterInvalidate so
+				// pagination does NOT advance — the same page retries on
+				// the next iteration with the evicted cache slots.
+				out.invalidated = true
 				goto done
 			default:
 				switch errMode {

@@ -166,7 +166,6 @@ func TestEvalPredicate(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestScope(t, tc.state)
 			if tc.setup != nil {
@@ -232,4 +231,39 @@ func TestEvalPredicate_AbsenceTolerantEq(t *testing.T) {
 	if got {
 		t.Errorf("present absent returned true; want false")
 	}
+}
+
+// TestEvalPredicate_AbsenceTolerantOrdered pins the same absence-tolerance
+// contract for gt/lt/gte/lte: an absent operand (either side) yields false
+// rather than an error. DESIGN §2.6 makes this uniform across all
+// comparison verbs.
+func TestEvalPredicate_AbsenceTolerantOrdered(t *testing.T) {
+	verbs := []string{"gt", "lt", "gte", "lte"}
+
+	t.Run("absent_lhs", func(t *testing.T) {
+		s := newTestScope(t, nil)
+		for _, v := range verbs {
+			got, err := s.evalPredicate(predEq(v, "state.missing", vInt(5)))
+			if err != nil {
+				t.Errorf("%s absent lhs returned error: %v", v, err)
+			}
+			if got {
+				t.Errorf("%s absent lhs returned true; want false", v)
+			}
+		}
+	})
+
+	t.Run("absent_rhs", func(t *testing.T) {
+		// vRefDefault with an absent path resolves to nil on the RHS.
+		s := newTestScope(t, map[string]any{"x": int64(5)})
+		for _, v := range verbs {
+			got, err := s.evalPredicate(predEq(v, "state.x", vRef("state.absent")))
+			if err != nil {
+				t.Errorf("%s absent rhs returned error: %v", v, err)
+			}
+			if got {
+				t.Errorf("%s absent rhs returned true; want false", v)
+			}
+		}
+	})
 }

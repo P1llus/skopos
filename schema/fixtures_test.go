@@ -5,6 +5,7 @@ package schema_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -874,4 +875,67 @@ buffer: 60s
 	if c.ExpiresAt.Ref == nil {
 		t.Errorf("ExpiresAt should carry a Ref; got %+v", c.ExpiresAt)
 	}
+}
+
+// TestMultiModeDefaultBareAuth pins DESIGN §3.3: multi_mode.default is a
+// bare Auth value, NOT the wrapped {auth: ...} form. The bare form
+// (default: {bearer: ...}) must parse cleanly; the wrapped form
+// (default: {auth: {bearer: ...}}) must be rejected because "auth" is
+// not a recognised Auth discriminator key.
+func TestMultiModeDefaultBareAuth(t *testing.T) {
+	const tmpl = `ir_version: "1"
+state:
+  url: {type: url, default: "http://x"}
+  tok: {type: secret, default: "k"}
+auth:
+  multi_mode:
+    branches:
+      - when: {literal_bool: true}
+        auth: {bearer: {token: {ref: state.tok}}}
+    default: %s
+requests:
+  - method: GET
+    url: "${state.url}"
+response: {decode: json, events_at: response.body.events}
+pagination: {none: {}}
+`
+
+	t.Run("bare_form_parses_and_validates", func(t *testing.T) {
+		doc, err := schema.Parse([]byte(fmt.Sprintf(tmpl, `{bearer: {token: {ref: state.tok}}}`)))
+		if err != nil {
+			t.Fatalf("bare-form Parse: %v", err)
+		}
+		if doc.Auth.MultiMode == nil || doc.Auth.MultiMode.Default.Bearer == nil {
+			t.Errorf("bare-form default did not parse as bearer Auth; got %+v", doc.Auth.MultiMode)
+		}
+		for _, d := range schema.Validate(doc) {
+			if d.Severity == "error" {
+				t.Errorf("bare-form validate error: %s — %s", d.Path, d.Message)
+			}
+		}
+	})
+
+	t.Run("wrapped_form_rejected_by_validate", func(t *testing.T) {
+		// The wrapped form parses silently (the "auth" key is not a
+		// recognised Auth discriminator, so the decoder drops it and the
+		// Default ends up zero-valued). Validate catches the empty
+		// variant set and surfaces the canonical "bare auth value"
+		// diagnostic.
+		doc, err := schema.Parse([]byte(fmt.Sprintf(tmpl, `{auth: {bearer: {token: {ref: state.tok}}}}`)))
+		if err != nil {
+			t.Fatalf("wrapped-form Parse (unexpected error): %v", err)
+		}
+		diags := schema.Validate(doc)
+		want := "auth.multi_mode.default"
+		found := false
+		for _, d := range diags {
+			if d.Path == want && strings.Contains(d.Message, "bare auth value") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("wrapped-form Validate did not surface the bare-auth diagnostic at %s; got %d diags: %v", want, len(diags), diags)
+		}
+	})
 }

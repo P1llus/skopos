@@ -1,11 +1,11 @@
 # post_raw_body — body.raw for APIs whose request body isn't JSON or
 # form-encoded.
 #
-# The runner sends the evaluated string verbatim with no Content-Type
-# header (the operator sets one via headers: if required). Typical uses:
-# NDJSON ingest endpoints, GraphQL-via-text/plain, hand-tuned XML
+# The runner sends the evaluated string verbatim; the operator declares
+# a Content-Type via headers: when the endpoint expects one. Typical
+# uses: NDJSON ingest endpoints, GraphQL-via-text/plain, hand-tuned XML
 # payloads. This fixture posts an NDJSON-shaped line built with string
-# interpolation.
+# interpolation and sets Content-Type: application/x-ndjson explicitly.
 
 ir_version: "1"
 

@@ -167,12 +167,6 @@ func pickPredicateDiscriminator(keys map[string]struct{}) (string, error) {
 	}
 	switch len(matches) {
 	case 0:
-		if _, ok := keys["in"]; ok {
-			return "", fmt.Errorf("predicate verb \"in\" is deferred; express as nested {or: [...]} of eq comparisons")
-		}
-		if _, ok := keys["matches"]; ok {
-			return "", fmt.Errorf("predicate verb \"matches\" is deferred; no portable regex Value form yet")
-		}
 		return "", fmt.Errorf("no recognised discriminator key (want eq|gt|lt|gte|lte|present|and|or|not|literal_bool)")
 	case 1:
 		return matches[0], nil
@@ -280,28 +274,28 @@ func (p *Predicate) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // MarshalYAML emits the canonical YAML form.
-func (p Predicate) MarshalYAML() (interface{}, error) {
+func (p Predicate) MarshalYAML() (any, error) {
 	switch {
 	case p.Eq != nil:
-		return map[string]interface{}{"eq": p.Eq}, nil
+		return map[string]any{"eq": p.Eq}, nil
 	case p.Gt != nil:
-		return map[string]interface{}{"gt": p.Gt}, nil
+		return map[string]any{"gt": p.Gt}, nil
 	case p.Lt != nil:
-		return map[string]interface{}{"lt": p.Lt}, nil
+		return map[string]any{"lt": p.Lt}, nil
 	case p.Gte != nil:
-		return map[string]interface{}{"gte": p.Gte}, nil
+		return map[string]any{"gte": p.Gte}, nil
 	case p.Lte != nil:
-		return map[string]interface{}{"lte": p.Lte}, nil
+		return map[string]any{"lte": p.Lte}, nil
 	case p.Present != nil:
-		return map[string]interface{}{"present": p.Present}, nil
+		return map[string]any{"present": p.Present}, nil
 	case len(p.And) > 0:
-		return map[string]interface{}{"and": p.And}, nil
+		return map[string]any{"and": p.And}, nil
 	case len(p.Or) > 0:
-		return map[string]interface{}{"or": p.Or}, nil
+		return map[string]any{"or": p.Or}, nil
 	case p.Not != nil:
-		return map[string]interface{}{"not": p.Not}, nil
+		return map[string]any{"not": p.Not}, nil
 	case p.LiteralBool != nil:
-		return map[string]interface{}{"literal_bool": *p.LiteralBool}, nil
+		return map[string]any{"literal_bool": *p.LiteralBool}, nil
 	}
 	return nil, fmt.Errorf("schema.Predicate: zero value cannot be marshalled")
 }

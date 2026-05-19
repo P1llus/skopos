@@ -29,11 +29,11 @@ func TestJSONLSink_ConcurrentEmit(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		g := g
 		go func() {
 			defer wg.Done()
-			for i := 0; i < perGoroutine; i++ {
+			for i := range perGoroutine {
 				ev := map[string]any{"g": g, "i": i}
 				if err := sink.Emit(ev); err != nil {
 					t.Errorf("Emit: %v", err)

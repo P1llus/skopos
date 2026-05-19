@@ -96,7 +96,13 @@ func (s *scope) compare(verb string, pe *schema.PredicateEq) (bool, error) {
 	if verb == "eq" {
 		return equal(lhs, rhs), nil
 	}
-	// Ordered comparison.
+	// Ordered comparison. An absent operand makes the predicate false,
+	// not an error — DESIGN §2.6 absent-tolerance applies uniformly.
+	// Type-mismatch between two present values is still an author bug
+	// and propagates through orderedCompare.
+	if lhs == nil || rhs == nil {
+		return false, nil
+	}
 	c, err := orderedCompare(lhs, rhs)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", verb, err)

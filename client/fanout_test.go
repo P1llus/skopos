@@ -41,7 +41,7 @@ func TestFanOut_FlattenMerge(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{
@@ -94,7 +94,7 @@ func TestFanOut_WrapMerge(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{
@@ -142,7 +142,7 @@ func TestFanOut_EmptyOverIsNoop(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{
@@ -209,7 +209,7 @@ func TestFanOut_PerItemSkipDoesNotStopChain(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{
@@ -271,7 +271,7 @@ func TestFanOut_ItemRefResolves(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{
@@ -327,7 +327,7 @@ func TestFanOut_FlattenRejectsNonListBody(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{
@@ -380,7 +380,7 @@ func TestFanOut_PerItemFailFatal(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url": {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url": {Type: "url", Default: new(vStr(server.URL))},
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{
@@ -409,5 +409,104 @@ func TestFanOut_PerItemFailFatal(t *testing.T) {
 	err := r.Drain(context.Background())
 	if err == nil {
 		t.Error("Drain: expected fail on item b")
+	}
+}
+
+// TestFanOut_PerItemInvalidateCacheSkipsPaginationAdvance pins the
+// iterInvalidate contract for fan_out: a per-item on_status:invalidate_cache
+// must drop reachable cache slots, stop the fan-out, AND skip pagination
+// advance — so the same page retries on the next iteration with the
+// freshly-evicted caches. Without the skip, pagination would advance past
+// the poisoned page and miss events.
+func TestFanOut_PerItemInvalidateCacheSkipsPaginationAdvance(t *testing.T) {
+	var tokenHits atomic.Int32
+	var listHits atomic.Int32
+	var detailHits atomic.Int32
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, _ *http.Request) {
+		tokenHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"access_token": "tok",
+			"expires_in":   float64(3600),
+		})
+	})
+	mux.HandleFunc("/list", func(w http.ResponseWriter, _ *http.Request) {
+		listHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"ids": []any{"a", "b"}})
+	})
+	mux.HandleFunc("/detail/", func(w http.ResponseWriter, _ *http.Request) {
+		n := detailHits.Add(1)
+		if n == 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		writeJSON(w, http.StatusOK, []any{map[string]any{"id": "e"}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	doc := &schema.Doc{
+		IRVersion: "1",
+		State: map[string]schema.FieldDecl{
+			"url":           {Type: "url", Default: new(vStr(server.URL))},
+			"token_url":     {Type: "url", Default: new(mustInterp(server.URL + "/oauth/token"))},
+			"client_id":     {Type: "string", Default: new(vStr("c"))},
+			"client_secret": {Type: "secret", Default: new(vStr("s"))},
+		},
+		Auth: schema.Auth{OAuth2: &schema.OAuth2Auth{
+			ClientCredentials: &schema.ClientCredentialsGrant{
+				TokenURL:     vRef("state.token_url"),
+				ClientID:     vRef("state.client_id"),
+				ClientSecret: vRef("state.client_secret"),
+				Cache: &schema.Cache{
+					To:        mustPath("cache.access_token"),
+					ExpiresAt: vRefDefault("response.body.expires_in", vStr("1h")),
+					Buffer:    "60s",
+				},
+			},
+		}},
+		Requests: []schema.Request{
+			{
+				ID:     "list",
+				Method: "GET",
+				URL:    mustInterp("${state.url}/list"),
+			},
+			{
+				ID:       "detail",
+				Method:   "GET",
+				URL:      mustInterp("${state.url}/detail/${id}"),
+				OnStatus: map[int]string{http.StatusUnauthorized: "invalidate_cache"},
+				FanOut: &schema.FanOut{
+					Over: vRef("steps.list.body.ids"),
+					As:   "id",
+				},
+				ProducesEvents: true,
+			},
+		},
+		Response:   schema.Response{Decode: "json", EventsAt: mustPath("")},
+		Pagination: schema.Pagination{None: &struct{}{}},
+	}
+
+	sink := &captureSink{}
+	r := &Runner{Doc: doc, Sink: sink, Now: fixedNow(), Client: server.Client()}
+	if err := r.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+
+	if got := tokenHits.Load(); got != 2 {
+		t.Errorf("tokenHits = %d, want 2 (initial + after invalidate_cache)", got)
+	}
+	if got := listHits.Load(); got != 2 {
+		t.Errorf("listHits = %d, want 2 (page retried after invalidate_cache)", got)
+	}
+	// detail: first iteration's item "a" gets 401 (1 hit, fan-out stops),
+	// second iteration runs both items successfully (2 hits). Total 3.
+	if got := detailHits.Load(); got != 3 {
+		t.Errorf("detailHits = %d, want 3 (1 poisoned + 2 retried)", got)
+	}
+	// Both items from the retry iteration emit one event each.
+	if len(sink.events) != 2 {
+		t.Errorf("events = %d, want 2 (both items emitted after retry)", len(sink.events))
 	}
 }

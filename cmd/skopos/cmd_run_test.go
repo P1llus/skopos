@@ -53,7 +53,7 @@ func TestRun_TraceFlag_AppendsAcrossRuns(t *testing.T) {
 		t.Fatalf("write doc: %v", err)
 	}
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if err := runRun([]string{
 			"-i", docPath,
 			"--once",

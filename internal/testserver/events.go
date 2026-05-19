@@ -30,7 +30,7 @@ func (s *EventStore) Replenish(now time.Time, n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events = s.events[:0]
-	for i := 0; i < n; i++ {
+	for i := range n {
 		s.nextID++
 		s.events = append(s.events, Event{
 			ID:        fmt.Sprintf("evt-%06d", s.nextID),
@@ -48,10 +48,7 @@ func (s *EventStore) Slice(offset, limit int) []Event {
 	if offset >= len(s.events) {
 		return nil
 	}
-	end := offset + limit
-	if end > len(s.events) {
-		end = len(s.events)
-	}
+	end := min(offset+limit, len(s.events))
 	out := make([]Event, end-offset)
 	copy(out, s.events[offset:end])
 	return out

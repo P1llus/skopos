@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/p1llus/skopos/schema"
@@ -20,9 +21,8 @@ import (
 // scope.steps under the request's id so subsequent steps can reference
 // {ref: steps.<id>.body.<path>}.
 type stepResult struct {
-	statusCode int
-	headers    http.Header
-	body       any // map[string]any | []any | nil (ndjson → []any of lines)
+	headers http.Header
+	body    any // map[string]any | []any | nil (ndjson → []any of lines)
 }
 
 // executeRequest builds, sends, and decodes one Request. Returns the
@@ -50,7 +50,7 @@ type stepResult struct {
 func (s *scope) executeRequest(ctx context.Context, client *http.Client, req schema.Request, trace *httpTrace) (*stepResult, error) {
 	if req.Cache != nil {
 		if v, ok := s.cacheGet(req.Cache); ok {
-			return &stepResult{statusCode: 200, body: v}, nil
+			return &stepResult{body: v}, nil
 		}
 	}
 
@@ -146,8 +146,7 @@ func (s *scope) executeRequest(ctx context.Context, client *http.Client, req sch
 	// parse; failing decode-first would hide the real signal (the bad
 	// status) behind a parse error. We still attempt decode on success.
 	res := &stepResult{
-		statusCode: resp.StatusCode,
-		headers:    resp.Header,
+		headers: resp.Header,
 	}
 	if trace != nil {
 		trace.statusCode = resp.StatusCode
@@ -355,12 +354,7 @@ func (s *scope) expectStatusOK(expect []int, status int) bool {
 	if len(expect) == 0 {
 		return status == 200
 	}
-	for _, e := range expect {
-		if e == status {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(expect, status)
 }
 
 // unexpectedStatusError carries enough context for the runner's error.mode

@@ -2,9 +2,10 @@
 #
 # Demonstrates: requests[].body.json with a sliding [window_start,
 # window_end) window written by progress:, plus offset-style counter
-# pagination within the window. The body reads the persistent window from
-# state.window_start / state.window_end and the per-drain offset bounds
-# from state.search_from / state.search_to.
+# pagination within the window. The body reads the persistent window
+# from state.window_start / state.window_end and the per-drain offset
+# from state.search_from; the upper bound is computed inline as
+# search_from + page_size.
 
 ir_version: "1"
 

@@ -8,7 +8,7 @@
 //	skopos run [-c config.yml] -i spec.yml [--state state.json] [--once] [--interval 5m] [--out events.jsonl] [--trace trace.jsonl] [--http-timeout dur] [--max-pages n]
 //	skopos init [-o path] [--force]
 //	skopos template list
-//	skopos template show <name>
+//	skopos template show [-o path] <name>
 //
 // Subcommands:
 //

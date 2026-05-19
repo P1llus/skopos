@@ -204,7 +204,7 @@ func TestDrain_TerminateWhenLoop(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url":        {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url":        {Type: "url", Default: new(vStr(server.URL))},
 			"export_id":  {Type: "string"},
 			"result_url": {Type: "url"},
 		},

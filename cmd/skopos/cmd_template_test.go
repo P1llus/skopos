@@ -118,7 +118,6 @@ func TestRunTemplate_ShowMissingName(t *testing.T) {
 func TestTemplateList_AllNamesValid(t *testing.T) {
 	// Every name returned by Names() must be readable via Read().
 	for _, name := range templates.Names() {
-		name := name
 		t.Run(name, func(t *testing.T) {
 			data, err := templates.Read(name)
 			if err != nil {

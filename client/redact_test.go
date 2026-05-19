@@ -131,7 +131,7 @@ func TestValueShape(t *testing.T) {
 		{"now", vNow(), "<now>"},
 		{"concat", schema.Value{Concat: []schema.Value{vStr("a"), vStr("b")}}, "<concat>"},
 		{"format", schema.Value{Format: &schema.FormatValue{Verb: "rfc3339"}}, "<format:rfc3339>"},
-		{"base64", schema.Value{Base64: ptrValue(vStr("x"))}, "<base64>"},
+		{"base64", schema.Value{Base64: new(vStr("x"))}, "<base64>"},
 		{"list", schema.Value{List: []schema.Value{vStr("a")}}, "<list>"},
 		{"object", schema.Value{Object: map[string]schema.Value{"k": vStr("v")}}, "<object>"},
 		{"add", schema.Value{Add: &schema.ArithExpr{Operands: []schema.Value{vInt(1), vInt(2)}}}, "<add>"},

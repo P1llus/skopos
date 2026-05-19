@@ -4,6 +4,8 @@ package schema
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -37,9 +39,11 @@ type Diagnostic struct {
 // exactly one variant, required fields are present, references resolve
 // against the declared namespace set, lifetime inference does not
 // conflict across write sites, and the closed verb sets
-// (on_status, error.mode, decode, format) are respected. Capability
-// checks ("does this target support fan_out merge: wrap") live in the
-// consumer, not here.
+// (on_status, error.mode, decode) are respected. The format: verb is
+// not shape-validated here — its closed-set membership is checked at
+// runtime, where unrecognised verbs are tried as a Go time layout (see
+// DESIGN §4.1). Capability checks ("does this target support fan_out
+// merge: wrap") live in the consumer, not here.
 func Validate(d *Doc) []Diagnostic {
 	v := &validator{}
 	if d == nil {
@@ -101,9 +105,7 @@ func (v *validator) run(d *Doc) {
 		extract:    map[string]struct{}{},
 		cacheSlots: map[string]struct{}{},
 	}
-	for name, fd := range d.State {
-		sc.state[name] = fd
-	}
+	maps.Copy(sc.state, d.State)
 	for _, r := range d.Requests {
 		if r.ID != "" {
 			sc.stepIDs[r.ID] = struct{}{}
@@ -458,7 +460,7 @@ func (v *validator) checkRequests(d *Doc, sc *scope) {
 	for i, req := range d.Requests {
 		p := fmt.Sprintf("requests[%d]", i)
 		// extract names from earlier steps stay visible to later steps;
-		// itemNamespace and the per-step extract slate are step-local.
+		// fanOutAlias and the per-step extract slate are step-local.
 		stepScope := *sc
 		stepScope.extract = sc.extract
 		if req.FanOut != nil {
@@ -501,7 +503,8 @@ func (v *validator) checkRequest(path string, req Request, sc *scope) {
 	for j, ex := range req.Extract {
 		ep := fmt.Sprintf("%s.extract[%d]", path, j)
 		// .to lifetime/destination already checked in checkLifetimes;
-		// here we only validate .from / .coerce / .regex shape.
+		// .coerce verb and .regex pattern are not shape-validated here —
+		// invalid values surface at runtime as a wrapped error.
 		if ex.From.IsEmpty() {
 			v.errorf(ep+".from", "from is required; want response.body.<path>, response.header.<name>, or steps.<id>.{body|header}.<...>")
 		} else {
@@ -1069,11 +1072,9 @@ func (v *validator) checkResponseRef(path string, p Path) {
 // checkNoStarOutsideEvents rejects a `*` segment in any non-events path.
 // The events projection is the only site where `*` is meaningful.
 func (v *validator) checkNoStarOutsideEvents(path string, p Path) {
-	for _, seg := range p.Parts {
-		if seg == "*" {
-			v.errorf(path, "ref %q: the * projection segment is only legal in events.*.<field>", p.String())
-			return
-		}
+	if slices.Contains(p.Parts, "*") {
+		v.errorf(path, "ref %q: the * projection segment is only legal in events.*.<field>", p.String())
+		return
 	}
 }
 
@@ -1185,8 +1186,13 @@ func validStateType(t string) bool {
 	return false
 }
 
-// joinClosedRoots returns a human-readable list of the closed namespace
-// roots for error messages.
+// joinClosedRoots returns the bare list of closed namespace roots —
+// pipe-separated for readability inside parenthetical clauses. Use this
+// only in error messages whose surrounding text already qualifies the
+// fan_out.as alias case separately (or where mentioning the alias would
+// be wrong, e.g. when complaining about a fan_out.as itself). For
+// self-contained parse-time diagnostics, use pathLegalRootsList in
+// path.go.
 func joinClosedRoots() string {
 	return "state | cache | events | extract | steps | response"
 }

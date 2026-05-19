@@ -84,7 +84,7 @@ func TestTracer_SecretHeaderRedacted(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["api_key"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("xyz"))}
+	doc.State["api_key"] = schema.FieldDecl{Type: "secret", Default: new(vStr("xyz"))}
 	doc.Requests[0].Headers = map[string]schema.Value{
 		"X-Token":  vRef("state.api_key"),
 		"X-Public": vStr("ok"),
@@ -113,7 +113,7 @@ func TestTracer_APIKeyInQueryRedacted(t *testing.T) {
 	defer server.Close()
 
 	doc := minimalDoc(server.URL)
-	doc.State["k"] = schema.FieldDecl{Type: "secret", Default: ptrValue(vStr("super-secret"))}
+	doc.State["k"] = schema.FieldDecl{Type: "secret", Default: new(vStr("super-secret"))}
 	doc.Auth = schema.Auth{APIKey: &schema.APIKeyAuth{
 		Header:  "apikey",
 		Value:   vRef("state.k"),
@@ -184,7 +184,7 @@ func TestTracer_CacheHitTombstone(t *testing.T) {
 	doc := &schema.Doc{
 		IRVersion: "1",
 		State: map[string]schema.FieldDecl{
-			"url":        {Type: "url", Default: ptrValue(vStr(server.URL))},
+			"url":        {Type: "url", Default: new(vStr(server.URL))},
 			"next_token": {Type: "string"},
 		},
 		Auth: schema.Auth{Bearer: &schema.BearerAuth{

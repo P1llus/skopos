@@ -62,7 +62,7 @@ func TestFileStore_AtomicWrite(t *testing.T) {
 	path := filepath.Join(dir, "state.json")
 	fs := NewFileStore(path)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		in := Snapshot{
 			State: map[string]any{"page": float64(i)},
 		}
