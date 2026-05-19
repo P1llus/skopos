@@ -13,12 +13,16 @@ import (
 )
 
 // Config holds the optional run configuration read from a -c/--config file.
-// Every field corresponds to a CLI flag; the merge order is:
+// Every top-level field corresponds to a CLI flag; the merge order is:
 //
 //	built-in defaults → config file → explicit CLI flags (highest priority)
 //
 // An explicit flag always wins; an omitted flag falls back to the config
 // value, which itself falls back to the built-in default.
+//
+// When Runs is non-empty the file describes a fleet: one Runner per
+// entry, fanned out across goroutines. Per-entry values override the
+// top-level fields by inheritance — see resolveRunEntry.
 type Config struct {
 	// Input is the path to the spec file. Equivalent to -i.
 	Input string `yaml:"input"`
@@ -46,6 +50,33 @@ type Config struct {
 	// MaxPages caps the number of pagination iterations per drain.
 	// When zero, the client default (10 000) is used.
 	MaxPages int `yaml:"max_pages"`
+
+	// StateDir, when set, is the directory used to derive each fleet
+	// entry's state file when the entry does not set State explicitly.
+	// The derived path is {StateDir}/{basename(entry.Input) without ext}.json.
+	// Ignored outside fleet mode.
+	StateDir string `yaml:"state_dir"`
+
+	// Runs lists fleet entries. When non-empty (and no explicit -i was
+	// passed on the CLI), each entry runs in its own goroutine with its
+	// own Runner. Per-entry fields override the top-level defaults; Trace
+	// is NOT inherited from the top level — entries that want a trace
+	// must set it explicitly.
+	Runs []RunEntry `yaml:"runs"`
+}
+
+// RunEntry is one spec to execute in a fleet. Fields parallel the
+// top-level Config flags; an unset field inherits from the top level
+// except for Trace, which is opt-in per-entry.
+type RunEntry struct {
+	Input       string        `yaml:"input"`
+	State       string        `yaml:"state"`
+	Out         string        `yaml:"out"`
+	Trace       string        `yaml:"trace"`
+	Once        bool          `yaml:"once"`
+	Interval    time.Duration `yaml:"interval"`
+	HTTPTimeout time.Duration `yaml:"http_timeout"`
+	MaxPages    int           `yaml:"max_pages"`
 }
 
 // DefaultConfig returns a Config populated with the built-in defaults.
