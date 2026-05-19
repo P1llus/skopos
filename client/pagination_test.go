@@ -90,7 +90,7 @@ func TestPagination_CursorTokenAdvancesAndStops(t *testing.T) {
 func TestPagination_NextURLLinkHeader(t *testing.T) {
 	var idx atomic.Int32
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		i := idx.Add(1) - 1
 		if i == 0 {
 			w.Header().Set("Link", `<`+server.URL+`/events?p=2>; rel="next", <`+server.URL+`/events?p=1>; rel="self"`)

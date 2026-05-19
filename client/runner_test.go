@@ -337,7 +337,7 @@ func TestDrain_RequiresDocAndSink(t *testing.T) {
 // server cannot wedge Drain indefinitely.
 func TestDrain_HTTPTimeoutFires(t *testing.T) {
 	// httptest server that hangs forever (ctx-based block).
-	hung := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	hung := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
 	defer hung.Close()

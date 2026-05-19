@@ -507,9 +507,6 @@ func (v *validator) checkRequest(path string, req Request, sc *scope) {
 		} else {
 			v.checkExtractFromPath(ep+".from", ex.From, sc)
 		}
-		if ex.Coerce != "" && !validFormatVerb(ex.Coerce) {
-			// non-closed-set strings are treated as Go layouts; accept silently.
-		}
 	}
 
 	if req.Cache != nil {
@@ -1183,21 +1180,6 @@ func (v *validator) checkExtractFromPath(path string, p Path, sc *scope) {
 func validStateType(t string) bool {
 	switch t {
 	case "string", "int", "bool", "secret", "duration", "timestamp", "url", "enum":
-		return true
-	}
-	return false
-}
-
-// validFormatVerb reports whether v is in the closed format-verb set.
-// Non-members are not rejected as format verbs because the format
-// position accepts a Go layout string as a fallback; this helper is
-// used at sites that want to recognise the named parsers explicitly.
-func validFormatVerb(v string) bool {
-	switch v {
-	case "string", "int", "bool",
-		"rfc3339", "rfc3339nano",
-		"unix_seconds", "unix_millis",
-		"duration", "url_encode", "parse_duration":
 		return true
 	}
 	return false
