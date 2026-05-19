@@ -9,9 +9,6 @@ state:
   url:
     type: url
     default: "http://localhost:9999"
-  page_size:
-    type: int
-    default: 5
   api_key:
     type: secret
     default: "test-api-key-67890"

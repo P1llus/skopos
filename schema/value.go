@@ -513,7 +513,12 @@ func decodeReducerOperandYAML(node *yaml.Node, disc string) (Value, error) {
 }
 
 // valueVariants returns the (name, payload) pairs for every Value variant
-// that is currently set, in the declaration order of valueDiscriminatorKeys.
+// that is currently set, in the declaration order of valueDiscriminatorKeys
+// plus the bare-scalar variants. literal_int and literal_bool are listed
+// here even though they are not in valueDiscriminatorKeys: those forms are
+// reached from YAML int / bool scalars rather than via a map-key
+// discriminator, so Variant() / VariantNames() must still surface them
+// when set.
 func valueVariants(v Value) (names []string, payloads []any) {
 	add := func(name string, payload any, set bool) {
 		if set {
@@ -544,10 +549,11 @@ func valueVariants(v Value) (names []string, payloads []any) {
 }
 
 // Variant returns the active Value variant name and payload. Returns
-// ("", nil) when the Value is zero (IsZero or no form set) or, in the rare
-// case targets call this on a hand-constructed Doc, when multiple forms are
-// set. Documents loaded via schema.Load / schema.Parse have multi-form rejection
-// enforced at codec time.
+// ("", nil) when the Value is zero (no form set) or, for callers that
+// hand-construct a Doc, when multiple forms are set at once. Documents
+// loaded via schema.Load / schema.Parse have multi-form rejection
+// enforced at codec time, so this fallback only matters for in-process
+// builders.
 func (v Value) Variant() (string, any) {
 	names, payloads := valueVariants(v)
 	if len(names) == 1 {

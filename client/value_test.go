@@ -104,6 +104,23 @@ func TestEvalValue(t *testing.T) {
 			val:   vConcat(vStr("p="), vRef("state.a"), vRef("state.absent"), vStr("?")),
 			want:  "p=x?",
 		},
+		{
+			// "${state.absent|fallback}" desugars to a Ref with a default.
+			// When state.absent is unset at runtime, evalValue must return
+			// the parsed default string, not nil.
+			name:  "interpolation_pipe_default_fires_on_absent",
+			state: nil,
+			val:   mustInterp(`"${state.absent|fallback}"`),
+			want:  "fallback",
+		},
+		{
+			// "${state.x|fallback}" with state.x present at runtime must
+			// return the resolved ref, NOT the default.
+			name:  "interpolation_pipe_default_skipped_when_present",
+			state: map[string]any{"x": "real"},
+			val:   mustInterp(`"${state.x|fallback}"`),
+			want:  "real",
+		},
 
 		{
 			name: "format_string_int",
@@ -339,6 +356,21 @@ func TestEvalValueReducers(t *testing.T) {
 			name: "max_over_events_projection",
 			v:    schema.Value{Max: ptrValue(vRef("events.*.ts"))},
 			want: "2026-01-01T00:00:03Z",
+		},
+		{
+			name: "min_over_events_projection",
+			v:    schema.Value{Min: ptrValue(vRef("events.*.ts"))},
+			want: "2026-01-01T00:00:01Z",
+		},
+		{
+			name: "first_over_events_projection",
+			v:    schema.Value{First: ptrValue(vRef("events.*.ts"))},
+			want: "2026-01-01T00:00:01Z",
+		},
+		{
+			name: "last_over_events_projection",
+			v:    schema.Value{Last: ptrValue(vRef("events.*.ts"))},
+			want: "2026-01-01T00:00:02Z",
 		},
 		{
 			name: "count_over_events_projection",

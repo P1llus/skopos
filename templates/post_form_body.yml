@@ -1,8 +1,8 @@
 # post_form_body — POST with application/x-www-form-urlencoded body.
 #
 # Demonstrates: requests[].body.form. Three fields exercise the form
-# variant: a state ref (timestamp filter), an int formatted to string,
-# and a static string literal.
+# variant: a state ref (timestamp filter), a string-interpolated int
+# (the page-size limit), and a static string literal.
 
 ir_version: "1"
 

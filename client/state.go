@@ -4,7 +4,6 @@ package client
 
 import (
 	"fmt"
-	"log"
 	"maps"
 	"net/http"
 	"strconv"
@@ -57,10 +56,12 @@ func (m *MemoryStore) Load() (Snapshot, error) { return m.snap, nil }
 // Save overwrites the in-memory snapshot. Always nil error.
 func (m *MemoryStore) Save(s Snapshot) error { m.snap = s; return nil }
 
-// scope is the namespace-resolution context for one drain. It mirrors the
-// IR's namespace table and is reused across pagination iterations within
-// a drain; continuous-mode operation reuses the same scope across
-// redrains.
+// scope is the namespace-resolution context for one drain. It mirrors
+// the IR's namespace table and is reused across pagination iterations
+// within a single drain. Runner.Drain constructs a fresh scope on every
+// invocation via newScope, so continuous-mode (multi-drain) operation
+// does NOT share scope state across drains — only the persisted
+// Snapshot survives, and the cache.* slots are repopulated lazily.
 //
 // Each namespace has a defined lifetime:
 //
@@ -117,12 +118,6 @@ type scope struct {
 	// nowFn is the clock; defaults to time.Now. Per-scope (not package
 	// global) so concurrent runners can use independent clocks.
 	nowFn func() time.Time
-
-	// logger surfaces operational breadcrumbs from helpers that don't
-	// otherwise have access to Runner.Logger. Optional; nil means "no
-	// breadcrumb" (the helper falls back to its existing silent path).
-	// Wired by Runner.Drain after newScope returns.
-	logger *log.Logger
 }
 
 // newScope seeds a scope from a snapshot and the IR's state-field

@@ -75,8 +75,12 @@ var pathRemovedRoots = map[string]string{
 	"item":   "reference the per-iteration value through the author-chosen fan_out.as alias",
 }
 
-// pathLegalRootsList is the canonical English list of legal roots used in
-// the parse-time error message.
+// pathLegalRootsList is the self-contained English list of legal roots
+// used in parse-time error messages: it ends with "...or a fan_out.as
+// alias" so a single-sentence diagnostic reads correctly. For error
+// messages that need the bare closed set (e.g. when the surrounding
+// sentence already mentions fan_out aliases separately), use
+// joinClosedRoots in validate.go instead.
 const pathLegalRootsList = "state, cache, events, extract, steps, response, or a fan_out.as alias"
 
 // validatePathRoot returns nil when root is a legal first-segment name and

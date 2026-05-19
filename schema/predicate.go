@@ -167,12 +167,6 @@ func pickPredicateDiscriminator(keys map[string]struct{}) (string, error) {
 	}
 	switch len(matches) {
 	case 0:
-		if _, ok := keys["in"]; ok {
-			return "", fmt.Errorf("predicate verb \"in\" is deferred; express as nested {or: [...]} of eq comparisons")
-		}
-		if _, ok := keys["matches"]; ok {
-			return "", fmt.Errorf("predicate verb \"matches\" is deferred; no portable regex Value form yet")
-		}
 		return "", fmt.Errorf("no recognised discriminator key (want eq|gt|lt|gte|lte|present|and|or|not|literal_bool)")
 	case 1:
 		return matches[0], nil

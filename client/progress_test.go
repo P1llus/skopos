@@ -4,14 +4,25 @@ package client
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/p1llus/skopos/schema"
 )
+
+// erroringSink fails the first Emit with err; subsequent calls succeed.
+// Used to pin emit-before-progress-before-commit ordering.
+type erroringSink struct {
+	err error
+}
+
+func (e *erroringSink) Emit(any) error { return e.err }
+func (*erroringSink) Flush() error     { return nil }
 
 // TestApplyProgress_FlatWriteList pins the canonical shape: a flat list
 // of {to, from} writes evaluated against a fresh snapshot of state.*
@@ -90,7 +101,7 @@ func TestApplyProgress_EmptyListIsNoop(t *testing.T) {
 }
 
 // TestApplyProgress_CoerceAndRegex pins the per-entry transform chain:
-// regex first, then coerce.
+// regex first (group 0 is the full match), then coerce.
 func TestApplyProgress_CoerceAndRegex(t *testing.T) {
 	s := newTestScope(t, map[string]any{
 		"raw_etag": `W/"v42"`,
@@ -98,17 +109,19 @@ func TestApplyProgress_CoerceAndRegex(t *testing.T) {
 
 	writes := schema.Progress{
 		{
-			To:    mustPath("state.parsed_etag"),
-			From:  vRef("state.raw_etag"),
-			Regex: `"(.*)"`,
+			To:     mustPath("state.parsed_version"),
+			From:   vRef("state.raw_etag"),
+			Regex:  `\d+`,
+			Coerce: "int",
 		},
 	}
 	if err := applyProgress(s, writes); err != nil {
 		t.Fatalf("applyProgress: %v", err)
 	}
-	if got := s.state["parsed_etag"]; got != `W/"v42"` {
-		// Note: the regex returns the full match (group 0).
-		t.Logf("parsed_etag = %v", got)
+	got := s.state["parsed_version"]
+	want := int64(42)
+	if got != want {
+		t.Errorf("parsed_version = %#v (%T); want %#v (int64) — regex must run first, then coerce", got, got, want)
 	}
 }
 
@@ -154,6 +167,49 @@ func TestApplyProgress_PersistsAcrossDrains(t *testing.T) {
 	}
 	if seenSince[1] != "2026-01-01T00:00:01Z" {
 		t.Errorf("second since = %q, want last_timestamp from drain 1", seenSince[1])
+	}
+}
+
+// TestApplyProgress_SinkFailureSkipsCommit pins the emit-before-progress-
+// before-commit ordering: when Sink.Emit returns an error, applyProgress
+// must NOT have run for that page, so the deferred Save captures the
+// pre-emit state. Without this ordering, an event that the sink rejected
+// could still advance the high-water mark and silently drop on the next
+// drain.
+func TestApplyProgress_SinkFailureSkipsCommit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{
+			map[string]any{"ts": "2026-01-01T00:00:42Z"},
+		}})
+	}))
+	defer server.Close()
+
+	doc := minimalDoc(server.URL)
+	doc.State["last_timestamp"] = schema.FieldDecl{
+		Type:    "timestamp",
+		Default: ptrValue(vStr("seed-value")),
+	}
+	doc.Progress = schema.Progress{
+		{
+			To:   mustPath("state.last_timestamp"),
+			From: schema.Value{Max: ptrValue(vRef("events.*.ts"))},
+		},
+	}
+
+	store := &MemoryStore{}
+	sink := &erroringSink{err: errors.New("downstream wedged")}
+	r := &Runner{Doc: doc, Sink: sink, Store: store, Now: fixedNow(), Client: server.Client()}
+
+	err := r.Drain(context.Background())
+	if err == nil {
+		t.Fatal("Drain: expected error from sink.Emit; got nil")
+	}
+
+	snap, _ := store.Load()
+	got := snap.State["last_timestamp"]
+	// Seed value survives; the progress write did NOT commit.
+	if got != "seed-value" {
+		t.Errorf("last_timestamp = %v; want %q (sink failure must not commit progress)", got, "seed-value")
 	}
 }
 
@@ -310,6 +366,40 @@ func TestSnapshot_ExcludesScratchFields(t *testing.T) {
 	}
 	if _, found := snap.State["drop"]; found {
 		t.Errorf("scratch field 'drop' leaked into snapshot: %v", snap.State)
+	}
+}
+
+// TestSeedDefaults_CompositeValueDefault pins DESIGN §3.2: a state
+// field's default: accepts the full Value language, including
+// {subtract: [{now: true}, <duration>]}. The seed step must evaluate
+// the composite Value against the active clock and land a real
+// time.Time (or its string form) in scope.state.
+func TestSeedDefaults_CompositeValueDefault(t *testing.T) {
+	// {subtract: [{now: true}, "720h"]} — the canonical first-run
+	// lookback pattern from the design doc.
+	subtract := mustInterp(`{subtract: [{now: true}, "720h"]}`)
+
+	doc := &schema.Doc{
+		IRVersion: "1",
+		State: map[string]schema.FieldDecl{
+			"last_timestamp": {Type: "timestamp", Default: &subtract},
+		},
+	}
+	s, err := newScope(doc, Snapshot{}, fixedNow())
+	if err != nil {
+		t.Fatalf("newScope: %v", err)
+	}
+	got := s.state["last_timestamp"]
+	if got == nil {
+		t.Fatal("last_timestamp not seeded; want a time 720h before fixedNow()")
+	}
+	wantTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(-720 * time.Hour)
+	gotTime, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("last_timestamp = %#v (%T); want time.Time", got, got)
+	}
+	if !gotTime.Equal(wantTime) {
+		t.Errorf("last_timestamp = %v; want %v", gotTime, wantTime)
 	}
 }
 

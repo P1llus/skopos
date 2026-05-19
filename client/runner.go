@@ -203,7 +203,6 @@ func (r *Runner) Drain(ctx context.Context) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("scope: %w", err)
 	}
-	s.logger = logger
 
 	// Register the deferred Save + Flush BEFORE any further work so
 	// every termination path — normal exit, error.mode: warn, error.
@@ -422,6 +421,12 @@ func (r *Runner) runIteration(
 			}
 			if fr.fatal {
 				return iterationResult{kind: iterFatal}, fmt.Errorf("client: drain aborted on error.mode=fail")
+			}
+			if fr.invalidated {
+				// on_status: invalidate_cache from inside fan_out: mirror
+				// the single-request stepInvalidate path so pagination does
+				// NOT advance. Caches were dropped inside runFanOut.
+				return iterationResult{kind: iterInvalidate}, nil
 			}
 			if !fr.advance {
 				return iterationResult{kind: iterBreak}, nil
@@ -688,8 +693,12 @@ func anyEvents(evs []any) any {
 // source. An explicit produces_events: true marker wins; otherwise the
 // runner falls through to the implicit-last rule — the last declared
 // request is the producer. Returns "" to signal the implicit-last
-// fallback; runIteration compares by slice index in that case so two
-// unlabelled requests with identical (method, url) cannot be confused.
+// fallback; runIteration captures producer state when (implicitLast &&
+// i == lastIdx) is true. The producer-capture guard also re-fires for
+// unlabelled non-last steps via the req.ID == producerID arm (both ""),
+// but each match overwrites the previous one, so last-write-wins on the
+// final slice index — the validator already forbids more than one
+// produces_events marker.
 func producerStepID(doc *schema.Doc) string {
 	for _, req := range doc.Requests {
 		if req.ProducesEvents {
