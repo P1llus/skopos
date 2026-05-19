@@ -39,11 +39,6 @@ func vRefDefault(p string, d schema.Value) schema.Value {
 // vNow builds {now: true}.
 func vNow() schema.Value { return schema.Value{Now: &schema.NowValue{}} }
 
-// ptrValue returns &v.
-//
-//go:fix inline
-func ptrValue(v schema.Value) *schema.Value { return new(v) }
-
 // mustPath panics if s does not parse as a Path.
 func mustPath(s string) schema.Path {
 	p, err := schema.ParsePath(s)
