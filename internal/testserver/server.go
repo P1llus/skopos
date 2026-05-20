@@ -50,6 +50,7 @@ func AllScenarios() []Scenario {
 		APIKeyAuth(),
 		BasicAuth(),
 		CustomAuth(),
+		SigV4(),
 		SimpleGetObject(),
 		NDJSONResponse(),
 		MultiModeAuth(),

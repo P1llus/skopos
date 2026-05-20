@@ -51,6 +51,7 @@ Regenerate with `go run ./tools/gen-schema-doc`; CI runs
 - [`Response`](#response)
 - [`SelectBranch`](#selectbranch)
 - [`SelectValue`](#selectvalue)
+- [`SigV4Auth`](#sigv4auth)
 - [`Value`](#value)
 
 ## `Path`
@@ -206,6 +207,7 @@ be present.
 | `APIKey` | `api_key` | `*APIKeyAuth` | yes | APIKey selects the named-header (or named-query) API-key variant. |
 | `Custom` | `custom` | `*CustomAuth` | yes | Custom selects the single-custom-header variant. |
 | `OAuth2` | `oauth2` | `*OAuth2Auth` | yes | OAuth2 selects the OAuth2 variant (client_credentials / password_grant). |
+| `SigV4` | `sigv4` | `*SigV4Auth` | yes | SigV4 selects the AWS Signature Version 4 request-signing variant. |
 | `MultiMode` | `multi_mode` | `*MultiModeAuth` | yes | MultiMode dispatches between auth strategies at runtime via predicates. |
 
 ## `BearerAuth`
@@ -295,6 +297,24 @@ username/password pair for a short-lived access token.
 | `ClientID` | `client_id` | `*Value` | yes | ClientID is optional because some servers authenticate the client via Basic auth on the token endpoint. |
 | `Scopes` | `scopes` | `[]string` | yes | Scopes is the optional space-separated OAuth2 scope list. |
 | `Cache` | `cache` | `*Cache` | yes | Cache, when set, writes the captured access token into a cache.<name> slot. |
+
+## `SigV4Auth`
+
+_Defined in `schema/schema.go`._
+
+SigV4Auth signs every request with AWS Signature Version 4. Region and
+Service are required. Credentials are taken from access_key_id +
+secret_access_key (with optional session_token); when all three are
+omitted, the AWS default credential chain is used (environment, shared
+config, IMDS / container / IAM role).
+
+| Field | YAML | Type | Optional | Description |
+| --- | --- | --- | --- | --- |
+| `Region` | `region` | `Value` | no | Region is the AWS region used in the credential scope (e.g. us-east-1). |
+| `Service` | `service` | `Value` | no | Service is the AWS service name used in the credential scope (e.g. execute-api, es, s3). |
+| `AccessKeyID` | `access_key_id` | `*Value` | yes | AccessKeyID is the AWS access key id. Optional: omit (with SecretAccessKey) to use the default credential chain. |
+| `SecretAccessKey` | `secret_access_key` | `*Value` | yes | SecretAccessKey is the AWS secret access key. Required when AccessKeyID is set. |
+| `SessionToken` | `session_token` | `*Value` | yes | SessionToken is the optional STS session token for temporary credentials. |
 
 ## `MultiModeAuth`
 

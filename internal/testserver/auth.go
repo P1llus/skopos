@@ -24,6 +24,22 @@ const (
 	// DefaultCustomAuth is the value carried in the X-Custom-Auth header by
 	// the custom_auth scenario. It matches templates/custom_auth.yml.
 	DefaultCustomAuth = "custom-auth-value-99999"
+
+	// DefaultSigV4AccessKeyID is the static AWS access key id the sigv4
+	// scenario re-signs incoming requests with. It matches the sigv4 golden
+	// fixture (cmd/skopos/testdata/sigv4.txt).
+	DefaultSigV4AccessKeyID = "AKIDEXAMPLESIGV4TEST"
+	// DefaultSigV4SecretAccessKey is the static AWS secret access key paired
+	// with DefaultSigV4AccessKeyID. It matches the sigv4 golden fixture.
+	DefaultSigV4SecretAccessKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+	// SigV4Region is the credential-scope region the sigv4 scenario expects;
+	// re-signing with it rejects requests signed for a different region.
+	SigV4Region = "us-east-1"
+	// SigV4Service is the credential-scope service the sigv4 scenario
+	// expects; re-signing with it rejects requests signed for a different
+	// service.
+	SigV4Service = "execute-api"
 )
 
 // checkBearer returns true when the request carries the expected bearer token.

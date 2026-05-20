@@ -309,7 +309,7 @@ func (v *validator) checkLifetimes(d *Doc, sc *scope) {
 func (v *validator) checkAuth(path string, a Auth, sc *scope) {
 	switch len(a.VariantNames()) {
 	case 0:
-		v.errorf(path, "auth block must have exactly one variant (none|bearer|basic|api_key|custom|oauth2|multi_mode)")
+		v.errorf(path, "auth block must have exactly one variant (none|bearer|basic|api_key|custom|oauth2|sigv4|multi_mode)")
 		return
 	case 1:
 	default:
@@ -335,8 +335,39 @@ func (v *validator) checkAuth(path string, a Auth, sc *scope) {
 		v.checkValue(path+".custom.value", a.Custom.Value, sc)
 	case a.OAuth2 != nil:
 		v.checkOAuth2(path+".oauth2", a.OAuth2, sc)
+	case a.SigV4 != nil:
+		v.checkSigV4(path+".sigv4", a.SigV4, sc)
 	case a.MultiMode != nil:
 		v.checkMultiMode(path+".multi_mode", a.MultiMode, sc)
+	}
+}
+
+// checkSigV4 validates the AWS SigV4 auth variant. Region and Service are
+// required Values. Credentials are an all-or-nothing pair: it is an error
+// to set exactly one of access_key_id / secret_access_key, and
+// session_token may only accompany a full static-credential pair. Omitting
+// all three selects the AWS default credential chain.
+func (v *validator) checkSigV4(path string, a *SigV4Auth, sc *scope) {
+	v.checkValue(path+".region", a.Region, sc)
+	v.checkValue(path+".service", a.Service, sc)
+
+	hasID := a.AccessKeyID != nil
+	hasSecret := a.SecretAccessKey != nil
+	if hasID != hasSecret {
+		v.errorf(path, "access_key_id and secret_access_key must be set together (set both for static credentials, or omit both for the AWS default credential chain)")
+	}
+	if a.SessionToken != nil && (!hasID || !hasSecret) {
+		v.errorf(path+".session_token", "session_token requires access_key_id and secret_access_key to be set")
+	}
+
+	if hasID {
+		v.checkValue(path+".access_key_id", *a.AccessKeyID, sc)
+	}
+	if hasSecret {
+		v.checkValue(path+".secret_access_key", *a.SecretAccessKey, sc)
+	}
+	if a.SessionToken != nil {
+		v.checkValue(path+".session_token", *a.SessionToken, sc)
 	}
 }
 

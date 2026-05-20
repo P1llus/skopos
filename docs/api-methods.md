@@ -290,6 +290,49 @@ is needed, it lives as a regular request step that hits the token
 endpoint and writes the access token to `state.<name>` (or to a
 `cache.<name>` slot via `requests[].cache`).
 
+### 1.12 AWS Signature Version 4 (`auth.sigv4`)
+
+**What it does:** Signs every request with AWS Signature Version 4 for
+AWS APIs (API Gateway, OpenSearch, S3, …). The signature is computed
+locally per request, immediately before send, and is never cached — it
+is an HMAC over the exact request, so it cannot be reused across pages
+or polls.
+
+**IR shape (static credentials):**
+
+```yaml
+auth:
+  sigv4:
+    region: "us-east-1"
+    service: "execute-api"
+    access_key_id: {ref: state.aws_access_key_id}
+    secret_access_key: {ref: state.aws_secret_access_key}
+    # session_token: {ref: state.aws_session_token}   # optional, for STS creds
+```
+
+**IR shape (AWS default credential chain):** omit `access_key_id` and
+`secret_access_key` to resolve credentials from the environment, shared
+config files, or IMDS / container / IAM role:
+
+```yaml
+auth:
+  sigv4:
+    region: "us-east-1"
+    service: "execute-api"
+```
+
+`region` and `service` are required. `access_key_id` and
+`secret_access_key` are all-or-nothing (set both or omit both);
+`session_token` may only accompany a full static pair. Credential
+caching/refresh for the default chain (assumed-role / IMDS temporary
+creds) is handled by the AWS SDK provider, not the `cache` block.
+
+**Retry caveat:** because signing is per-request and time-stamped, a
+caller-injected transport that re-sends an already-signed request is
+only valid inside AWS's clock-skew window; prefer skopos's own
+`on_status` / `error.mode` handling, which re-enters the request loop
+and re-signs. See [runtime.md §10](runtime.md#10-http-transport-defaults).
+
 ---
 
 ## 2. Pagination

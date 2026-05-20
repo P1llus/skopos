@@ -31,8 +31,9 @@ embedded runner inside your own service.
 ## Overview
 
 - **One spec, many API shapes.** Authentication modes include bearer,
-  basic, API key, OAuth2 (client credentials and password grant), session
-  cookies, and dispatched multi-mode auth. Pagination modes include
+  basic, API key, OAuth2 (client credentials and password grant), AWS
+  SigV4, session cookies, and dispatched multi-mode auth. Pagination
+  modes include
   cursor token, page number, offset, `Link` header, next-URL-in-body,
   scroll ID, and async submit/poll/fetch.
 - **Stateful between runs.** Cursors and bookkeeping live in a pluggable

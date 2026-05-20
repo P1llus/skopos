@@ -74,6 +74,9 @@ func (s *scope) applyAuth(ctx context.Context, client *http.Client, req *http.Re
 	case auth.OAuth2 != nil:
 		return s.applyOAuth2(ctx, client, req, auth.OAuth2)
 
+	case auth.SigV4 != nil:
+		return s.applySigV4(ctx, req, auth.SigV4)
+
 	case auth.MultiMode != nil:
 		return s.applyMultiMode(ctx, client, req, auth.MultiMode)
 	}

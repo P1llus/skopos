@@ -1,0 +1,39 @@
+# auth.sigv4 without explicit credentials: omitting access_key_id and
+# secret_access_key selects the AWS default credential chain (environment,
+# shared config, IMDS / container / IAM role). Only region + service are
+# required.
+
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
+
+auth:
+  sigv4:
+    region: "us-east-1"
+    service: "execute-api"
+
+requests:
+  - method: GET
+    url: "${state.url}/sigv4/events"
+    query:
+      since: {ref: state.last_timestamp}
+
+response:
+  decode: json
+  events_at: response.body.events
+
+pagination:
+  none: {}
+
+progress:
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}
+
+error:
+  mode: standard

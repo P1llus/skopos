@@ -15,7 +15,7 @@
 //   - ir_version  — wire-format identifier (must equal IRVersion).
 //   - state       — flat map of typed field declarations.
 //   - auth        — discriminated union (none | bearer | basic | api_key |
-//     custom | oauth2 | multi_mode).
+//     custom | oauth2 | sigv4 | multi_mode).
 //   - requests    — ordered list of HTTP requests run per iteration.
 //   - response    — how to decode the producer step and where the events
 //     list lives.

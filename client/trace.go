@@ -36,11 +36,12 @@ import (
 //     in_query=true: the configured header name's value is redacted.
 //   - Headers are emitted with values replaced by "<redacted>" for:
 //     (a) the always-sensitive name allowlist (Authorization, Cookie,
-//     Proxy-Authorization, Set-Cookie), (b) any header whose IR Value is
+//     Proxy-Authorization, Set-Cookie, and the SigV4 signing headers
+//     X-Amz-Date / X-Amz-Security-Token), (b) any header whose IR Value is
 //     schema.IsSecret, (c) any header named by auth.custom.header or
 //     auth.api_key.header (the runtime injects credentials into those).
-//   - Request and response bodies are metadata-only by default (byte length
-//     + leading-byte classification). Surfacing raw bytes would put
+//   - Request and response bodies are metadata-only by default: byte length
+//     plus a leading-byte classification. Surfacing raw bytes would put
 //     access_token / refresh_token responses from OAuth2-style token
 //     endpoints into the trace. Authors who genuinely need the raw bytes
 //     during template development should plug a *http.Client whose
@@ -207,11 +208,17 @@ const redactedValue = "<redacted>"
 // sensitiveHeaderNames is the always-redact allowlist of header names
 // (case-insensitive). Auth-block-specific names (auth.custom.header,
 // auth.api_key.header) are added per-request on top of this set.
+//
+// x-amz-security-token carries the SigV4 session token (a credential);
+// x-amz-date is signing material the runtime injects and, being real
+// wall-clock time, would also destabilise a trace golden if emitted raw.
 var sensitiveHeaderNames = map[string]bool{
-	"authorization":       true,
-	"proxy-authorization": true,
-	"cookie":              true,
-	"set-cookie":          true,
+	"authorization":        true,
+	"proxy-authorization":  true,
+	"cookie":               true,
+	"set-cookie":           true,
+	"x-amz-security-token": true,
+	"x-amz-date":           true,
 }
 
 // httpTrace is the internal scratchpad executeRequest populates when a
