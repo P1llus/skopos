@@ -330,6 +330,14 @@ one JSON object per exchange and calls `Flush()` from `Drain`'s
 deferred unwind. A custom `Tracer` can forward exchanges to any
 pipeline that accepts the record shape.
 
+`StartedAt` and `Elapsed` are measured against the real wall clock and
+are independent of `Runner.Now`. `Runner.Now` is the *spec* clock: it
+backs `{now: true}` evaluation and `cache.expires_at` checks only.
+Pinning it makes every wall-clock value a spec writes (into a request
+body, query, or state slot) byte-stable, which is what the CLI does
+when `SOURCE_DATE_EPOCH` is set (see [usage](usage.md)). Round-trip
+timing keeps reporting real durations regardless.
+
 ---
 
 ## 10. HTTP transport defaults

@@ -89,15 +89,6 @@ func minimalDoc(baseURL string) *schema.Doc {
 	}
 }
 
-// bearerDoc is a single-step bearer-token spec wired to baseURL with the
-// given token.
-func bearerDoc(baseURL, token string) *schema.Doc {
-	d := minimalDoc(baseURL)
-	d.State["api_key"] = schema.FieldDecl{Type: "secret", Default: new(vStr(token))}
-	d.Auth = schema.Auth{Bearer: &schema.BearerAuth{Token: vRef("state.api_key")}}
-	return d
-}
-
 // mustInterp returns the Value produced by parsing s as a YAML string
 // scalar — i.e. it honours the ${…} interpolation desugaring path. Used
 // in test specs that need URL Values composed from state.* slots.

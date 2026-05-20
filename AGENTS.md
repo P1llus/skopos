@@ -53,10 +53,8 @@ surfaces on pkg.go.dev must:
   invariant, a subtle constraint, a deliberate deviation. Not on
   every function.
 
-Linking to `docs/runtime.md §N` from inside a long-form `doc.go`
-narrative is acceptable when the doc is the authoritative behavioural
-spec — but never link to planning docs, slice files, or PR
-descriptions.
+Linking to `docs/runtime.md §N` or similar from inside a long-form `doc.go`
+narrative is also not acceptable.
 
 ### 3. Tests: golden integration tests first, unit tests sparingly
 

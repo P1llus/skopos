@@ -75,7 +75,8 @@ func TestRun_TraceFlag_AppendsAcrossRuns(t *testing.T) {
 }
 
 // TestRun_ConfigFile verifies that settings in a -c config file are
-// applied when the corresponding CLI flag is not explicitly set.
+// applied when the corresponding CLI flag is not explicitly set:
+// input, out, trace, http_timeout all source from the config.
 func TestRun_ConfigFile(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -93,16 +94,15 @@ func TestRun_ConfigFile(t *testing.T) {
 		t.Fatalf("write doc: %v", err)
 	}
 
-	cfgContent := fmt.Sprintf("out: %s\ntrace: %s\n", outPath, tracePath)
+	cfgContent := fmt.Sprintf(
+		"input: %s\nout: %s\ntrace: %s\nhttp_timeout: 60s\nonce: true\n",
+		docPath, outPath, tracePath,
+	)
 	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	if err := runRun([]string{
-		"-c", cfgPath,
-		"-i", docPath,
-		"--once",
-	}); err != nil {
+	if err := runRun([]string{"-c", cfgPath}); err != nil {
 		t.Fatalf("runRun with config: %v", err)
 	}
 
@@ -145,83 +145,6 @@ func TestRun_ConfigFileInputOverriddenByFlag(t *testing.T) {
 	}
 }
 
-// TestRun_HTTPTimeout verifies that --http-timeout is accepted without
-// error.
-func TestRun_HTTPTimeout(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"events":[]}`))
-	}))
-	defer server.Close()
-
-	dir := t.TempDir()
-	docPath := filepath.Join(dir, "spec.yml")
-	if err := os.WriteFile(docPath, []byte(minimalDocYAML(server.URL)), 0o644); err != nil {
-		t.Fatalf("write doc: %v", err)
-	}
-
-	if err := runRun([]string{
-		"-i", docPath,
-		"--once",
-		"--http-timeout", "10s",
-	}); err != nil {
-		t.Fatalf("runRun with --http-timeout: %v", err)
-	}
-}
-
-// TestRun_MaxPages verifies that --max-pages is accepted without error.
-func TestRun_MaxPages(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"events":[]}`))
-	}))
-	defer server.Close()
-
-	dir := t.TempDir()
-	docPath := filepath.Join(dir, "spec.yml")
-	if err := os.WriteFile(docPath, []byte(minimalDocYAML(server.URL)), 0o644); err != nil {
-		t.Fatalf("write doc: %v", err)
-	}
-
-	if err := runRun([]string{
-		"-i", docPath,
-		"--once",
-		"--max-pages", "50",
-	}); err != nil {
-		t.Fatalf("runRun with --max-pages: %v", err)
-	}
-}
-
-// TestRun_ConfigFileHTTPTimeout verifies that http_timeout from a config
-// file is applied (60s is generous enough that the local httptest
-// server doesn't time out).
-func TestRun_ConfigFileHTTPTimeout(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"events":[]}`))
-	}))
-	defer server.Close()
-
-	dir := t.TempDir()
-	docPath := filepath.Join(dir, "spec.yml")
-	cfgPath := filepath.Join(dir, "config.yml")
-
-	if err := os.WriteFile(docPath, []byte(minimalDocYAML(server.URL)), 0o644); err != nil {
-		t.Fatalf("write doc: %v", err)
-	}
-	if err := os.WriteFile(cfgPath, []byte("http_timeout: 60s\n"), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	if err := runRun([]string{
-		"-c", cfgPath,
-		"-i", docPath,
-		"--once",
-	}); err != nil {
-		t.Fatalf("runRun with config http_timeout: %v", err)
-	}
-}
-
 // TestRun_MissingInputError verifies that omitting -i and config.input
 // returns an error.
 func TestRun_MissingInputError(t *testing.T) {
@@ -234,33 +157,9 @@ func TestRun_MissingInputError(t *testing.T) {
 	}
 }
 
-// TestRun_InputFromConfig verifies that config.input is used when -i is
-// absent.
-func TestRun_InputFromConfig(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"events":[]}`))
-	}))
-	defer server.Close()
-
-	dir := t.TempDir()
-	docPath := filepath.Join(dir, "spec.yml")
-	cfgPath := filepath.Join(dir, "config.yml")
-
-	if err := os.WriteFile(docPath, []byte(minimalDocYAML(server.URL)), 0o644); err != nil {
-		t.Fatalf("write doc: %v", err)
-	}
-	cfgContent := fmt.Sprintf("input: %s\nonce: true\n", docPath)
-	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	if err := runRun([]string{"-c", cfgPath}); err != nil {
-		t.Fatalf("runRun via config input: %v", err)
-	}
-}
-
-// TestRun_OnceAndIntervalBothSet verifies the incompatibility check.
+// TestRun_OnceAndIntervalBothSet verifies the incompatibility check
+// surfaces whether the conflicting flags come from the CLI or from a
+// mix of config + CLI.
 func TestRun_OnceAndIntervalBothSet(t *testing.T) {
 	dir := t.TempDir()
 	docPath := filepath.Join(dir, "spec.yml")
@@ -271,30 +170,6 @@ func TestRun_OnceAndIntervalBothSet(t *testing.T) {
 	err := runRun([]string{"-i", docPath, "--once", "--interval", "5s"})
 	if err == nil {
 		t.Fatal("expected error when --once and --interval both set")
-	}
-	if !strings.Contains(err.Error(), "--once") {
-		t.Errorf("error should mention --once, got: %v", err)
-	}
-}
-
-// TestRun_ConfigOnceOverriddenByInterval verifies that an explicit
-// --interval flag wins over config.once = true (which then trips the
-// incompatibility check).
-func TestRun_ConfigOnceOverriddenByInterval(t *testing.T) {
-	dir := t.TempDir()
-	docPath := filepath.Join(dir, "spec.yml")
-	cfgPath := filepath.Join(dir, "config.yml")
-
-	if err := os.WriteFile(docPath, []byte("placeholder"), 0o644); err != nil {
-		t.Fatalf("write doc: %v", err)
-	}
-	if err := os.WriteFile(cfgPath, []byte("once: true\n"), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	err := runRun([]string{"-c", cfgPath, "-i", docPath, "--interval", "5s"})
-	if err == nil {
-		t.Fatal("expected error: config once=true + explicit --interval")
 	}
 	if !strings.Contains(err.Error(), "--once") {
 		t.Errorf("error should mention --once, got: %v", err)

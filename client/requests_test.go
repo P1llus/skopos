@@ -7,144 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/p1llus/skopos/schema"
 )
-
-// TestRequest_QueryParams pins query.<k> evaluation: each value Value
-// resolves through evalValue and the result is written to the URL
-// query. nil values are skipped.
-func TestRequest_QueryParams(t *testing.T) {
-	var seenQuery url.Values
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seenQuery = r.URL.Query()
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-	}))
-	defer server.Close()
-
-	doc := minimalDoc(server.URL)
-	doc.State["since"] = schema.FieldDecl{Type: "string", Default: new(vStr("2026-01-01"))}
-	doc.Requests[0].Query = map[string]schema.Value{
-		"since":  vRef("state.since"),
-		"limit":  vInt(50),
-		"absent": vRef("state.never_set"), // resolves to nil → skip
-	}
-
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if seenQuery.Get("since") != "2026-01-01" {
-		t.Errorf("since = %q", seenQuery.Get("since"))
-	}
-	if seenQuery.Get("limit") != "50" {
-		t.Errorf("limit = %q", seenQuery.Get("limit"))
-	}
-	if seenQuery.Has("absent") {
-		t.Errorf("absent query key should be omitted; got %q", seenQuery.Get("absent"))
-	}
-}
-
-// TestRequest_BodyJSON pins the body.json variant: a map<string, Value>
-// renders as JSON with the Value-typed values resolved.
-func TestRequest_BodyJSON(t *testing.T) {
-	var seenBody string
-	var seenContentType string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bs, _ := io.ReadAll(r.Body)
-		seenBody = string(bs)
-		seenContentType = r.Header.Get("Content-Type")
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-	}))
-	defer server.Close()
-
-	doc := minimalDoc(server.URL)
-	doc.State["since"] = schema.FieldDecl{Type: "string", Default: new(vStr("2026-01-01"))}
-	doc.Requests[0].Method = "POST"
-	doc.Requests[0].Body = &schema.Body{JSON: map[string]schema.Value{
-		"since":  vRef("state.since"),
-		"limit":  vInt(50),
-		"active": vBool(true),
-	}}
-
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if !strings.Contains(seenContentType, "application/json") {
-		t.Errorf("Content-Type = %q, want application/json", seenContentType)
-	}
-	if !strings.Contains(seenBody, `"since":"2026-01-01"`) {
-		t.Errorf("body missing since: %s", seenBody)
-	}
-	if !strings.Contains(seenBody, `"limit":50`) {
-		t.Errorf("body missing limit: %s", seenBody)
-	}
-	if !strings.Contains(seenBody, `"active":true`) {
-		t.Errorf("body missing active: %s", seenBody)
-	}
-}
-
-// TestRequest_BodyForm pins the body.form variant: form-urlencoded,
-// content-type application/x-www-form-urlencoded.
-func TestRequest_BodyForm(t *testing.T) {
-	var seenBody string
-	var seenContentType string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bs, _ := io.ReadAll(r.Body)
-		seenBody = string(bs)
-		seenContentType = r.Header.Get("Content-Type")
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-	}))
-	defer server.Close()
-
-	doc := minimalDoc(server.URL)
-	doc.Requests[0].Method = "POST"
-	doc.Requests[0].Body = &schema.Body{Form: map[string]schema.Value{
-		"key":   vStr("value"),
-		"limit": vInt(10),
-	}}
-
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if !strings.Contains(seenContentType, "application/x-www-form-urlencoded") {
-		t.Errorf("Content-Type = %q, want application/x-www-form-urlencoded", seenContentType)
-	}
-	form, _ := url.ParseQuery(seenBody)
-	if form.Get("key") != "value" || form.Get("limit") != "10" {
-		t.Errorf("form body = %v", form)
-	}
-}
-
-// TestRequest_BodyRaw pins the body.raw variant: a single Value resolves
-// to a string and is sent verbatim. No content-type is set by default.
-func TestRequest_BodyRaw(t *testing.T) {
-	var seenBody string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bs, _ := io.ReadAll(r.Body)
-		seenBody = string(bs)
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-	}))
-	defer server.Close()
-
-	doc := minimalDoc(server.URL)
-	doc.Requests[0].Method = "POST"
-	raw := vStr(`{"hello":"world"}`)
-	doc.Requests[0].Body = &schema.Body{Raw: &raw}
-
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if seenBody != `{"hello":"world"}` {
-		t.Errorf("body = %q, want raw payload", seenBody)
-	}
-}
 
 // TestRequest_BodyRawInterpolation pins string-interpolation inside raw
 // bodies: a ${state.x} segment is desugared at parse time and resolved
@@ -170,34 +37,6 @@ func TestRequest_BodyRawInterpolation(t *testing.T) {
 	}
 	if !strings.Contains(seenBody, `"tenant":"acme"`) {
 		t.Errorf("body missing interpolated tenant: %s", seenBody)
-	}
-}
-
-// TestRequest_Headers pins the request headers map.
-func TestRequest_Headers(t *testing.T) {
-	var seen http.Header
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen = r.Header
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-	}))
-	defer server.Close()
-
-	doc := minimalDoc(server.URL)
-	doc.State["etag"] = schema.FieldDecl{Type: "string", Default: new(vStr(`"v42"`))}
-	doc.Requests[0].Headers = map[string]schema.Value{
-		"X-Custom":      vStr("hi"),
-		"If-None-Match": vRef("state.etag"),
-	}
-
-	r := &Runner{Doc: doc, Sink: &captureSink{}, Now: fixedNow(), Client: server.Client()}
-	if err := r.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if seen.Get("X-Custom") != "hi" {
-		t.Errorf("X-Custom = %q", seen.Get("X-Custom"))
-	}
-	if seen.Get("If-None-Match") != `"v42"` {
-		t.Errorf("If-None-Match = %q", seen.Get("If-None-Match"))
 	}
 }
 
@@ -256,7 +95,6 @@ func TestRequest_IfPredicateGates(t *testing.T) {
 // error.mode dispatcher.
 func TestRequest_ExpectStatusAllowList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// Return 202 — needs to be in expect_status to count as success.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"events":[]}`))

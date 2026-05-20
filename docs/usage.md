@@ -96,6 +96,14 @@ event stream would silently corrupt downstream JSONL consumers. The
 trace format is the JSON encoding of `client.Exchange`; see
 [`runtime.md` §9](runtime.md#9-tracer-surface).
 
+Setting the `SOURCE_DATE_EPOCH` environment variable (Unix seconds)
+pins the spec clock: every `{now: true}` resolves to that instant, so
+any wall-clock value a spec writes into a request body, query, or state
+slot is identical across runs. Trace `started_at` / `elapsed` still
+report real wall-clock timing. Useful for reproducible output and
+byte-exact golden tests. An unset or malformed value falls back to the
+real clock.
+
 ### `skopos init`
 
 Writes a fully-commented default config to `-o` (or stdout):

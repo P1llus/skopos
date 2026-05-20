@@ -245,6 +245,9 @@ func buildFleetRun(ent resolvedEntry, sharedSink client.Sink, logger *log.Logger
 		Logger: logger,
 		Tracer: tracer,
 	}
+	if now, ok := pinnedClock(); ok {
+		runner.Now = now
+	}
 	if ent.HTTPTimeout > 0 {
 		runner.Client = &http.Client{Timeout: ent.HTTPTimeout}
 	}

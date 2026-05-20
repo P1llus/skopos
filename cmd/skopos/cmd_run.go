@@ -162,6 +162,9 @@ func runRun(args []string) error {
 		Logger: logger,
 		Tracer: tracer,
 	}
+	if now, ok := pinnedClock(); ok {
+		runner.Now = now
+	}
 
 	// Apply optional overrides that have non-zero values. When zero the
 	// runner falls back to its own internal defaults (30s timeout, 10k pages).
