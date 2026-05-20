@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/p1llus/skopos/schema"
 )
@@ -124,12 +125,16 @@ func (s *scope) executeRequest(ctx context.Context, client *http.Client, req sch
 		// api-key headers into httpReq.Header and we need the wire view.
 		trace.headers = httpReq.Header.Clone()
 		trace.finalURL = httpReq.URL
-		trace.startedAt = s.now()
+		// Round-trip timing measures real elapsed wall time, so it uses
+		// time.Now directly rather than the spec clock s.now(): the latter
+		// can be pinned (SOURCE_DATE_EPOCH) to make {now: true} deterministic,
+		// which would collapse every duration to zero.
+		trace.startedAt = time.Now()
 	}
 
 	resp, err := client.Do(httpReq)
 	if trace != nil {
-		trace.elapsed = s.now().Sub(trace.startedAt)
+		trace.elapsed = time.Since(trace.startedAt)
 	}
 	if err != nil {
 		// Go's *url.Error embeds the full request URL — including any

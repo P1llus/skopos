@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -58,6 +59,10 @@ func TestScripts(t *testing.T) {
 			Setup: func(e *testscript.Env) error {
 				e.Setenv("URL", sharedURL)
 				e.Setenv("URL_HOST", sharedURL)
+				// Pin the runner's clock to the same instant the testserver
+				// uses, so {now: true} values a spec writes into request
+				// bodies / state are byte-stable across runs.
+				e.Setenv("SOURCE_DATE_EPOCH", strconv.FormatInt(fixedTime.Unix(), 10))
 				return nil
 			},
 			Cmds: map[string]func(ts *testscript.TestScript, neg bool, args []string){

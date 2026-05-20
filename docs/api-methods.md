@@ -10,15 +10,6 @@ contract lives in [`runtime.md`](runtime.md); state and cache
 persistence are in [`stores.md`](stores.md); end-to-end walkthroughs are
 in [`usage.md`](usage.md).
 
-Entries fall into three buckets:
-
-- **Default — supported.** No status line; the runner expresses the
-  pattern end-to-end with test coverage.
-- **Deferred.** The IR schema accepts the form (validator passes) but
-  the runner does not yet execute it. Tagged inline.
-- **Out of scope.** Not modelled in the IR. Tagged inline; no escape
-  hatch is available.
-
 When adding a new API variation, add an entry here in the same PR that
 ships the runner change — this document is the "if we add a new API
 shape, write it down here" surface.
@@ -60,9 +51,7 @@ auth:
   with a `default:` (development) or supplied at runtime.
 - *Long-lived refresh token.* A refresh token a user has pasted in is
   the same shape as an operator-supplied bearer — just a `secret`-typed
-  `state.<name>` fed into `auth.bearer.token`. Interactive grants
-  (`authorization_code`, `device_code`, PKCE) that require a browser
-  round-trip are **out of scope** (§1.13).
+  `state.<name>` fed into `auth.bearer.token`.
 - *Token captured from a prior step.* An earlier step in `requests:`
   POSTs to a login endpoint and pulls the access token via `extract:`
   with `to: extract.<name>`. The main request reads it as
@@ -280,10 +269,6 @@ When the login endpoint advertises its own expiry, wrap it with
 `requests[].cache` (§3.7) so the round-trip is paid once and skipped on
 subsequent drains.
 
-**Out of scope:** redirect-following for cookie extraction
-(`resp.Request.Response.Header` chain across redirect hops). No escape
-hatch.
-
 ### 1.11 Refresh-token-as-state-field
 
 **What it does:** Long-lived OAuth2 refresh tokens that a user has
@@ -304,20 +289,6 @@ token — is **not** modelled as an auth variant. When such an exchange
 is needed, it lives as a regular request step that hits the token
 endpoint and writes the access token to `state.<name>` (or to a
 `cache.<name>` slot via `requests[].cache`).
-
-### 1.12 HMAC / SigV4 / OAuth1 signing
-
-**Out of scope.** The IR has no canonical-string builder, no body-hash
-construction, and no signing-header assembly. A structural signing form
-lands when a concrete template motivates the shape; until then there is
-no escape hatch.
-
-### 1.13 OAuth2 grants requiring an interactive user
-
-**Out of scope.** `authorization_code`, `device_code`, and PKCE flows
-all require a browser round-trip; the pull-loop runtime has no
-interactive surface. Refresh tokens that a user has already obtained
-externally feed `auth.bearer.token` via §1.11.
 
 ---
 
@@ -627,19 +598,15 @@ fetch), the final fetch role is the blob download.
 
 The list → per-blob shape is expressible via `requests:` + per-step
 `fan_out:` (§3.10). The async-export shape is the request-level loop
-recipe in §6. MIME-decoding the downloaded blobs (gzip / CSV / NDJSON
-chains) is **out of scope** and is expected to live in the ingest
-pipeline.
+recipe in §6. Downloaded blobs are surfaced as response bodies; any
+gzip / CSV / NDJSON decoding lives in the ingest pipeline that
+consumes the emitted events.
 
 ### 2.9 Worklist / multi-phase
 
-**What it does:** Same-iteration list → per-item detail fan-out, or
-cross-iteration worklist draining.
+**What it does:** Same-iteration list → per-item detail fan-out.
 
-Same-iteration `list → detail` is expressible via `requests:` with a
-per-step `fan_out:` (§3.10). Cross-iteration worklist draining (seed
-worklist, drain one per evaluation, LIFO/FIFO queues, retry budgets)
-is **out of scope**. No escape hatch.
+Expressible via `requests:` with a per-step `fan_out:` (§3.10).
 
 ---
 
@@ -1029,9 +996,9 @@ response:
   events_at: response.body.data.events
 ```
 
-ZIP / gzip / CSV / MIME-chain decoding is **out of scope** by design —
-`response.decode` is a closed `json | ndjson` enum; MIME chaining is
-expected to live in the ingest pipeline.
+`response.decode` is a closed `json | ndjson` enum. Compressed
+payloads and MIME-chain decoding (ZIP, gzip, CSV) are handled by the
+ingest pipeline that consumes the emitted events.
 
 ### 4.2 Locating events (`response.events_at`)
 
@@ -1617,10 +1584,7 @@ Both loops use the [Predicate](schema.md#predicates) language and read
 Path that resolves to absent makes `present` return false and makes
 comparison predicates return false, never throws.
 
-There are no other loop primitives. Cross-iteration state-machine
-orchestration (LIFO / FIFO worklists, retry budgets, conditional
-branching beyond the two-loop shape) is **out of scope**. No escape
-hatch.
+There are no other loop primitives.
 
 ---
 
@@ -1671,9 +1635,9 @@ iteration, step id, redacted URL, redacted query map, redacted
 post-auth headers, body metadata, status, elapsed, error string. The
 `JSONLTracer` writes one JSON object per exchange.
 
-A metrics surface (drain duration, events/page, error rate by
-endpoint) is **deferred** — a `Tracer` can compute most of these by
-aggregating per-exchange records.
+Drain duration, events/page, and per-endpoint error rate are not
+emitted by the runner directly. A custom `Tracer` aggregating
+per-exchange records can derive them.
 
 ### 8.5 Branching the request shape on a state flag
 

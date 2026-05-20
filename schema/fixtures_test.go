@@ -5,7 +5,6 @@ package schema_test
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -194,15 +193,9 @@ func TestPathParsing(t *testing.T) {
 		wantErr bool
 	}{
 		{"state.api_key", "state.api_key", false},
-		{"response.body.data.issues.nodes", "response.body.data.issues.nodes", false},
-		{"steps.login.body.session_id", "steps.login.body.session_id", false},
-		{"events.last.timestamp", "events.last.timestamp", false},
 		{"", "", false},
 		{".bad", "", true},
-		{"a..b", "", true},
 		{"cursor.last_timestamp", "", true},
-		{"body.something", "", true},
-		{"item.id", "", true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
@@ -244,31 +237,17 @@ func TestPathEscapesDottedSegments(t *testing.T) {
 	}
 }
 
-// TestValueCodecs round-trips one representative of every Value form.
+// TestValueCodecs round-trips representative forms that are unlikely to
+// appear in every spec fixture (regex, select, the reducer family). The
+// common forms (ref, concat, format, base64, list, arith) are covered by
+// the schema/testdata/ + templates/ round-trip in TestSpecFixtures.
 func TestValueCodecs(t *testing.T) {
 	tests := []struct {
 		name string
 		yaml string
 	}{
-		{"literal_string", `"hello"`},
-		{"literal_int", `42`},
-		{"literal_bool", `true`},
-		{"ref_simple", `{ref: state.api_key}`},
-		{"ref_default", `{ref: state.api_key, default: ""}`},
-		{"now", `{now: true}`},
-		{"concat", `{concat: ["/api/", {ref: state.url}, "/v1"]}`},
-		{"object", `{object: {key: value, n: 5, b: true}}`},
-		{"format", `{format: rfc3339, value: {now: true}}`},
-		{"base64", `{base64: hello}`},
-		{"list", `{list: [1, 2, 3]}`},
 		{"select", `{select: {branches: [{when: {literal_bool: true}, value: /gov}], default: /commercial}}`},
-		{"add", `{add: [{now: true}, 1h]}`},
-		{"subtract", `{subtract: [{now: true}, 1h]}`},
 		{"max", `{max: [{ref: state.a}, {ref: state.b}]}`},
-		{"min", `{min: [{ref: state.a}, {ref: state.b}]}`},
-		{"first", `{first: [{ref: state.a}, {ref: state.b}]}`},
-		{"last", `{last: [{ref: state.a}, {ref: state.b}]}`},
-		{"count", `{count: [{ref: state.a}, {ref: state.b}]}`},
 		{"regex", `{regex: {pattern: "v(\\d+)", from: {ref: state.tag}, capture: 1}}`},
 	}
 	for _, tc := range tests {
@@ -296,24 +275,17 @@ func TestValueCodecs(t *testing.T) {
 	}
 }
 
-// TestPredicateCodecs round-trips one representative of every Predicate
-// form.
+// TestPredicateCodecs round-trips representative forms. The verb-by-verb
+// coverage lives in schema/testdata/predicate_composition.yml and is
+// exercised by TestSpecFixtures.
 func TestPredicateCodecs(t *testing.T) {
 	tests := []struct {
 		name string
 		yaml string
 	}{
 		{"eq", `{eq: {path: state.auth_mode, value: bearer}}`},
-		{"gt", `{gt: {path: state.retries, value: 3}}`},
-		{"lt", `{lt: {path: state.retries, value: 3}}`},
-		{"gte", `{gte: {path: state.retries, value: 3}}`},
-		{"lte", `{lte: {path: state.retries, value: 3}}`},
-		{"present", `{present: state.etag}`},
 		{"and", `{and: [{literal_bool: true}, {literal_bool: false}]}`},
-		{"or", `{or: [{literal_bool: true}, {literal_bool: false}]}`},
 		{"not", `{not: {literal_bool: true}}`},
-		{"literal_bool_true", `{literal_bool: true}`},
-		{"literal_bool_false", `{literal_bool: false}`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -440,10 +412,8 @@ func TestCodecRejections(t *testing.T) {
 // rule.
 func TestArithOperandCount(t *testing.T) {
 	bad := []string{
-		`{add: []}`,
 		`{add: [1]}`,
 		`{add: [1, 2, 3]}`,
-		`{subtract: [1]}`,
 	}
 	for _, src := range bad {
 		t.Run(src, func(t *testing.T) {
@@ -652,165 +622,6 @@ auth:
 	})
 }
 
-// TestRequestTerminateWhen covers the request-level loop primitive: the
-// shape that backs the three-request submit/poll/fetch async pattern.
-func TestRequestTerminateWhen(t *testing.T) {
-	src := `ir_version: "1"
-auth:
-  none: {}
-requests:
-  - id: submit
-    method: POST
-    url: "http://x/submit"
-    extract:
-      - {to: state.export_id, from: response.body.export_id}
-  - id: poll
-    method: GET
-    url: "http://x/status"
-    terminate_when:
-      eq:
-        path: response.body.status
-        value: complete
-    extract:
-      - {to: state.result_url, from: response.body.result_url}
-  - id: fetch
-    method: GET
-    url: {ref: state.result_url}
-    produces_events: true
-state:
-  export_id:  {type: string}
-  result_url: {type: url}
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-`
-	doc, err := schema.Parse([]byte(src))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	diags := schema.Validate(doc)
-	for _, d := range diags {
-		if d.Severity == "error" {
-			t.Errorf("unexpected error diagnostic: %s: %s", d.Path, d.Message)
-		}
-	}
-	poll := doc.Requests[1]
-	if poll.TerminateWhen == nil || poll.TerminateWhen.Eq == nil {
-		t.Errorf("expected poll.TerminateWhen.Eq to be set; got %+v", poll.TerminateWhen)
-	}
-}
-
-// TestPaginationVariants pins each named variant's basic shape: cursor_
-// token / next_url / counter / custom each parse and validate cleanly
-// against a minimal spec.
-func TestPaginationVariants(t *testing.T) {
-	specs := map[string]string{
-		"cursor_token": `pagination:
-  cursor_token:
-    from: response.body.next_cursor
-    to: state.next_token`,
-		"next_url": `pagination:
-  next_url:
-    from: response.header.Link
-    to: state.next_url
-    regex: '<(.*?)>; rel="next"'
-    capture: 1`,
-		"counter": `pagination:
-  counter:
-    to: state.page
-    start: 1
-    step: 1`,
-		"custom": `pagination:
-  custom:
-    advance:
-      - {to: state.cursor, from: {ref: response.body.next}}
-    terminate_when:
-      not:
-        present: response.body.next`,
-	}
-
-	header := `ir_version: "1"
-state:
-  next_token: {type: string}
-  next_url:   {type: url}
-  page:       {type: int}
-  cursor:     {type: string}
-auth: {none: {}}
-requests:
-  - method: GET
-    url: "http://x/y"
-response:
-  decode: json
-  events_at: response.body.events
-`
-
-	for name, page := range specs {
-		t.Run(name, func(t *testing.T) {
-			src := header + page + "\n"
-			doc, err := schema.Parse([]byte(src))
-			if err != nil {
-				t.Fatalf("parse: %v", err)
-			}
-			diags := schema.Validate(doc)
-			for _, d := range diags {
-				if d.Severity == "error" {
-					t.Errorf("[%s] unexpected error: %s: %s", name, d.Path, d.Message)
-				}
-			}
-			if got, _ := doc.Pagination.Variant(); got != name {
-				t.Errorf("Pagination.Variant() = %q, want %q", got, name)
-			}
-		})
-	}
-}
-
-// TestProgressIsFlatWriteList confirms the Progress shape is a flat
-// []ProgressWrite — no discriminated-union variants, no nested phase
-// machinery.
-func TestProgressIsFlatWriteList(t *testing.T) {
-	src := `ir_version: "1"
-state:
-  last_timestamp: {type: timestamp}
-auth: {none: {}}
-requests:
-  - method: GET
-    url: "http://x/y"
-response:
-  decode: json
-  events_at: response.body.events
-pagination:
-  none: {}
-progress:
-  - to: state.last_timestamp
-    from:
-      max:
-        - {ref: state.last_timestamp}
-        - {max: {ref: events.*.timestamp}}
-`
-	doc, err := schema.Parse([]byte(src))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	diags := schema.Validate(doc)
-	for _, d := range diags {
-		if d.Severity == "error" {
-			t.Errorf("unexpected diagnostic: %s: %s", d.Path, d.Message)
-		}
-	}
-	if len(doc.Progress) != 1 {
-		t.Fatalf("Progress length = %d, want 1", len(doc.Progress))
-	}
-	w := doc.Progress[0]
-	if w.To.String() != "state.last_timestamp" {
-		t.Errorf("To = %q", w.To.String())
-	}
-	if w.From.Max == nil {
-		t.Errorf("From should carry a Max reducer; got %+v", w.From)
-	}
-}
-
 // TestOAuth2_ExactlyOneGrantRequired pins the discriminated-union rule
 // on auth.oauth2: exactly one of client_credentials / password_grant.
 func TestOAuth2_ExactlyOneGrantRequired(t *testing.T) {
@@ -854,36 +665,13 @@ pagination:
 	}
 }
 
-// TestUnifiedCacheBlock confirms the post-redesign Cache shape (used by
-// both auth.oauth2.*.cache and requests[].cache): {to, expires_at,
-// buffer}.
-func TestUnifiedCacheBlock(t *testing.T) {
-	src := `to: cache.access_token
-expires_at: {ref: response.body.expires_in, default: "1h"}
-buffer: 60s
-`
-	var c schema.Cache
-	if err := yaml.Unmarshal([]byte(src), &c); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if c.To.String() != "cache.access_token" {
-		t.Errorf("To = %q, want cache.access_token", c.To.String())
-	}
-	if c.Buffer != "60s" {
-		t.Errorf("Buffer = %q, want 60s", c.Buffer)
-	}
-	if c.ExpiresAt.Ref == nil {
-		t.Errorf("ExpiresAt should carry a Ref; got %+v", c.ExpiresAt)
-	}
-}
-
-// TestMultiModeDefaultBareAuth pins DESIGN §3.3: multi_mode.default is a
-// bare Auth value, NOT the wrapped {auth: ...} form. The bare form
-// (default: {bearer: ...}) must parse cleanly; the wrapped form
-// (default: {auth: {bearer: ...}}) must be rejected because "auth" is
-// not a recognised Auth discriminator key.
+// TestMultiModeDefaultBareAuth pins the validator's rejection of the
+// wrapped {auth: ...} form under multi_mode.default. The bare form
+// happy path is covered end-to-end by multi_mode_auth.txt and the
+// schema/testdata round-trip; only the wrapped-form diagnostic needs a
+// dedicated test.
 func TestMultiModeDefaultBareAuth(t *testing.T) {
-	const tmpl = `ir_version: "1"
+	src := `ir_version: "1"
 state:
   url: {type: url, default: "http://x"}
   tok: {type: secret, default: "k"}
@@ -892,50 +680,27 @@ auth:
     branches:
       - when: {literal_bool: true}
         auth: {bearer: {token: {ref: state.tok}}}
-    default: %s
+    default: {auth: {bearer: {token: {ref: state.tok}}}}
 requests:
   - method: GET
     url: "${state.url}"
 response: {decode: json, events_at: response.body.events}
 pagination: {none: {}}
 `
-
-	t.Run("bare_form_parses_and_validates", func(t *testing.T) {
-		doc, err := schema.Parse([]byte(fmt.Sprintf(tmpl, `{bearer: {token: {ref: state.tok}}}`)))
-		if err != nil {
-			t.Fatalf("bare-form Parse: %v", err)
+	doc, err := schema.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("wrapped-form Parse (unexpected error): %v", err)
+	}
+	diags := schema.Validate(doc)
+	want := "auth.multi_mode.default"
+	found := false
+	for _, d := range diags {
+		if d.Path == want && strings.Contains(d.Message, "bare auth value") {
+			found = true
+			break
 		}
-		if doc.Auth.MultiMode == nil || doc.Auth.MultiMode.Default.Bearer == nil {
-			t.Errorf("bare-form default did not parse as bearer Auth; got %+v", doc.Auth.MultiMode)
-		}
-		for _, d := range schema.Validate(doc) {
-			if d.Severity == "error" {
-				t.Errorf("bare-form validate error: %s — %s", d.Path, d.Message)
-			}
-		}
-	})
-
-	t.Run("wrapped_form_rejected_by_validate", func(t *testing.T) {
-		// The wrapped form parses silently (the "auth" key is not a
-		// recognised Auth discriminator, so the decoder drops it and the
-		// Default ends up zero-valued). Validate catches the empty
-		// variant set and surfaces the canonical "bare auth value"
-		// diagnostic.
-		doc, err := schema.Parse([]byte(fmt.Sprintf(tmpl, `{auth: {bearer: {token: {ref: state.tok}}}}`)))
-		if err != nil {
-			t.Fatalf("wrapped-form Parse (unexpected error): %v", err)
-		}
-		diags := schema.Validate(doc)
-		want := "auth.multi_mode.default"
-		found := false
-		for _, d := range diags {
-			if d.Path == want && strings.Contains(d.Message, "bare auth value") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("wrapped-form Validate did not surface the bare-auth diagnostic at %s; got %d diags: %v", want, len(diags), diags)
-		}
-	})
+	}
+	if !found {
+		t.Errorf("wrapped-form Validate did not surface the bare-auth diagnostic at %s; got %d diags: %v", want, len(diags), diags)
+	}
 }

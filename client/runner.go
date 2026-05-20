@@ -112,7 +112,11 @@ type Runner struct {
 	// Drain until ctx cancellation.
 	Client *http.Client
 
-	// Now is the clock. Optional; defaults to time.Now. Useful for tests.
+	// Now is the spec clock: it backs {now: true} evaluation and cache
+	// expiry checks. Optional; defaults to time.Now. Pinning it (e.g. from
+	// SOURCE_DATE_EPOCH) makes wall-clock values a spec emits deterministic.
+	// Round-trip timing (trace started_at / elapsed) always uses the real
+	// wall clock and is unaffected.
 	Now func() time.Time
 
 	// Logger receives operational diagnostics (skipped steps, on_status:

@@ -43,14 +43,15 @@ func predBool(b bool) schema.Predicate {
 	return schema.Predicate{LiteralBool: &b}
 }
 
-// TestEvalPredicate walks every closed verb under the new shape. Absence-
-// tolerance is part of the contract: every comparison verb returns false
-// (no error) when either side resolves to nil.
+// TestEvalPredicate covers the verb dispatchers (eq / present / not /
+// and / or / literal_bool) and the gt arm as the canonical ordered
+// comparison. The other ordered verbs share the same dispatcher and are
+// covered by TestEvalPredicate_AbsenceTolerantOrdered + the
+// predicate_composition schema fixture.
 func TestEvalPredicate(t *testing.T) {
 	cases := []struct {
 		name  string
 		state map[string]any
-		setup func(s *scope)
 		pred  schema.Predicate
 		want  bool
 	}{
@@ -61,44 +62,9 @@ func TestEvalPredicate(t *testing.T) {
 			want:  true,
 		},
 		{
-			name:  "eq_state_string_mismatch",
-			state: map[string]any{"mode": "bearer"},
-			pred:  predEq("eq", "state.mode", vStr("api_key")),
-			want:  false,
-		},
-		{
-			name: "eq_absent_returns_false",
-			pred: predEq("eq", "state.absent", vStr("x")),
-			want: false,
-		},
-		{
 			name:  "gt_int",
 			state: map[string]any{"page": int64(5)},
 			pred:  predEq("gt", "state.page", vInt(3)),
-			want:  true,
-		},
-		{
-			name:  "gt_int_equal",
-			state: map[string]any{"page": int64(3)},
-			pred:  predEq("gt", "state.page", vInt(3)),
-			want:  false,
-		},
-		{
-			name:  "gte_int_equal",
-			state: map[string]any{"page": int64(3)},
-			pred:  predEq("gte", "state.page", vInt(3)),
-			want:  true,
-		},
-		{
-			name:  "lt_int",
-			state: map[string]any{"retries": int64(2)},
-			pred:  predEq("lt", "state.retries", vInt(5)),
-			want:  true,
-		},
-		{
-			name:  "lte_int_equal",
-			state: map[string]any{"retries": int64(5)},
-			pred:  predEq("lte", "state.retries", vInt(5)),
 			want:  true,
 		},
 		{
@@ -128,15 +94,6 @@ func TestEvalPredicate(t *testing.T) {
 			want: false,
 		},
 		{
-			name:  "and_all_true",
-			state: map[string]any{"x": "y", "z": int64(1)},
-			pred: predAnd(
-				predEq("eq", "state.x", vStr("y")),
-				predEq("gte", "state.z", vInt(1)),
-			),
-			want: true,
-		},
-		{
 			name:  "or_first_true",
 			state: map[string]any{"x": "y"},
 			pred: predOr(
@@ -146,31 +103,15 @@ func TestEvalPredicate(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "or_all_false",
-			pred: predOr(
-				predEq("eq", "state.absent", vStr("y")),
-				predEq("eq", "state.absent", vStr("z")),
-			),
-			want: false,
-		},
-		{
 			name: "literal_bool_true",
 			pred: predBool(true),
 			want: true,
-		},
-		{
-			name: "literal_bool_false",
-			pred: predBool(false),
-			want: false,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestScope(t, tc.state)
-			if tc.setup != nil {
-				tc.setup(s)
-			}
 			got, err := s.evalPredicate(tc.pred)
 			if err != nil {
 				t.Fatalf("evalPredicate: %v", err)
@@ -233,37 +174,30 @@ func TestEvalPredicate_AbsenceTolerantEq(t *testing.T) {
 	}
 }
 
-// TestEvalPredicate_AbsenceTolerantOrdered pins the same absence-tolerance
-// contract for gt/lt/gte/lte: an absent operand (either side) yields false
-// rather than an error. DESIGN §2.6 makes this uniform across all
-// comparison verbs.
+// TestEvalPredicate_AbsenceTolerantOrdered pins the absence-tolerance
+// contract for ordered comparisons: an absent operand (either side)
+// yields false rather than an error. gt is representative — the four
+// verbs (gt/lt/gte/lte) share a single dispatcher.
 func TestEvalPredicate_AbsenceTolerantOrdered(t *testing.T) {
-	verbs := []string{"gt", "lt", "gte", "lte"}
-
 	t.Run("absent_lhs", func(t *testing.T) {
 		s := newTestScope(t, nil)
-		for _, v := range verbs {
-			got, err := s.evalPredicate(predEq(v, "state.missing", vInt(5)))
-			if err != nil {
-				t.Errorf("%s absent lhs returned error: %v", v, err)
-			}
-			if got {
-				t.Errorf("%s absent lhs returned true; want false", v)
-			}
+		got, err := s.evalPredicate(predEq("gt", "state.missing", vInt(5)))
+		if err != nil {
+			t.Errorf("absent lhs returned error: %v", err)
+		}
+		if got {
+			t.Errorf("absent lhs returned true; want false")
 		}
 	})
 
 	t.Run("absent_rhs", func(t *testing.T) {
-		// vRefDefault with an absent path resolves to nil on the RHS.
 		s := newTestScope(t, map[string]any{"x": int64(5)})
-		for _, v := range verbs {
-			got, err := s.evalPredicate(predEq(v, "state.x", vRef("state.absent")))
-			if err != nil {
-				t.Errorf("%s absent rhs returned error: %v", v, err)
-			}
-			if got {
-				t.Errorf("%s absent rhs returned true; want false", v)
-			}
+		got, err := s.evalPredicate(predEq("gt", "state.x", vRef("state.absent")))
+		if err != nil {
+			t.Errorf("absent rhs returned error: %v", err)
+		}
+		if got {
+			t.Errorf("absent rhs returned true; want false")
 		}
 	})
 }

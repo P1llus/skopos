@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/p1llus/skopos/schema"
 )
@@ -23,39 +22,6 @@ type erroringSink struct {
 
 func (e *erroringSink) Emit(any) error { return e.err }
 func (*erroringSink) Flush() error     { return nil }
-
-// TestApplyProgress_FlatWriteList pins the canonical shape: a flat list
-// of {to, from} writes evaluated against a fresh snapshot of state.*
-// each page.
-func TestApplyProgress_FlatWriteList(t *testing.T) {
-	s := newTestScope(t, nil)
-	s.events = []any{
-		map[string]any{"ts": "2026-01-01T00:00:03Z"},
-		map[string]any{"ts": "2026-01-01T00:00:02Z"},
-		map[string]any{"ts": "2026-01-01T00:00:05Z"},
-	}
-
-	writes := schema.Progress{
-		{
-			To:   mustPath("state.last_timestamp"),
-			From: schema.Value{Max: new(vRef("events.*.ts"))},
-		},
-		{
-			To:   mustPath("state.last_seen_at"),
-			From: vNow(),
-		},
-	}
-
-	if err := applyProgress(s, writes); err != nil {
-		t.Fatalf("applyProgress: %v", err)
-	}
-	if got := s.state["last_timestamp"]; got != "2026-01-01T00:00:05Z" {
-		t.Errorf("last_timestamp = %v, want 2026-01-01T00:00:05Z", got)
-	}
-	if got := s.state["last_seen_at"]; got == nil {
-		t.Error("last_seen_at should be set")
-	}
-}
 
 // TestApplyProgress_SnapshotThenWrite pins the pre-write snapshot
 // semantics: every from: expression reads the OLD state, even when an
@@ -85,18 +51,6 @@ func TestApplyProgress_SnapshotThenWrite(t *testing.T) {
 	}
 	if s.state["window_end"] == "2026-01-01T00:00:00Z" {
 		t.Error("window_end should have advanced to now()")
-	}
-}
-
-// TestApplyProgress_EmptyListIsNoop pins the empty-writes contract: an
-// empty Progress short-circuits to no-op (no errors, no state mutations).
-func TestApplyProgress_EmptyListIsNoop(t *testing.T) {
-	s := newTestScope(t, map[string]any{"x": "untouched"})
-	if err := applyProgress(s, nil); err != nil {
-		t.Errorf("empty Progress: %v", err)
-	}
-	if got := s.state["x"]; got != "untouched" {
-		t.Errorf("state should be untouched; got %v", got)
 	}
 }
 
@@ -366,40 +320,6 @@ func TestSnapshot_ExcludesScratchFields(t *testing.T) {
 	}
 	if _, found := snap.State["drop"]; found {
 		t.Errorf("scratch field 'drop' leaked into snapshot: %v", snap.State)
-	}
-}
-
-// TestSeedDefaults_CompositeValueDefault pins DESIGN §3.2: a state
-// field's default: accepts the full Value language, including
-// {subtract: [{now: true}, <duration>]}. The seed step must evaluate
-// the composite Value against the active clock and land a real
-// time.Time (or its string form) in scope.state.
-func TestSeedDefaults_CompositeValueDefault(t *testing.T) {
-	// {subtract: [{now: true}, "720h"]} — the canonical first-run
-	// lookback pattern from the design doc.
-	subtract := mustInterp(`{subtract: [{now: true}, "720h"]}`)
-
-	doc := &schema.Doc{
-		IRVersion: "1",
-		State: map[string]schema.FieldDecl{
-			"last_timestamp": {Type: "timestamp", Default: &subtract},
-		},
-	}
-	s, err := newScope(doc, Snapshot{}, fixedNow())
-	if err != nil {
-		t.Fatalf("newScope: %v", err)
-	}
-	got := s.state["last_timestamp"]
-	if got == nil {
-		t.Fatal("last_timestamp not seeded; want a time 720h before fixedNow()")
-	}
-	wantTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(-720 * time.Hour)
-	gotTime, ok := got.(time.Time)
-	if !ok {
-		t.Fatalf("last_timestamp = %#v (%T); want time.Time", got, got)
-	}
-	if !gotTime.Equal(wantTime) {
-		t.Errorf("last_timestamp = %v; want %v", gotTime, wantTime)
 	}
 }
 

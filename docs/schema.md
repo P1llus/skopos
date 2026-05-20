@@ -304,11 +304,6 @@ auth:
     token: {ref: state.refresh_token}
 ```
 
-Interactive grants — `authorization_code`, `device_code`, PKCE — are
-out of scope: the pull-loop runtime has no browser-roundtrip surface,
-so the grant exchange itself cannot happen inside the IR's iteration
-model.
-
 ---
 
 ## `requests`
