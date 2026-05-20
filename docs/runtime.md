@@ -350,8 +350,30 @@ timing keeps reporting real durations regardless.
   `ctx` is cancelled.
 - **Retry / backoff / rate-limit.** Not modelled at the runner layer.
   Authors who need retries plug them into the injected transport.
-- **HMAC / SigV4 / OAuth1 signing.** Not modelled. A structural signing
-  Value lands when a concrete template motivates the shape.
+- **AWS SigV4 signing (`auth.sigv4`).** Every request is signed fresh,
+  immediately before send, using real wall-clock time (not the spec
+  clock `s.now()`, which `SOURCE_DATE_EPOCH` can pin). Signatures are
+  never cached — a SigV4 signature is an HMAC over the exact request
+  (method, path, query, headers, body hash, `X-Amz-Date`), so it is not
+  reusable across requests and there is no network round trip to
+  amortize. Credentials come from `access_key_id` / `secret_access_key`
+  (with optional `session_token`) in the spec, or from the AWS default
+  credential chain when all three are omitted; credential
+  caching/refresh for the default chain (assumed-role / IMDS temporary
+  creds) is handled by the AWS SDK provider, not the `cache` namespace.
+  - **Retry contract.** Signing is the last header mutation before
+    `client.Do`, and skopos rebuilds and re-signs the request on every
+    send (pagination, `terminate_when`, cache invalidation). A
+    *caller-injected* transport that re-sends the *already-signed*
+    request is only valid inside AWS's clock-skew window; a backoff
+    retry that fires past it draws `RequestTimeTooSkewed`. Prefer
+    skopos's own `on_status` / `error.mode` handling, which re-enters the
+    request loop and re-signs, over transport-level retries. The other
+    auth variants (`bearer` / `basic` / `api_key` / `custom` / `oauth2`)
+    carry static or token-bearing headers and are unaffected by
+    transport retries.
+- **HMAC / OAuth1 signing.** Not modelled. A structural signing Value
+  lands when a concrete template motivates the shape.
 - **OAuth2 interactive grants.** `authorization_code`, `device_code`,
   and PKCE all require a browser round-trip; the pull-loop runtime has
   no interactive surface. Refresh tokens that an operator pasted in are
@@ -445,8 +467,8 @@ The validator rejects the combination.
 - **Multi-process / RPC dispatch.** Out of scope.
 - **OAuth2 interactive grants** (`authorization_code`, `device_code`,
   PKCE). The pull-loop has no browser-roundtrip surface.
-- **HMAC / SigV4 / OAuth1 signing.** Out of scope until a structured
-  signing `Value` lands.
+- **HMAC / OAuth1 signing.** Out of scope until a structured signing
+  `Value` lands. (AWS SigV4 is supported — see `auth.sigv4`.)
 - **Scheduling.** `Runner.Drain` is one pull session. Sleeping,
   cron-like dispatch, and multi-template orchestration belong above
   the runner.

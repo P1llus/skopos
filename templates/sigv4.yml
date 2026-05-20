@@ -1,0 +1,54 @@
+# sigv4 — AWS Signature Version 4 request signing.
+#
+# Demonstrates: auth.sigv4 with static credentials, a single GET request,
+# pagination.none, and a max-over-events high-water mark progress write.
+# Each request is signed fresh, immediately before send. To use the AWS
+# default credential chain (environment, shared config, IMDS / container /
+# IAM role) instead, delete access_key_id and secret_access_key.
+
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+  page_size:
+    type: int
+    default: 5
+  aws_access_key_id:
+    type: secret
+    default: "AKIDEXAMPLESIGV4TEST"
+  aws_secret_access_key:
+    type: secret
+    default: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
+
+auth:
+  sigv4:
+    region: "us-east-1"
+    service: "execute-api"
+    access_key_id: {ref: state.aws_access_key_id}
+    secret_access_key: {ref: state.aws_secret_access_key}
+
+requests:
+  - method: GET
+    url: "${state.url}/sigv4/events"
+    query:
+      since: {ref: state.last_timestamp}
+      limit: "${state.page_size}"
+
+response:
+  decode: json
+  events_at: response.body.events
+
+pagination:
+  none: {}
+
+progress:
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}
+
+error:
+  mode: standard

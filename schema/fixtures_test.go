@@ -665,6 +665,43 @@ pagination:
 	}
 }
 
+// TestSigV4_PartialCredentials pins the all-or-nothing rule on
+// auth.sigv4 static credentials: setting access_key_id without
+// secret_access_key (or vice versa) is an error. Both-set and both-unset
+// are the only valid states and are covered by the schema/testdata
+// sigv4_static / sigv4_default_chain round-trip in TestSpecFixtures.
+func TestSigV4_PartialCredentials(t *testing.T) {
+	src := `ir_version: "1"
+state:
+  url: {type: url, default: "http://x"}
+  key: {type: secret, default: "AKIDEXAMPLE"}
+auth:
+  sigv4:
+    region: "us-east-1"
+    service: "execute-api"
+    access_key_id: {ref: state.key}
+requests:
+  - method: GET
+    url: "${state.url}/events"
+response: {decode: json, events_at: response.body.events}
+pagination: {none: {}}
+`
+	doc, err := schema.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	found := false
+	for _, d := range schema.Validate(doc) {
+		if d.Severity == "error" && strings.Contains(d.Message, "secret_access_key must be set together") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected partial-credentials error for access_key_id without secret_access_key; got %+v", schema.Validate(doc))
+	}
+}
+
 // TestMultiModeDefaultBareAuth pins the validator's rejection of the
 // wrapped {auth: ...} form under multi_mode.default. The bare form
 // happy path is covered end-to-end by multi_mode_auth.txt and the

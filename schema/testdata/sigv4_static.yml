@@ -1,0 +1,53 @@
+# auth.sigv4 with static credentials. region + service are required; the
+# access_key_id / secret_access_key pair (with optional session_token)
+# supplies the signing credentials.
+
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+  region:
+    type: string
+    default: "us-east-1"
+  access_key_id:
+    type: secret
+    default: "AKIDEXAMPLESIGV4TEST"
+  secret_access_key:
+    type: secret
+    default: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+  session_token:
+    type: secret
+    default: "FwoGZXIvYXdzELyTEST/SESSION/TOKEN"
+  last_timestamp:
+    type: timestamp
+    default: {subtract: [{now: true}, "720h"]}
+
+auth:
+  sigv4:
+    region: {ref: state.region}
+    service: "execute-api"
+    access_key_id: {ref: state.access_key_id}
+    secret_access_key: {ref: state.secret_access_key}
+    session_token: {ref: state.session_token}
+
+requests:
+  - method: GET
+    url: "${state.url}/sigv4/events"
+    query:
+      since: {ref: state.last_timestamp}
+
+response:
+  decode: json
+  events_at: response.body.events
+
+pagination:
+  none: {}
+
+progress:
+  - to: state.last_timestamp
+    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.timestamp}}]}
+
+error:
+  mode: standard

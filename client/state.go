@@ -7,7 +7,11 @@ import (
 	"maps"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 
 	"github.com/p1llus/skopos/schema"
 )
@@ -118,6 +122,17 @@ type scope struct {
 	// nowFn is the clock; defaults to time.Now. Per-scope (not package
 	// global) so concurrent runners can use independent clocks.
 	nowFn func() time.Time
+
+	// AWS SigV4 helpers, lazily built on first auth.sigv4 use and reused
+	// for the scope's lifetime. The signer is stateless. The ambient
+	// provider (AWS default credential chain) does I/O on construction and
+	// self-caches/refreshes its credentials, so it is built at most once;
+	// sigv4Once guards that one-time build. Static-credential auth builds
+	// its provider inline and never touches awsAmbient.
+	sigv4Signer   *v4.Signer
+	awsAmbient    aws.CredentialsProvider
+	awsAmbientErr error
+	sigv4Once     sync.Once
 }
 
 // newScope seeds a scope from a snapshot and the IR's state-field

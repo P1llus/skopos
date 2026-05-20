@@ -68,6 +68,8 @@ type Auth struct {
 	// OAuth2 selects the OAuth2 variant
 	// (client_credentials / password_grant).
 	OAuth2 *OAuth2Auth `yaml:"oauth2,omitempty" json:"oauth2,omitempty"`
+	// SigV4 selects the AWS Signature Version 4 request-signing variant.
+	SigV4 *SigV4Auth `yaml:"sigv4,omitempty" json:"sigv4,omitempty"`
 	// MultiMode dispatches between auth strategies at runtime via
 	// predicates.
 	MultiMode *MultiModeAuth `yaml:"multi_mode,omitempty" json:"multi_mode,omitempty"`
@@ -153,6 +155,28 @@ type PasswordGrant struct {
 	// Cache, when set, writes the captured access token into a
 	// cache.<name> slot.
 	Cache *Cache `yaml:"cache,omitempty" json:"cache,omitempty"`
+}
+
+// SigV4Auth signs every request with AWS Signature Version 4. Region and
+// Service are required. Credentials are taken from access_key_id +
+// secret_access_key (with optional session_token); when all three are
+// omitted, the AWS default credential chain is used (environment, shared
+// config, IMDS / container / IAM role).
+type SigV4Auth struct {
+	// Region is the AWS region used in the credential scope (e.g. us-east-1).
+	Region Value `yaml:"region" json:"region"`
+	// Service is the AWS service name used in the credential scope
+	// (e.g. execute-api, es, s3).
+	Service Value `yaml:"service" json:"service"`
+	// AccessKeyID is the AWS access key id. Optional: omit (with
+	// SecretAccessKey) to use the default credential chain.
+	AccessKeyID *Value `yaml:"access_key_id,omitempty" json:"access_key_id,omitempty"`
+	// SecretAccessKey is the AWS secret access key. Required when
+	// AccessKeyID is set.
+	SecretAccessKey *Value `yaml:"secret_access_key,omitempty" json:"secret_access_key,omitempty"`
+	// SessionToken is the optional STS session token for temporary
+	// credentials.
+	SessionToken *Value `yaml:"session_token,omitempty" json:"session_token,omitempty"`
 }
 
 // MultiModeAuth dispatches between auth strategies at runtime based on a
@@ -447,6 +471,7 @@ func authVariants(a Auth) (names []string, payloads []any) {
 	add("api_key", a.APIKey, a.APIKey != nil)
 	add("custom", a.Custom, a.Custom != nil)
 	add("oauth2", a.OAuth2, a.OAuth2 != nil)
+	add("sigv4", a.SigV4, a.SigV4 != nil)
 	add("multi_mode", a.MultiMode, a.MultiMode != nil)
 	return names, payloads
 }

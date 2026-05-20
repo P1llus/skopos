@@ -197,6 +197,42 @@ Single custom header with an arbitrary value.
 | `header` | yes      | Header name.      |
 | `value`  | yes      | [Value](#values). |
 
+### `auth.sigv4`
+
+Signs every request with AWS Signature Version 4. The signature is
+computed locally per request, immediately before send; it is never
+cached.
+
+| Field               | Required | Description                                                                          |
+|---------------------|----------|--------------------------------------------------------------------------------------|
+| `region`            | yes      | [Value](#values) — AWS region for the credential scope (e.g. `us-east-1`).           |
+| `service`           | yes      | [Value](#values) — AWS service name for the credential scope (e.g. `execute-api`).   |
+| `access_key_id`     | no       | [Value](#values) — AWS access key id.                                                 |
+| `secret_access_key` | no       | [Value](#values) — AWS secret access key; typically secret.                          |
+| `session_token`     | no       | [Value](#values) — STS session token for temporary credentials; typically secret.   |
+
+Credentials are all-or-nothing: set `access_key_id` **and**
+`secret_access_key` together for static credentials, or omit both to use
+the AWS default credential chain (environment, shared config, IMDS /
+container / IAM role). `session_token` may only accompany a full static
+pair.
+
+```yaml
+# Static credentials from spec state.
+auth:
+  sigv4:
+    region: "us-east-1"
+    service: "execute-api"
+    access_key_id: {ref: state.aws_access_key_id}
+    secret_access_key: {ref: state.aws_secret_access_key}
+
+# Default credential chain (no keys in the spec).
+auth:
+  sigv4:
+    region: "us-east-1"
+    service: "execute-api"
+```
+
 ### `auth.oauth2`
 
 Discriminated sub-union by grant type. Exactly one grant key is
@@ -254,6 +290,10 @@ auth:
 - `auth.oauth2` must carry exactly one grant key
   (`client_credentials` or `password_grant`). Zero or multiple grant
   keys are rejected.
+- `auth.sigv4` requires `region` and `service`. `access_key_id` and
+  `secret_access_key` must be set together or both omitted (omitting
+  both selects the AWS default credential chain); `session_token` may
+  only be set alongside a full static-credential pair.
 - Every `{ref: state.<name>}` used inside any auth Value must resolve
   to a declared field.
 
