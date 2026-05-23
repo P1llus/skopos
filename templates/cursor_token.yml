@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # cursor_token — opaque cursor token pagination.
 #
 # Demonstrates: pagination.cursor_token. The server returns a cursor in the

@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # ndjson_response — newline-delimited JSON response decode.
 #
 # Demonstrates: response.decode=ndjson. Each non-empty line is one event;

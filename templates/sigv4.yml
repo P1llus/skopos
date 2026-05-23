@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # sigv4 — AWS Signature Version 4 request signing.
 #
 # Demonstrates: auth.sigv4 with static credentials, a single GET request,

@@ -20,6 +20,9 @@ jobs:
       - name: make schema-doc-check
         run: |
           make schema-doc-check
+      - name: make json-schema-check
+        run: |
+          make json-schema-check
       - name: Install golangci-lint
         run: |
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \

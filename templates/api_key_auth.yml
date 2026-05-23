@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # api_key_auth — API key carried in a custom header (X-API-Key).
 #
 # Demonstrates: auth.api_key in a named header, single GET request,
@@ -14,18 +15,18 @@ state:
     default: "test-api-key-67890"
   last_timestamp:
     type: timestamp
-    default: {subtract: [{now: true}, "720h"]}
+    default: { subtract: [{ now: true }, "720h"] }
 
 auth:
   api_key:
     header: X-API-Key
-    value: {ref: state.api_key}
+    value: { ref: state.api_key }
 
 requests:
   - method: GET
     url: "${state.url}/api_key_auth/detections"
     query:
-      created_after: {ref: state.last_timestamp}
+      created_after: { ref: state.last_timestamp }
 
 response:
   decode: json
@@ -36,7 +37,14 @@ pagination:
 
 progress:
   - to: state.last_timestamp
-    from: {max: [{ref: state.last_timestamp}, {max: {ref: events.*.created_timestamp}}]}
+    from:
+      {
+        max:
+          [
+            { ref: state.last_timestamp },
+            { max: { ref: events.*.created_timestamp } },
+          ],
+      }
 
 error:
   mode: standard

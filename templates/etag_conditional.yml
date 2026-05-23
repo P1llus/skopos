@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # etag_conditional — conditional GET driven by an ETag.
 #
 # Demonstrates: state.etag captured via extract, ridden as If-None-Match
