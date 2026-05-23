@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # multi_mode_auth — runtime auth selection via predicates.
 #
 # Branches are evaluated in declaration order; the first match wins and

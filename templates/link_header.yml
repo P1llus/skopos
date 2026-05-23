@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # link_header — RFC 5988 Link-header pagination.
 #
 # Demonstrates: pagination.next_url with regex / capture parsing the

@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # next_url_in_body — server returns the next URL in the response body.
 #
 # Demonstrates: pagination.next_url reading meta.next_page from the body

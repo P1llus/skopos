@@ -1,4 +1,4 @@
-.PHONY: build vet test test-ci lint check ci clean schema-doc schema-doc-check integration-tests integration-tests-update bench bench-go bench-clean
+.PHONY: build vet test test-ci lint check ci clean schema-doc schema-doc-check json-schema json-schema-check integration-tests integration-tests-update bench bench-go bench-clean
 
 build:
 	go build -o build/skopos ./cmd/skopos
@@ -24,6 +24,12 @@ schema-doc:
 
 schema-doc-check:
 	go run ./tools/gen-schema-doc -check
+
+json-schema:
+	go run ./tools/gen-json-schema
+
+json-schema-check:
+	go run ./tools/gen-json-schema -check
 
 integration-tests:
 	go test -tags=integration ./cmd/skopos -run TestScripts -count=1 -v

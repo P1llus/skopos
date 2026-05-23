@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # fanout — per-item fan-out over a list.
 #
 # Demonstrates: requests[].fan_out with merge: flatten. The list step

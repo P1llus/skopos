@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # simple_get_object — the smallest end-to-end spec.
 #
 # Demonstrates: one GET, no auth, no pagination, no progress. The runner

@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # page_number — page-number pagination via the counter variant.
 #
 # Demonstrates: pagination.counter with start: 1, step: 1. Termination is

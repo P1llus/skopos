@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # async_poll — asynchronous job pattern (submit / poll / fetch).
 #
 # Three plain request steps with terminate_when: on the poll step. The

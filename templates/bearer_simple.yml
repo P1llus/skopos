@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # bearer_simple — the canonical starting-point example.
 #
 # Demonstrates: auth.bearer, a single GET request, pagination.none, a

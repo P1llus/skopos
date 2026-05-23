@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # session_login_cached — custom JSON login with a step-level token cache.
 #
 # A POST /login step wrapped in requests[].cache pays the round-trip once

@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # api_key_auth — API key carried in a custom header (X-API-Key).
 #
 # Demonstrates: auth.api_key in a named header, single GET request,

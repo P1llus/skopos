@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # etag_conditional_middle — conditional middle step in a 3-step chain.
 #
 # Sibling of etag_conditional.yml. Same conditional primitives (if +

@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # post_json_body — POST with a JSON body carrying a time-window query.
 #
 # Demonstrates: requests[].body.json with a sliding [window_start,
