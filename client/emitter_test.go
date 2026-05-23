@@ -112,66 +112,6 @@ func TestDrain_SinkBufferEmitErrorAborts(t *testing.T) {
 	}
 }
 
-// countingStore counts Save calls so a test can observe mid-drain checkpoints.
-type countingStore struct {
-	mu    sync.Mutex
-	snap  Snapshot
-	saves int
-}
-
-func (c *countingStore) Load() (Snapshot, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.snap, nil
-}
-
-func (c *countingStore) Save(s Snapshot) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.snap = s
-	c.saves++
-	return nil
-}
-
-// TestDrain_CheckpointPagesPersistsMidDrain pins that CheckpointPages commits
-// state per N pages mid-drain (here: after each of the two advancing pages),
-// in addition to the end-of-drain Save. The terminating page does not
-// checkpoint (it returns before the checkpoint site).
-func TestDrain_CheckpointPagesPersistsMidDrain(t *testing.T) {
-	pages := map[string]map[string]any{
-		"":   {"events": []any{ev("e1")}, "next": "p2"},
-		"p2": {"events": []any{ev("e2")}, "next": "p3"},
-		"p3": {"events": []any{ev("e3")}},
-	}
-
-	t.Run("off", func(t *testing.T) {
-		server := cursorPagesServer(pages)
-		defer server.Close()
-		store := &countingStore{}
-		r := &Runner{Doc: cursorDoc(server.URL), Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: server.Client()}
-		if err := r.Drain(context.Background()); err != nil {
-			t.Fatalf("Drain: %v", err)
-		}
-		if store.saves != 1 {
-			t.Errorf("saves = %d, want 1 (end-of-drain only)", store.saves)
-		}
-	})
-
-	t.Run("every_page", func(t *testing.T) {
-		server := cursorPagesServer(pages)
-		defer server.Close()
-		store := &countingStore{}
-		r := &Runner{Doc: cursorDoc(server.URL), Sink: &captureSink{}, Store: store, Now: fixedNow(), Client: server.Client(), CheckpointPages: 1}
-		if err := r.Drain(context.Background()); err != nil {
-			t.Fatalf("Drain: %v", err)
-		}
-		// 2 advancing pages → 2 checkpoints, plus 1 end-of-drain Save.
-		if store.saves != 3 {
-			t.Errorf("saves = %d, want 3 (2 checkpoints + final)", store.saves)
-		}
-	})
-}
-
 // opRecorder implements both Sink and Store, recording the order of Emit /
 // Flush / Save so a test can assert the durability ordering.
 type opRecorder struct {
@@ -192,8 +132,8 @@ func (r *opRecorder) add(s string) {
 
 // TestDrain_TeardownFlushesBeforeSave pins the at-least-once ordering: every
 // event is emitted, then Flush makes them durable, and only then does Save
-// commit state past them. Exercised through the buffered path to also cover
-// the queue-drain barrier.
+// commit state past them. Exercised through the buffered path so the teardown
+// must first drain the queue.
 func TestDrain_TeardownFlushesBeforeSave(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"events": []any{ev("e1"), ev("e2")}})

@@ -51,11 +51,6 @@ const configTemplate = `# skopos run configuration
 # slow sink does not stall the next page fetch. Equivalent to --sink-buffer.
 # Omit (or set to 0) for synchronous delivery.
 # sink_buffer: 1024
-
-# checkpoint_pages: persist state every N accepted pages mid-drain so a hard
-# crash re-pulls at most N pages. Equivalent to --checkpoint-pages.
-# Omit (or set to 0) to commit only at drain end.
-# checkpoint_pages: 500
 `
 
 // runInit is the entry point for "skopos init".

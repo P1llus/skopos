@@ -59,8 +59,7 @@ import (
 //     store.Save(s.snapshot()). Runs on normal exit, error.mode: warn,
 //     AND error.mode: fail. Flush precedes Save so events are durable
 //     before state records progress past them. A partial drain still
-//     persists whatever was reached. When CheckpointPages > 0 the same
-//     barrier→Flush→Save runs every CheckpointPages pages mid-drain.
+//     persists whatever was reached.
 //
 // # Request loop (docs/runtime.md §4)
 //
@@ -155,28 +154,10 @@ type Runner struct {
 	//                     changes — so a Sink backing one Runner needs no
 	//                     extra synchronisation.
 	//
-	// Delivery never runs ahead of persistence: at every Store.Save (the
-	// per-checkpoint and end-of-drain commits) the queue is drained and
-	// Sink.Flush'd first, preserving the at-least-once "events before state"
-	// contract regardless of SinkBuffer.
+	// Delivery never runs ahead of persistence: the deferred teardown drains
+	// the queue and Sink.Flush'es before Store.Save, preserving the
+	// at-least-once "events before state" contract regardless of SinkBuffer.
 	SinkBuffer int
-
-	// CheckpointPages persists state mid-drain every CheckpointPages accepted
-	// pages, bounding how much a hard crash (a signal that skips the deferred
-	// Save, power loss) can cost: at most CheckpointPages pages are re-pulled
-	// on the next start instead of the whole drain.
-	//
-	//   0 (the default) → no mid-drain checkpoint; state commits once, at
-	//                     drain end (and on handled errors, via the deferred
-	//                     Save).
-	//   > 0             → after every CheckpointPages pages, drain the sink
-	//                     queue, Sink.Flush, then Store.Save so the snapshot
-	//                     never records progress past undelivered events.
-	//
-	// Checkpointing only ever commits the same persisted snapshot more often;
-	// it changes resume granularity, not resume semantics. A drain with no
-	// persistent state.* writes has nothing new to checkpoint.
-	CheckpointPages int
 
 	// Tracer receives one Exchange per HTTP request/response pair
 	// executed during the drain. Optional; nil disables per-exchange
@@ -378,32 +359,7 @@ func (r *Runner) Drain(ctx context.Context) (retErr error) {
 		if terminate {
 			return nil
 		}
-
-		if r.CheckpointPages > 0 && pages%r.CheckpointPages == 0 {
-			if err := r.checkpoint(em, store, s); err != nil {
-				return err
-			}
-		}
 	}
-}
-
-// checkpoint persists intermediate progress mid-drain so a hard crash (a
-// signal that skips the deferred teardown, power loss) loses at most
-// CheckpointPages pages of work rather than the whole drain. It barriers the
-// emitter so every event delivered so far is Flush'd durable before the
-// snapshot records progress past it — the same events-before-state ordering
-// the deferred teardown enforces.
-func (r *Runner) checkpoint(em emitter, store Store, s *scope) error {
-	if err := em.barrier(); err != nil {
-		return fmt.Errorf("sink.Emit: %w", err)
-	}
-	if err := r.Sink.Flush(); err != nil {
-		return fmt.Errorf("checkpoint sink.Flush: %w", err)
-	}
-	if err := store.Save(s.snapshot()); err != nil {
-		return fmt.Errorf("checkpoint store.Save: %w", err)
-	}
-	return nil
 }
 
 // newEmitter returns the event emitter for one Drain. SinkBuffer <= 0 gives

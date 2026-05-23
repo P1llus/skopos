@@ -20,14 +20,9 @@ type emitter interface {
 	// error seen so far so the Drain loop can abort promptly instead of
 	// pushing more work at a failing Sink.
 	emit(ev any) error
-	// barrier blocks until every event handed to emit so far has reached
-	// Sink.Emit, then returns the first Sink.Emit error. After it returns the
-	// consumer is idle, so the caller may call Sink.Flush / Store.Save without
-	// racing the consumer. The synchronous emitter has nothing to wait for.
-	barrier() error
 	// close drains every queued event, stops the consumer, and returns the
 	// first Sink.Emit error. After close returns the consumer goroutine has
-	// exited.
+	// exited, so the caller may Flush / Save without racing it.
 	close() error
 }
 
@@ -37,16 +32,7 @@ type emitter interface {
 type syncEmitter struct{ sink Sink }
 
 func (e syncEmitter) emit(ev any) error { return e.sink.Emit(ev) }
-func (e syncEmitter) barrier() error    { return nil }
 func (e syncEmitter) close() error      { return nil }
-
-// sinkMsg is one item on the buffered emitter's channel. A non-nil done marks
-// a barrier marker rather than an event: the consumer closes it once it has
-// caught up.
-type sinkMsg struct {
-	ev   any
-	done chan struct{}
-}
 
 // asyncEmitter feeds a single consumer goroutine over a bounded channel. The
 // bound is the source of backpressure: once the Sink falls far enough behind
@@ -55,7 +41,7 @@ type sinkMsg struct {
 // without bound.
 type asyncEmitter struct {
 	sink Sink
-	ch   chan sinkMsg
+	ch   chan any
 	done chan struct{}
 
 	mu  sync.Mutex
@@ -67,7 +53,7 @@ type asyncEmitter struct {
 func newAsyncEmitter(sink Sink, buffer int) *asyncEmitter {
 	e := &asyncEmitter{
 		sink: sink,
-		ch:   make(chan sinkMsg, buffer),
+		ch:   make(chan any, buffer),
 		done: make(chan struct{}),
 	}
 	go e.consume()
@@ -77,18 +63,14 @@ func newAsyncEmitter(sink Sink, buffer int) *asyncEmitter {
 // consume is the single consumer goroutine. It calls Sink.Emit for every
 // event in channel order and records the first error. After an error it keeps
 // draining the channel (without emitting) so the producer never blocks on a
-// full channel; the recorded error surfaces through emit / barrier / close.
+// full channel; the recorded error surfaces through emit / close.
 func (e *asyncEmitter) consume() {
 	defer close(e.done)
-	for msg := range e.ch {
-		if msg.done != nil {
-			close(msg.done)
-			continue
-		}
+	for ev := range e.ch {
 		if e.firstErr() != nil {
 			continue
 		}
-		if err := e.sink.Emit(msg.ev); err != nil {
+		if err := e.sink.Emit(ev); err != nil {
 			e.setErr(err)
 		}
 	}
@@ -112,15 +94,8 @@ func (e *asyncEmitter) emit(ev any) error {
 	if err := e.firstErr(); err != nil {
 		return err
 	}
-	e.ch <- sinkMsg{ev: ev}
+	e.ch <- ev
 	return nil
-}
-
-func (e *asyncEmitter) barrier() error {
-	done := make(chan struct{})
-	e.ch <- sinkMsg{done: done}
-	<-done
-	return e.firstErr()
 }
 
 func (e *asyncEmitter) close() error {

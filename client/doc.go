@@ -43,11 +43,9 @@
 //     state records progress past them. See docs/runtime.md §2 for the
 //     authoritative description.
 //
-// Two opt-in Runner knobs tune this loop for long-lived continuous runs:
-// SinkBuffer hands events to a single consumer goroutine so a slow Sink does
-// not stall the next page fetch, and CheckpointPages persists state
-// mid-drain so a hard crash re-pulls at most N pages. Both preserve the
-// events-before-state ordering above.
+// The opt-in Runner.SinkBuffer knob hands events to a single consumer
+// goroutine so a slow Sink does not stall the next page fetch, while
+// preserving the events-before-state ordering above.
 //
 // # Namespaces and lifetimes
 //
