@@ -1,10 +1,4 @@
 {
-  // The skopos spec templates use compact YAML flow style ({ref: ...},
-  // {max: [...]}) on purpose. The Red Hat YAML extension formats with
-  // Prettier, which wraps any flow collection past printWidth and adds
-  // inner-brace spaces. Widen printWidth and turn off bracketSpacing so the
-  // formatter still fixes indentation/whitespace but leaves the one-liners
-  // and tight braces intact (longest data line is ~90 chars).
   "yaml.format.printWidth": 200,
   "yaml.format.bracketSpacing": false
 }

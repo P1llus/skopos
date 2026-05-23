@@ -58,9 +58,9 @@ response:
 
 pagination:
   counter:
-    to:    state.page
+    to: state.page
     start: 1
-    step:  1
+    step: 1
     terminate_when:
       not: {present: response.body.meta.has_next}
 

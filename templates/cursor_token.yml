@@ -44,7 +44,7 @@ response:
 pagination:
   cursor_token:
     from: response.body.next_cursor
-    to:   state.next_token
+    to: state.next_token
 
 progress:
   - to: state.last_timestamp
