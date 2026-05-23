@@ -36,10 +36,16 @@
 //     entry, fired once per accepted page-response (including empty
 //     pages). The active pagination variant's advance step decides
 //     whether to terminate or loop.
-//  4. The deferred Store.Save + Sink.Flush runs on every termination
-//     path — normal exit, error.mode: warn, error.mode: fail, MaxPages,
-//     ctx cancellation — so a partial drain still persists what it
-//     reached. See docs/runtime.md §2 for the authoritative description.
+//  4. The deferred teardown runs on every termination path — normal exit,
+//     error.mode: warn, error.mode: fail, MaxPages, ctx cancellation — so a
+//     partial drain still persists what it reached. It drains the sink,
+//     calls Sink.Flush, THEN Store.Save: events are made durable before
+//     state records progress past them. See docs/runtime.md §2 for the
+//     authoritative description.
+//
+// The opt-in Runner.SinkBuffer knob hands events to a single consumer
+// goroutine so a slow Sink does not stall the next page fetch, while
+// preserving the events-before-state ordering above.
 //
 // # Namespaces and lifetimes
 //

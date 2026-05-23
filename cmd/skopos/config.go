@@ -51,6 +51,11 @@ type Config struct {
 	// When zero, the client default (10 000) is used.
 	MaxPages int `yaml:"max_pages"`
 
+	// SinkBuffer, when > 0, delivers events through a buffered consumer
+	// goroutine of this depth so a slow sink does not stall the next page
+	// fetch. Zero keeps synchronous delivery. Equivalent to --sink-buffer.
+	SinkBuffer int `yaml:"sink_buffer"`
+
 	// StateDir, when set, is the directory used to derive each fleet
 	// entry's state file when the entry does not set State explicitly.
 	// The derived path is {StateDir}/{basename(entry.Input) without ext}.json.
@@ -77,6 +82,7 @@ type RunEntry struct {
 	Interval    time.Duration `yaml:"interval"`
 	HTTPTimeout time.Duration `yaml:"http_timeout"`
 	MaxPages    int           `yaml:"max_pages"`
+	SinkBuffer  int           `yaml:"sink_buffer"`
 }
 
 // DefaultConfig returns a Config populated with the built-in defaults.

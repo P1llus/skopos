@@ -65,21 +65,39 @@ The drain sequence:
 4. **Sink delivery.** For every accepted page-response, the runner
    resolves `response.events_at`, decodes the events list (one event
    per element, or one event per NDJSON line under `decode: ndjson`),
-   and calls `Sink.Emit(event)` once per event in declared order.
+   and calls `Sink.Emit(event)` once per event in declared order. By
+   default `Emit` runs inline on the drain goroutine; with
+   `Runner.SinkBuffer > 0` events are handed to a single consumer
+   goroutine over a bounded channel so a slow sink does not stall the
+   next page fetch (see [§sink buffering](#sink-buffering)).
 5. **Progress.** After events emit, the runner evaluates every entry in
    the `progress:` list and writes each `to:` destination. See
    [§5](#5-progress-evaluation-timing) for the timing rule.
-6. **Commit.** `Store.Save(snapshot)` runs via a deferred call — on
-   normal exit, on `error.mode: warn`, AND on `error.mode: fail`. A
-   partial drain (e.g. a poll loop that hit the `MaxPages` cap) still
-   persists whatever was reached so the next drain resumes from the
-   high-water mark.
+6. **Commit.** The deferred teardown drains the sink, calls
+   `Sink.Flush()`, THEN `Store.Save(snapshot)` — on normal exit, on
+   `error.mode: warn`, AND on `error.mode: fail`. A partial drain (e.g. a
+   poll loop that hit the `MaxPages` cap) still persists whatever was
+   reached so the next drain resumes from the high-water mark.
 
-Sink delivery happens **before** the deferred `Save`. Failure between
-events-sent and state-committed is acceptable (at-least-once); failure
-before events-sent leaves persistent state unchanged. Sinks downstream
-of this contract are responsible for their own dedup if they need
-exactly-once semantics.
+Events are flushed durable **before** the `Save`. Failure between
+events-flushed and state-committed is acceptable (at-least-once); failure
+before events-flushed leaves persistent state unchanged. This ordering
+holds regardless of `SinkBuffer`: a buffered drain is fully delivered and
+flushed before its `Save` runs, so state never records progress past an
+event that has not reached the sink. Sinks downstream of this contract
+are responsible for their own dedup if they need exactly-once semantics.
+
+### Sink buffering
+
+`Runner.SinkBuffer` (CLI: `--sink-buffer`, config: `sink_buffer`)
+defaults to `0`, which delivers events synchronously. A positive value
+starts one consumer goroutine reading a bounded channel of that depth;
+the pagination loop fetches the next page while the consumer drains the
+queue. Ordering and serial delivery are unchanged — only the goroutine
+making the `Emit` call differs — so a `Sink` backing a single `Runner`
+still needs no internal synchronisation. The bound is the backpressure
+point: once a persistently slower sink fills the channel, the loop
+blocks rather than growing memory without bound.
 
 ---
 

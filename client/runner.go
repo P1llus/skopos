@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/p1llus/skopos/schema"
@@ -54,9 +55,11 @@ import (
 //     d. applyProgress(s, doc.Progress) — once per accepted page-
 //     response, including empty pages.
 //     e. pagination.advance(s) — terminate? exit the loop. Else loop.
-//  4. defer store.Save(s.snapshot()) + sink.Flush() — runs on normal
-//     exit, error.mode: warn, AND error.mode: fail. A partial drain
-//     still persists whatever was reached.
+//  4. defer teardown — drain the sink queue, sink.Flush, THEN
+//     store.Save(s.snapshot()). Runs on normal exit, error.mode: warn,
+//     AND error.mode: fail. Flush precedes Save so events are durable
+//     before state records progress past them. A partial drain still
+//     persists whatever was reached.
 //
 // # Request loop (docs/runtime.md §4)
 //
@@ -136,6 +139,26 @@ type Runner struct {
 	//                     outside tests).
 	MaxPages int
 
+	// SinkBuffer decouples Sink delivery from the pagination loop so a slow
+	// Sink (a network exporter, a custom batcher) does not stall the next
+	// page fetch.
+	//
+	//   0 (the default) → events are delivered synchronously: Drain calls
+	//                     Sink.Emit inline, exactly as before.
+	//   > 0             → events are handed to one consumer goroutine over a
+	//                     bounded channel of this depth. The loop fetches the
+	//                     next page while the consumer drains the queue; once
+	//                     the queue fills (a persistently slower Sink) the
+	//                     loop blocks, applying backpressure. Emit is still
+	//                     called serially and in order — only the goroutine
+	//                     changes — so a Sink backing one Runner needs no
+	//                     extra synchronisation.
+	//
+	// Delivery never runs ahead of persistence: the deferred teardown drains
+	// the queue and Sink.Flush'es before Store.Save, preserving the
+	// at-least-once "events before state" contract regardless of SinkBuffer.
+	SinkBuffer int
+
 	// Tracer receives one Exchange per HTTP request/response pair
 	// executed during the drain. Optional; nil disables per-exchange
 	// capture (the operational Logger still fires). See trace.go for the
@@ -147,6 +170,12 @@ type Runner struct {
 	// Tracer shared between concurrent Runners MUST be safe for
 	// concurrent calls; the bundled JSONLTracer is.
 	Tracer Tracer
+
+	// defaultClientOnce guards the lazy build of defaultClient. Once a
+	// Runner has drained, it must not be copied (sync.Once is non-copyable);
+	// the bundled CLI always uses *Runner.
+	defaultClientOnce sync.Once
+	defaultClient     *http.Client
 }
 
 // defaultHTTPTimeout is the per-request timeout applied when the caller
@@ -186,9 +215,10 @@ func (r *Runner) Drain(ctx context.Context) (retErr error) {
 	client := r.Client
 	if client == nil {
 		// Don't reuse http.DefaultClient: it has no timeout, so a hung
-		// server would wedge Drain until ctx cancellation. Construct a
-		// fresh client with a finite per-request budget.
-		client = &http.Client{Timeout: defaultHTTPTimeout}
+		// server would wedge Drain until ctx cancellation. Use the Runner's
+		// own default client — built once and reused across drains so the
+		// connection pool stays warm between intervals in continuous mode.
+		client = r.sharedDefaultClient()
 	}
 	logger := r.Logger
 	if logger == nil {
@@ -208,22 +238,33 @@ func (r *Runner) Drain(ctx context.Context) (retErr error) {
 		return fmt.Errorf("scope: %w", err)
 	}
 
-	// Register the deferred Save + Flush BEFORE any further work so
-	// every termination path — normal exit, error.mode: warn, error.
-	// mode: fail, MaxPages, ctx cancellation — persists whatever state
-	// the drain reached. A drain that fails mid-page does not lose
-	// progress writes that already fired on earlier accepted pages.
+	em := r.newEmitter()
+
+	// Register the deferred teardown BEFORE any further work so every
+	// termination path — normal exit, error.mode: warn, error.mode: fail,
+	// MaxPages, ctx cancellation — drains and persists whatever the drain
+	// reached. The order is fixed: drain the sink queue, Flush, THEN Save.
+	// Events must be durable before state records progress past them, or a
+	// crash between the two would resume past events that never landed
+	// (breaking the at-least-once contract). A drain that fails mid-page
+	// does not lose progress writes that already fired on earlier pages.
 	defer func() {
-		if err := store.Save(s.snapshot()); err != nil {
-			logger.Printf("client: store.Save failed: %v", err)
+		if err := em.close(); err != nil {
+			logger.Printf("client: sink.Emit failed: %v", err)
 			if retErr == nil {
-				retErr = fmt.Errorf("store.Save: %w", err)
+				retErr = fmt.Errorf("sink.Emit: %w", err)
 			}
 		}
 		if err := r.Sink.Flush(); err != nil {
 			logger.Printf("client: sink.Flush failed: %v", err)
 			if retErr == nil {
 				retErr = fmt.Errorf("sink.Flush: %w", err)
+			}
+		}
+		if err := store.Save(s.snapshot()); err != nil {
+			logger.Printf("client: store.Save failed: %v", err)
+			if retErr == nil {
+				retErr = fmt.Errorf("store.Save: %w", err)
 			}
 		}
 	}()
@@ -295,7 +336,7 @@ func (r *Runner) Drain(ctx context.Context) (retErr error) {
 
 		if out.kind == iterAccepted {
 			for _, ev := range out.events {
-				if err := r.Sink.Emit(ev); err != nil {
+				if err := em.emit(ev); err != nil {
 					return fmt.Errorf("sink.Emit: %w", err)
 				}
 			}
@@ -319,6 +360,43 @@ func (r *Runner) Drain(ctx context.Context) (retErr error) {
 			return nil
 		}
 	}
+}
+
+// newEmitter returns the event emitter for one Drain. SinkBuffer <= 0 gives
+// the synchronous emitter (Sink.Emit on the Drain goroutine); a positive
+// SinkBuffer gives a buffered emitter whose consumer goroutine absorbs sink
+// latency up to the buffer depth before backpressure recouples the loop.
+func (r *Runner) newEmitter() emitter {
+	if r.SinkBuffer <= 0 {
+		return syncEmitter{sink: r.Sink}
+	}
+	return newAsyncEmitter(r.Sink, r.SinkBuffer)
+}
+
+// sharedDefaultClient lazily builds the fallback *http.Client used when the
+// caller did not set Runner.Client, and reuses it across drains. Reuse keeps
+// the connection pool warm between drains in continuous mode: a fresh client
+// with its own Transport every drain would discard idle keep-alive
+// connections each interval.
+func (r *Runner) sharedDefaultClient() *http.Client {
+	r.defaultClientOnce.Do(func() {
+		r.defaultClient = &http.Client{
+			Timeout:   defaultHTTPTimeout,
+			Transport: newPollingTransport(),
+		}
+	})
+	return r.defaultClient
+}
+
+// newPollingTransport clones http.DefaultTransport (keeping its environment
+// proxy, dial, and TLS defaults) and widens the per-host idle-connection
+// budget for the pull workload. DefaultTransport caps idle connections per
+// host at 2; a pull source hits the same host every page and every interval,
+// so a wider budget keeps keep-alive connections warm instead of churning.
+func newPollingTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = 8
+	return t
 }
 
 // iterKind classifies an iteration's terminal verdict. The Drain loop

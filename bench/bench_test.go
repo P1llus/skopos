@@ -145,9 +145,10 @@ func silentLogger() *log.Logger {
 }
 
 // newScenarioRunner returns a Runner ready to drain `url`, with a fresh
-// in-memory store seeded with state.url. The runner shares the package
-// http.DefaultClient via Runner's default fallback — explicit clients
-// would just add allocations the bench isn't trying to measure.
+// in-memory store seeded with state.url. The runner uses its built-in
+// default HTTP client (built once on the first Drain and reused across
+// iterations) — an explicit client would just add allocations the bench
+// isn't trying to measure.
 func newScenarioRunner(doc *schema.Doc, url string) *client.Runner {
 	store := &client.MemoryStore{}
 	_ = store.Save(client.Snapshot{State: map[string]any{"url": url}})

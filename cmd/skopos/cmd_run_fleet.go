@@ -113,6 +113,7 @@ type resolvedEntry struct {
 	Interval    time.Duration
 	HTTPTimeout time.Duration
 	MaxPages    int
+	SinkBuffer  int
 }
 
 // resolveFleetEntries inherits top-level Config defaults into each entry,
@@ -141,6 +142,7 @@ func resolveFleetEntries(cfg Config) ([]resolvedEntry, error) {
 			Interval:    r.Interval,
 			HTTPTimeout: r.HTTPTimeout,
 			MaxPages:    r.MaxPages,
+			SinkBuffer:  r.SinkBuffer,
 		}
 		if ent.Interval == 0 {
 			ent.Interval = cfg.Interval
@@ -150,6 +152,9 @@ func resolveFleetEntries(cfg Config) ([]resolvedEntry, error) {
 		}
 		if ent.MaxPages == 0 {
 			ent.MaxPages = cfg.MaxPages
+		}
+		if ent.SinkBuffer == 0 {
+			ent.SinkBuffer = cfg.SinkBuffer
 		}
 		if ent.State == "" {
 			if cfg.StateDir == "" {
@@ -254,6 +259,7 @@ func buildFleetRun(ent resolvedEntry, sharedSink client.Sink, logger *log.Logger
 	if ent.MaxPages != 0 {
 		runner.MaxPages = ent.MaxPages
 	}
+	runner.SinkBuffer = ent.SinkBuffer
 
 	return &fleetRun{
 		name:    fleetRunName(ent.Input),

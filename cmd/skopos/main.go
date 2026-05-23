@@ -71,6 +71,7 @@ Usage:
 
   skopos run [-c config.yml] -i path [--state path] [--once] [--interval 5m]
              [--out path] [--trace path] [--http-timeout dur] [--max-pages n]
+             [--sink-buffer n]
       Execute a spec document in-process via the client backend. Emits
       events as JSONL to --out (default stdout). --once runs one drain;
       --interval polls continuously until SIGINT. --trace appends one
@@ -109,6 +110,7 @@ Flags (run):
   --trace path      Per-exchange JSONL trace (no default; required path).
   --http-timeout dur  Per-request HTTP timeout (default 30s).
   --max-pages n     Pagination cap per drain (default 10000).
+  --sink-buffer n   Buffer events through a consumer goroutine (default 0, off).
 
 Flags (init):
   -o path     Output file for the config. Defaults to stdout ("-").
