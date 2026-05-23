@@ -18,11 +18,13 @@ import (
 //
 // A single Drain calls Emit serially (one event at a time, in the order
 // locateEvents returned them). A Sink implementation backing exactly one
-// Runner therefore does not need internal synchronisation. A Sink shared
-// between multiple Runners (i.e. multiple goroutines concurrently calling
-// Drain) MUST be safe for concurrent Emit and Flush — the runner does not
-// gate that for the implementer. The bundled JSONLSink is safe under
-// either model (mutex-guarded encoder).
+// Runner therefore does not need internal synchronisation — even with
+// Runner.SinkBuffer > 0, where Emit runs on an internal consumer goroutine,
+// the calls stay serial and ordered, and Flush is only ever called when that
+// consumer is idle. A Sink shared between multiple Runners (i.e. multiple
+// goroutines concurrently calling Drain) MUST be safe for concurrent Emit
+// and Flush — the runner does not gate that for the implementer. The bundled
+// JSONLSink is safe under either model (mutex-guarded encoder).
 type Sink interface {
 	// Emit is called once per drained event. The runner does not buffer
 	// or batch — each event is delivered as soon as it leaves

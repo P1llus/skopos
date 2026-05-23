@@ -51,6 +51,16 @@ type Config struct {
 	// When zero, the client default (10 000) is used.
 	MaxPages int `yaml:"max_pages"`
 
+	// SinkBuffer, when > 0, delivers events through a buffered consumer
+	// goroutine of this depth so a slow sink does not stall the next page
+	// fetch. Zero keeps synchronous delivery. Equivalent to --sink-buffer.
+	SinkBuffer int `yaml:"sink_buffer"`
+
+	// CheckpointPages, when > 0, persists state every N accepted pages
+	// mid-drain so a hard crash re-pulls at most N pages. Zero commits only
+	// at drain end. Equivalent to --checkpoint-pages.
+	CheckpointPages int `yaml:"checkpoint_pages"`
+
 	// StateDir, when set, is the directory used to derive each fleet
 	// entry's state file when the entry does not set State explicitly.
 	// The derived path is {StateDir}/{basename(entry.Input) without ext}.json.
@@ -69,14 +79,16 @@ type Config struct {
 // top-level Config flags; an unset field inherits from the top level
 // except for Trace, which is opt-in per-entry.
 type RunEntry struct {
-	Input       string        `yaml:"input"`
-	State       string        `yaml:"state"`
-	Out         string        `yaml:"out"`
-	Trace       string        `yaml:"trace"`
-	Once        bool          `yaml:"once"`
-	Interval    time.Duration `yaml:"interval"`
-	HTTPTimeout time.Duration `yaml:"http_timeout"`
-	MaxPages    int           `yaml:"max_pages"`
+	Input           string        `yaml:"input"`
+	State           string        `yaml:"state"`
+	Out             string        `yaml:"out"`
+	Trace           string        `yaml:"trace"`
+	Once            bool          `yaml:"once"`
+	Interval        time.Duration `yaml:"interval"`
+	HTTPTimeout     time.Duration `yaml:"http_timeout"`
+	MaxPages        int           `yaml:"max_pages"`
+	SinkBuffer      int           `yaml:"sink_buffer"`
+	CheckpointPages int           `yaml:"checkpoint_pages"`
 }
 
 // DefaultConfig returns a Config populated with the built-in defaults.

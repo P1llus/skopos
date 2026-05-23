@@ -105,14 +105,16 @@ type fleetRun struct {
 // resolvedEntry holds an entry after defaults have been inherited from
 // the top-level Config and any derivations applied (state path).
 type resolvedEntry struct {
-	Input       string
-	State       string
-	Out         string
-	Trace       string
-	Once        bool
-	Interval    time.Duration
-	HTTPTimeout time.Duration
-	MaxPages    int
+	Input           string
+	State           string
+	Out             string
+	Trace           string
+	Once            bool
+	Interval        time.Duration
+	HTTPTimeout     time.Duration
+	MaxPages        int
+	SinkBuffer      int
+	CheckpointPages int
 }
 
 // resolveFleetEntries inherits top-level Config defaults into each entry,
@@ -133,14 +135,16 @@ func resolveFleetEntries(cfg Config) ([]resolvedEntry, error) {
 		}
 
 		ent := resolvedEntry{
-			Input:       r.Input,
-			State:       r.State,
-			Out:         r.Out,
-			Trace:       r.Trace, // not inherited from top level
-			Once:        r.Once || cfg.Once,
-			Interval:    r.Interval,
-			HTTPTimeout: r.HTTPTimeout,
-			MaxPages:    r.MaxPages,
+			Input:           r.Input,
+			State:           r.State,
+			Out:             r.Out,
+			Trace:           r.Trace, // not inherited from top level
+			Once:            r.Once || cfg.Once,
+			Interval:        r.Interval,
+			HTTPTimeout:     r.HTTPTimeout,
+			MaxPages:        r.MaxPages,
+			SinkBuffer:      r.SinkBuffer,
+			CheckpointPages: r.CheckpointPages,
 		}
 		if ent.Interval == 0 {
 			ent.Interval = cfg.Interval
@@ -150,6 +154,12 @@ func resolveFleetEntries(cfg Config) ([]resolvedEntry, error) {
 		}
 		if ent.MaxPages == 0 {
 			ent.MaxPages = cfg.MaxPages
+		}
+		if ent.SinkBuffer == 0 {
+			ent.SinkBuffer = cfg.SinkBuffer
+		}
+		if ent.CheckpointPages == 0 {
+			ent.CheckpointPages = cfg.CheckpointPages
 		}
 		if ent.State == "" {
 			if cfg.StateDir == "" {
@@ -254,6 +264,8 @@ func buildFleetRun(ent resolvedEntry, sharedSink client.Sink, logger *log.Logger
 	if ent.MaxPages != 0 {
 		runner.MaxPages = ent.MaxPages
 	}
+	runner.SinkBuffer = ent.SinkBuffer
+	runner.CheckpointPages = ent.CheckpointPages
 
 	return &fleetRun{
 		name:    fleetRunName(ent.Input),

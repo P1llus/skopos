@@ -461,6 +461,8 @@ care about; defaults cover the rest.
 | `Logger`   | no       | `log.Default()`          | Operational diagnostics (skipped steps, on_status decisions).         |
 | `Tracer`   | no       | nil                      | Optional per-exchange capture. Bundled: `JSONLTracer`.                |
 | `MaxPages` | no       | 10 000                   | Per-drain pagination-loop cap. `< 0` disables (tests only).            |
+| `SinkBuffer` | no     | 0 (synchronous)          | `> 0` buffers events through a consumer goroutine of this depth so a slow `Sink` does not stall the next page fetch. |
+| `CheckpointPages` | no | 0 (commit at drain end)  | `> 0` persists state every N accepted pages so a hard crash re-pulls at most N pages. |
 | `Now`      | no       | `time.Now`               | Clock; useful for tests.                                              |
 
 `r.Drain(ctx)` runs one full pull session: paginate, emit events,

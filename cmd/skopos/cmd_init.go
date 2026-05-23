@@ -46,6 +46,16 @@ const configTemplate = `# skopos run configuration
 # max_pages: cap on the number of pagination iterations per drain.
 # Defaults to 10000 when omitted.
 # max_pages: 10000
+
+# sink_buffer: deliver events through a consumer goroutine of this depth so a
+# slow sink does not stall the next page fetch. Equivalent to --sink-buffer.
+# Omit (or set to 0) for synchronous delivery.
+# sink_buffer: 1024
+
+# checkpoint_pages: persist state every N accepted pages mid-drain so a hard
+# crash re-pulls at most N pages. Equivalent to --checkpoint-pages.
+# Omit (or set to 0) to commit only at drain end.
+# checkpoint_pages: 500
 `
 
 // runInit is the entry point for "skopos init".

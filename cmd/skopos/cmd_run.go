@@ -24,6 +24,7 @@ import (
 //
 //	skopos run [-c config.yml] -i spec.yml [--state path] [--once] [--interval 5m]
 //	           [--out path] [--trace path] [--http-timeout dur] [--max-pages n]
+//	           [--sink-buffer n] [--checkpoint-pages n]
 //
 // Loads + validates the spec document, builds a client.Runner, and drives
 // it: --once for a single drain, --interval for continuous polling.
@@ -46,6 +47,8 @@ func runRun(args []string) error {
 	tracePath := fs.String("trace", "", "Per-exchange trace output file (JSONL). Overrides config.trace.")
 	httpTimeout := fs.Duration("http-timeout", 0, "Per-request HTTP timeout. Overrides config.http_timeout.")
 	maxPages := fs.Int("max-pages", 0, "Max pagination iterations per drain. Overrides config.max_pages.")
+	sinkBuffer := fs.Int("sink-buffer", 0, "Buffer events through a consumer goroutine of this depth so a slow sink does not stall fetching. Overrides config.sink_buffer.")
+	checkpointPages := fs.Int("checkpoint-pages", 0, "Persist state every N pages mid-drain. Overrides config.checkpoint_pages.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -97,6 +100,12 @@ func runRun(args []string) error {
 	}
 	if explicit["max-pages"] {
 		cfg.MaxPages = *maxPages
+	}
+	if explicit["sink-buffer"] {
+		cfg.SinkBuffer = *sinkBuffer
+	}
+	if explicit["checkpoint-pages"] {
+		cfg.CheckpointPages = *checkpointPages
 	}
 
 	// Fleet mode: a config with `runs:` and no explicit -i fans out one
@@ -174,6 +183,8 @@ func runRun(args []string) error {
 	if cfg.MaxPages != 0 {
 		runner.MaxPages = cfg.MaxPages
 	}
+	runner.SinkBuffer = cfg.SinkBuffer
+	runner.CheckpointPages = cfg.CheckpointPages
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
