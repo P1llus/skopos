@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
+# csv_response — a text/csv file payload with a header row.
+#
+# Demonstrates: a csv terminal decoder with header: present. The first row
+# names the fields, so each later row decodes to a map keyed by those names.
+# events_at must be empty for csv — every row is one event.
+
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+
+auth:
+  none: {}
+
+requests:
+  - method: GET
+    url: "${state.url}/csv_response/present"
+
+response:
+  decode:
+    - csv:
+        header: present
+  events_at: ""
+
+pagination:
+  none: {}
+
+progress: []
+
+error:
+  mode: standard

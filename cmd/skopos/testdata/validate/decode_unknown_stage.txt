@@ -1,0 +1,34 @@
+# validate/decode_unknown_stage — a decode stage with no recognised variant
+# key is rejected.
+
+! exec skopos validate -i spec.yml
+! stderr .
+cmp stdout want_stdout.txt
+
+-- spec.yml --
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+
+auth:
+  none: {}
+
+requests:
+  - method: GET
+    url: {ref: state.url}
+
+response:
+  decode:
+    - xml: {}
+  events_at: response.body.events
+
+pagination:
+  none: {}
+
+error:
+  mode: standard
+-- want_stdout.txt --
+response.decode[0]: error: decode stage must have exactly one key (gzip|zip|csv|json|ndjson)

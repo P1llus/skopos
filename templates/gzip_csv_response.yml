@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
+# gzip_csv_response — a gzip-compressed CSV file payload.
+#
+# Demonstrates: a two-stage chain combining a byte-transform with a
+# row-oriented terminal. The body is a gzipped CSV served as a file
+# (Content-Type application/gzip, not Content-Encoding). The chain
+# decompresses, then decodes header CSV rows; events_at must be empty for csv.
+
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+
+auth:
+  none: {}
+
+requests:
+  - method: GET
+    url: "${state.url}/csv_response/gzip"
+
+response:
+  decode:
+    - gzip: {}
+    - csv:
+        header: present
+  events_at: ""
+
+pagination:
+  none: {}
+
+progress: []
+
+error:
+  mode: standard
