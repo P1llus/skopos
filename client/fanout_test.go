@@ -54,7 +54,7 @@ func TestFanOut_WrapMerge(t *testing.T) {
 				ProducesEvents: true,
 			},
 		},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("")},
+		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 
@@ -101,7 +101,7 @@ func TestFanOut_EmptyOverIsNoop(t *testing.T) {
 				ProducesEvents: true,
 			},
 		},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("")},
+		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 
@@ -169,7 +169,7 @@ func TestFanOut_PerItemSkipDoesNotStopChain(t *testing.T) {
 				ProducesEvents: true,
 			},
 		},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("")},
+		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 
@@ -223,7 +223,7 @@ func TestFanOut_FlattenRejectsNonListBody(t *testing.T) {
 				ProducesEvents: true,
 			},
 		},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("")},
+		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 
@@ -277,7 +277,7 @@ func TestFanOut_PerItemFailFatal(t *testing.T) {
 				ProducesEvents: true,
 			},
 		},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("")},
+		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 
@@ -360,7 +360,7 @@ func TestFanOut_PerItemInvalidateCacheSkipsPaginationAdvance(t *testing.T) {
 				ProducesEvents: true,
 			},
 		},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("")},
+		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 

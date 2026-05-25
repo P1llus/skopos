@@ -308,8 +308,10 @@ type Body struct {
 // Response describes how to decode the producer step's body and locate the
 // events list.
 type Response struct {
-	// Decode is the body decoder verb: "json" or "ndjson".
-	Decode string `yaml:"decode" json:"decode"`
+	// Decode is the body decode chain: a scalar "json"/"ndjson", or a list
+	// of byte-transform stages (gzip, zip) ending in one terminal decoder
+	// (csv, json, ndjson). See DecodeChain.
+	Decode DecodeChain `yaml:"decode" json:"decode"`
 	// EventsAt is the namespace-rooted Path locating the events list,
 	// rooted at response.body.<path> or steps.<id>.body.<path>. The zero
 	// (empty) Path means "the body root IS the events list".

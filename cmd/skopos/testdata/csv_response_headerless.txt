@@ -1,0 +1,20 @@
+# csv_response_headerless — csv decode, header absent, pagination.none
+# Boots the csv_response scenario's headerless endpoint, runs one drain, and
+# asserts the events JSONL and redacted trace JSONL match the golden. With no
+# header row each CSV row decodes to a positional list; every row is one event.
+
+exec skopos template show -o spec.yml csv_response_headerless
+replace spec.yml http://localhost:9999 $URL
+exec skopos run -i spec.yml --once --trace trace.jsonl --out events.jsonl
+normalize trace.jsonl
+cmp trace.jsonl want_trace.jsonl
+cmp events.jsonl want_events.jsonl
+
+-- want_trace.jsonl --
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1"},"response_body":"body 170 bytes, non-json","started_at":"<scrubbed>","status":200,"url":"$URL_HOST/csv_response/absent"}
+-- want_events.jsonl --
+["evt-000001","2026-01-01T00:00:00Z","1"]
+["evt-000002","2026-01-01T00:00:01Z","2"]
+["evt-000003","2026-01-01T00:00:02Z","3"]
+["evt-000004","2026-01-01T00:00:03Z","4"]
+["evt-000005","2026-01-01T00:00:04Z","5"]

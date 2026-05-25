@@ -48,6 +48,12 @@ func mustPath(s string) schema.Path {
 	return p
 }
 
+// decodeJSON returns the single-terminal json decode chain.
+func decodeJSON() schema.DecodeChain { return schema.DecodeChain{{JSON: &struct{}{}}} }
+
+// decodeNDJSON returns the single-terminal ndjson decode chain.
+func decodeNDJSON() schema.DecodeChain { return schema.DecodeChain{{NDJSON: &struct{}{}}} }
+
 // captureSink collects every event emitted by a Runner.Drain. Used by
 // almost every end-to-end runner test.
 type captureSink struct {
@@ -84,7 +90,7 @@ func minimalDoc(baseURL string) *schema.Doc {
 			Method: "GET",
 			URL:    mustInterp("${state.url}/events"),
 		}},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
+		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 }

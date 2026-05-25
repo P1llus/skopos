@@ -1,0 +1,34 @@
+# validate/decode_bad_csv_header — csv.header must be present or absent.
+
+! exec skopos validate -i spec.yml
+! stderr .
+cmp stdout want_stdout.txt
+
+-- spec.yml --
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+
+auth:
+  none: {}
+
+requests:
+  - method: GET
+    url: {ref: state.url}
+
+response:
+  decode:
+    - csv:
+        header: maybe
+  events_at: ""
+
+pagination:
+  none: {}
+
+error:
+  mode: standard
+-- want_stdout.txt --
+response.decode[0].header: error: csv.header must be present or absent, got "maybe"

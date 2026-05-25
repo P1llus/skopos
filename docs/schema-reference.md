@@ -22,12 +22,14 @@ Regenerate with `go run ./tools/gen-schema-doc`; CI runs
 - [`BasicAuth`](#basicauth)
 - [`BearerAuth`](#bearerauth)
 - [`Body`](#body)
+- [`CSVDecode`](#csvdecode)
 - [`Cache`](#cache)
 - [`ClientCredentialsGrant`](#clientcredentialsgrant)
 - [`CounterPagination`](#counterpagination)
 - [`CursorTokenPagination`](#cursortokenpagination)
 - [`CustomAuth`](#customauth)
 - [`CustomPagination`](#custompagination)
+- [`DecodeStage`](#decodestage)
 - [`Diagnostic`](#diagnostic)
 - [`Doc`](#doc)
 - [`ErrorBlock`](#errorblock)
@@ -53,6 +55,42 @@ Regenerate with `go run ./tools/gen-schema-doc`; CI runs
 - [`SelectValue`](#selectvalue)
 - [`SigV4Auth`](#sigv4auth)
 - [`Value`](#value)
+- [`ZipDecode`](#zipdecode)
+
+## `DecodeStage`
+
+_Defined in `schema/decode.go`._
+
+DecodeStage is one stage of the response decode chain. Exactly one variant
+key must be present.
+
+| Field | YAML | Type | Optional | Description |
+| --- | --- | --- | --- | --- |
+| `Gzip` | `gzip` | `*struct{}` | yes | Gzip decompresses the upstream stream (RFC 1952). Byte-transform. |
+| `Zip` | `zip` | `*ZipDecode` | yes | Zip expands a ZIP archive into its members. Byte-transform. |
+| `CSV` | `csv` | `*CSVDecode` | yes | CSV decodes delimited rows into events. Terminal. |
+| `JSON` | `json` | `*struct{}` | yes | JSON decodes the stream as one JSON value. Terminal. |
+| `NDJSON` | `ndjson` | `*struct{}` | yes | NDJSON decodes one JSON value per line. Terminal. |
+
+## `ZipDecode`
+
+_Defined in `schema/decode.go`._
+
+ZipDecode configures the zip byte-transform stage.
+
+| Field | YAML | Type | Optional | Description |
+| --- | --- | --- | --- | --- |
+| `Glob` | `glob` | `string` | yes | Glob optionally selects which archive members to decode by their base name (e.g. "*.csv"). Empty selects every member. Members are decoded in name-sorted order and their events concatenated. |
+
+## `CSVDecode`
+
+_Defined in `schema/decode.go`._
+
+CSVDecode configures the csv terminal decoder.
+
+| Field | YAML | Type | Optional | Description |
+| --- | --- | --- | --- | --- |
+| `Header` | `header` | `string` | no | Header selects "present" (the first row is field names; each later row decodes to a map) or "absent" (each row decodes to a list). |
 
 ## `Path`
 
@@ -425,7 +463,7 @@ events list.
 
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
-| `Decode` | `decode` | `string` | no | Decode is the body decoder verb: "json" or "ndjson". |
+| `Decode` | `decode` | `DecodeChain` | no | Decode is the body decode chain: a scalar "json"/"ndjson", or a list of byte-transform stages (gzip, zip) ending in one terminal decoder (csv, json, ndjson). See DecodeChain. |
 | `EventsAt` | `events_at` | `Path` | no | EventsAt is the namespace-rooted Path locating the events list, rooted at response.body.<path> or steps.<id>.body.<path>. The zero (empty) Path means "the body root IS the events list". |
 
 ## `Pagination`

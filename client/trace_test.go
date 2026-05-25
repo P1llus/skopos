@@ -91,7 +91,7 @@ func TestTracer_CacheHitTombstone(t *testing.T) {
 				ProducesEvents: true,
 			},
 		},
-		Response: schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
+		Response: schema.Response{Decode: decodeJSON(), EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{CursorToken: &schema.CursorTokenPagination{
 			From: mustPath("response.body.next_cursor"),
 			To:   mustPath("state.next_token"),

@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
+# csv_response_headerless — a text/csv file payload with no header row.
+#
+# Demonstrates: a csv terminal decoder with header: absent. There is no header
+# row, so each row decodes to a positional list rather than a map. events_at
+# must be empty for csv — every row is one event.
+
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+
+auth:
+  none: {}
+
+requests:
+  - method: GET
+    url: "${state.url}/csv_response/absent"
+
+response:
+  decode:
+    - csv:
+        header: absent
+  events_at: ""
+
+pagination:
+  none: {}
+
+progress: []
+
+error:
+  mode: standard

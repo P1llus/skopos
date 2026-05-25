@@ -69,6 +69,9 @@ func AllScenarios() []Scenario {
 		EtagConditionalMiddle(),
 		SessionLoginCached(),
 		Fanout(),
+		GzipJSON(),
+		CSVResponse(),
+		ZipCSV(),
 	}
 }
 

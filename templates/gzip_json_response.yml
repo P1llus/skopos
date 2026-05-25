@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
+# gzip_json_response — a gzip-compressed JSON file payload.
+#
+# Demonstrates: a decode chain. The body is a gzipped JSON object served as a
+# file (Content-Type application/gzip, not Content-Encoding), so the transport
+# does not decompress it. The chain decompresses, then decodes JSON; events_at
+# locates the list inside the decoded object.
+
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+
+auth:
+  none: {}
+
+requests:
+  - method: GET
+    url: "${state.url}/gzip_json/events"
+
+response:
+  decode:
+    - gzip: {}
+    - json: {}
+  events_at: response.body.events
+
+pagination:
+  none: {}
+
+progress: []
+
+error:
+  mode: standard

@@ -5,11 +5,21 @@ package schema
 import (
 	"fmt"
 	"maps"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// validGlob reports whether g is a well-formed path.Match pattern. Declared
+// at package scope so it can reach the path package, which the validator's
+// per-rule methods cannot — they bind a local "path" parameter that shadows
+// the import.
+func validGlob(g string) error {
+	_, err := path.Match(g, "")
+	return err
+}
 
 // Diagnostic is a single structural-validation finding.
 type Diagnostic struct {
@@ -647,14 +657,61 @@ func (v *validator) checkOnStatus(path string, m map[int]string, sc *scope) {
 // ---- response ----
 
 func (v *validator) checkResponse(path string, r Response, sc *scope) {
-	switch r.Decode {
-	case "json", "ndjson":
-	case "":
-		v.errorf(path+".decode", "decode is required (json|ndjson)")
-	default:
-		v.errorf(path+".decode", "unknown decode value %q; want json|ndjson", r.Decode)
-	}
+	v.checkDecodeChain(path+".decode", r.Decode)
 	v.checkEventsAtPath(path+".events_at", r.EventsAt, sc)
+	// A csv terminal treats each row as an event, so events_at has nothing
+	// to walk. (ndjson still applies a non-empty events_at per line.)
+	if r.Decode.Terminal() == "csv" && !r.EventsAt.IsEmpty() {
+		v.errorf(path+".events_at", "events_at must be empty for csv decode; each row is an event")
+	}
+}
+
+// checkDecodeChain validates the response decode chain: non-empty, exactly
+// one variant per stage, only byte-transforms (gzip/zip) before a single
+// terminal decoder (csv/json/ndjson) as the last stage, plus per-stage args.
+func (v *validator) checkDecodeChain(path string, c DecodeChain) {
+	if len(c) == 0 {
+		v.errorf(path, "decode is required (json|ndjson, or a list of stages ending in csv|json|ndjson)")
+		return
+	}
+	for i, stage := range c {
+		op := fmt.Sprintf("%s[%d]", path, i)
+		names := stage.VariantNames()
+		switch len(names) {
+		case 0:
+			v.errorf(op, "decode stage must have exactly one key (gzip|zip|csv|json|ndjson)")
+			continue
+		case 1:
+		default:
+			v.errorf(op, "decode stage must have exactly one key; found %v", names)
+			continue
+		}
+		name := names[0]
+		if i == len(c)-1 {
+			if !isTerminalDecode(name) {
+				v.errorf(op, "the last decode stage must be a terminal decoder (csv|json|ndjson), got %q", name)
+			}
+		} else if !isByteTransformDecode(name) {
+			v.errorf(op, "only byte-transform stages (gzip|zip) may precede the terminal decoder, got %q", name)
+		}
+
+		switch {
+		case stage.CSV != nil:
+			switch stage.CSV.Header {
+			case "present", "absent":
+			case "":
+				v.errorf(op+".header", "csv.header is required (present|absent)")
+			default:
+				v.errorf(op+".header", "csv.header must be present or absent, got %q", stage.CSV.Header)
+			}
+		case stage.Zip != nil:
+			if stage.Zip.Glob != "" {
+				if err := validGlob(stage.Zip.Glob); err != nil {
+					v.errorf(op+".glob", "invalid glob %q: %v", stage.Zip.Glob, err)
+				}
+			}
+		}
+	}
 }
 
 // ---- pagination ----

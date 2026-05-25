@@ -1,0 +1,36 @@
+# validate/decode_terminal_not_last — a byte-transform after the terminal
+# decoder is rejected: the terminal must be the last stage.
+
+! exec skopos validate -i spec.yml
+! stderr .
+cmp stdout want_stdout.txt
+
+-- spec.yml --
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+
+auth:
+  none: {}
+
+requests:
+  - method: GET
+    url: {ref: state.url}
+
+response:
+  decode:
+    - json: {}
+    - gzip: {}
+  events_at: response.body.events
+
+pagination:
+  none: {}
+
+error:
+  mode: standard
+-- want_stdout.txt --
+response.decode[0]: error: only byte-transform stages (gzip|zip) may precede the terminal decoder, got "json"
+response.decode[1]: error: the last decode stage must be a terminal decoder (csv|json|ndjson), got "gzip"

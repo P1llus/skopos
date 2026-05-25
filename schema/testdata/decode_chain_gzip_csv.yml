@@ -1,0 +1,28 @@
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+
+auth:
+  none: {}
+
+requests:
+  - method: GET
+    url: "${state.url}/export.csv.gz"
+
+# A two-stage chain: decompress, then decode headerless CSV rows. Exercises a
+# byte-transform feeding a row-oriented terminal with events_at empty.
+response:
+  decode:
+    - gzip: {}
+    - csv:
+        header: absent
+  events_at: ""
+
+pagination:
+  none: {}
+
+error:
+  mode: standard

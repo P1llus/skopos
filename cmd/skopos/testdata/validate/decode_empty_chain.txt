@@ -1,0 +1,33 @@
+# validate/decode_empty_chain — an empty decode chain is rejected; decode is
+# required.
+
+! exec skopos validate -i spec.yml
+! stderr .
+cmp stdout want_stdout.txt
+
+-- spec.yml --
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+
+auth:
+  none: {}
+
+requests:
+  - method: GET
+    url: {ref: state.url}
+
+response:
+  decode: []
+  events_at: response.body.events
+
+pagination:
+  none: {}
+
+error:
+  mode: standard
+-- want_stdout.txt --
+response.decode: error: decode is required (json|ndjson, or a list of stages ending in csv|json|ndjson)

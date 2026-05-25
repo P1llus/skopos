@@ -82,21 +82,22 @@ func lookupBodyPath(body any, parts []string) (any, bool, error) {
 // the list IS the events stream; when it is an object, the body is wrapped
 // in a single-element list (one event per drain).
 //
-// For NDJSON the body is already a []any of decoded lines, so events_at
-// empty produces the line list directly; events_at non-empty applies the
-// path to EACH line and concatenates the results.
-func locateEvents(body any, eventsAt []string, ndjson bool) ([]any, error) {
-	if ndjson {
-		lines, ok := body.([]any)
+// For a row-oriented terminal (csv, ndjson) the body is already a []any of
+// decoded rows, so events_at empty produces the row list directly; events_at
+// non-empty applies the path to EACH row and concatenates the results (the
+// validator forbids a non-empty events_at for csv).
+func locateEvents(body any, eventsAt []string, rowOriented bool) ([]any, error) {
+	if rowOriented {
+		rows, ok := body.([]any)
 		if !ok {
-			return nil, fmt.Errorf("ndjson body must be a list of decoded lines, got %T", body)
+			return nil, fmt.Errorf("row-oriented body must be a list of decoded rows, got %T", body)
 		}
 		if len(eventsAt) == 0 {
-			return lines, nil
+			return rows, nil
 		}
 		var out []any
-		for i, line := range lines {
-			got, ok, err := lookupBodyPath(line, eventsAt)
+		for i, row := range rows {
+			got, ok, err := lookupBodyPath(row, eventsAt)
 			if err != nil {
 				return nil, err
 			}
@@ -105,7 +106,7 @@ func locateEvents(body any, eventsAt []string, ndjson bool) ([]any, error) {
 			}
 			arr, ok := got.([]any)
 			if !ok {
-				return nil, fmt.Errorf("ndjson line %d at %v: expected list, got %T", i, eventsAt, got)
+				return nil, fmt.Errorf("row %d at %v: expected list, got %T", i, eventsAt, got)
 			}
 			out = append(out, arr...)
 		}

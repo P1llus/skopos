@@ -737,7 +737,8 @@ func (r *Runner) runRequest(
 // response.events_at and returns the decoded events list. An empty
 // events_at means "the body root is the events list"; an explicit
 // steps.<id>.body.<path> resolves against the named step's captured
-// body. NDJSON decode follows the same closed enum.
+// body. Row-oriented terminals (csv, ndjson) decode the body to a list of
+// rows, so locateEvents treats each row as an event.
 func (r *Runner) locateProducerEvents(s *scope, producerBody any) ([]any, error) {
 	parts, stepID, err := stripBodyRoot(r.Doc.Response.EventsAt)
 	if err != nil {
@@ -751,8 +752,8 @@ func (r *Runner) locateProducerEvents(s *scope, producerBody any) ([]any, error)
 		}
 		body = b
 	}
-	ndjson := r.Doc.Response.Decode == "ndjson"
-	evs, err := locateEvents(body, parts, ndjson)
+	rowOriented := r.Doc.Response.Decode.IsRowOriented()
+	evs, err := locateEvents(body, parts, rowOriented)
 	if err != nil {
 		return nil, fmt.Errorf("locate events: %w", err)
 	}
