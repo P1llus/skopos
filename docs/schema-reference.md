@@ -54,6 +54,7 @@ Regenerate with `go run ./tools/gen-schema-doc`; CI runs
 - [`SelectBranch`](#selectbranch)
 - [`SelectValue`](#selectvalue)
 - [`SigV4Auth`](#sigv4auth)
+- [`SliceExpr`](#sliceexpr)
 - [`Value`](#value)
 - [`ZipDecode`](#zipdecode)
 
@@ -620,6 +621,7 @@ YAML authoring rules:
 	{first: <list-or-projection>}        → First (reducer)
 	{last: <list-or-projection>}         → Last (reducer)
 	{count: <list-or-projection>}        → Count (reducer)
+	{slice: {<list-operand>, from?, to?}} → Slice (sub-list)
 	{regex: {pattern, from, capture?, default?}} → Regex
 
 A map-shaped Value MUST carry exactly one discriminator key. There is no
@@ -653,6 +655,7 @@ is preserved as a plain LiteralString on the fast path.
 | `First` | _(custom codec)_ | `*Value` | yes | First is the {first: <list-or-projection>} reducer: first element in declared order. |
 | `Last` | _(custom codec)_ | `*Value` | yes | Last is the {last: <list-or-projection>} reducer: last element in declared order. |
 | `Count` | _(custom codec)_ | `*Value` | yes | Count is the {count: <list-or-projection>} reducer: cardinality. |
+| `Slice` | _(custom codec)_ | `*SliceExpr` | yes | Slice is the {slice: {<list-operand>, from?, to?}} form: a contiguous sub-list of a list-shaped operand. Unlike the reducers it returns a list, so it composes as the operand of another list-consumer (reducer, fan_out.over, or a further slice). |
 | `Regex` | _(custom codec)_ | `*RegexExpr` | yes | Regex is the {regex: {pattern, from, capture?, default?}} form: apply a Go regular expression to the resolved string of From, returning the matched substring (or the chosen capture group when Capture is set). |
 
 ## `RefValue`
@@ -725,6 +728,25 @@ codec enforces exactly two operands; operand order is significant.
 | Field | YAML | Type | Optional | Description |
 | --- | --- | --- | --- | --- |
 | `Operands` | _(custom codec)_ | `[]Value` | no | Operands holds the two positional operands. |
+
+## `SliceExpr`
+
+_Defined in `schema/value.go`._
+
+SliceExpr is the {slice: {<list-operand>, from?, to?}} form. The list
+operand is any list-shaped Value written by its own discriminator key
+(ref, list, concat, select, …) alongside the optional From / To bounds, so
+the canonical worklist pop reads {slice: {ref: state.queue, from: 1}}.
+
+From is the inclusive start index and To the exclusive end index; both are
+zero-based. A nil From means 0, a nil To means len(list). Out-of-range and
+inverted bounds clamp to a (possibly empty) sub-list rather than erroring.
+
+| Field | YAML | Type | Optional | Description |
+| --- | --- | --- | --- | --- |
+| `Operand` | _(custom codec)_ | `Value` | no | Operand is the list-shaped source Value. |
+| `From` | _(custom codec)_ | `*int` | yes | From is the inclusive start index. Nil means 0. |
+| `To` | _(custom codec)_ | `*int` | yes | To is the exclusive end index. Nil means len(list). |
 
 ## `RegexExpr`
 

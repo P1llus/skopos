@@ -24,7 +24,7 @@ import (
 //
 //	literal_string, literal_int, literal_bool, ref, now, concat, select,
 //	format, base64, list, object, add, subtract, max, min, first, last,
-//	count, regex
+//	count, slice, regex
 //
 // Arithmetic and reducers obey the type pairs documented in
 // docs/schema.md §Values:
@@ -171,6 +171,13 @@ func (s *scope) evalValue(v schema.Value) (any, error) {
 			return nil, err
 		}
 		return int64(len(list)), nil
+
+	case v.Slice != nil:
+		list, err := s.evalReducerInput("slice", v.Slice.Operand)
+		if err != nil {
+			return nil, err
+		}
+		return sliceList(list, v.Slice.From, v.Slice.To), nil
 
 	case v.Regex != nil:
 		from, err := s.evalValue(v.Regex.From)
@@ -367,6 +374,40 @@ func lastNonNil(list []any) any {
 		}
 	}
 	return nil
+}
+
+// sliceList returns the half-open sub-list list[from:to] with zero-based,
+// inclusive-from / exclusive-to bounds. A nil from means 0; a nil to means
+// len(list). Out-of-range and inverted bounds clamp to a (possibly empty)
+// sub-list rather than panicking, so a queue that under-runs its window
+// surfaces as an empty list instead of a runtime error. The result is a
+// fresh, non-nil slice: slice always yields a list, and the copy keeps the
+// caller from aliasing the operand's backing array when the sub-list is
+// written back to state.
+func sliceList(list []any, from, to *int) []any {
+	n := len(list)
+	lo, hi := 0, n
+	if from != nil {
+		lo = *from
+	}
+	if to != nil {
+		hi = *to
+	}
+	if lo < 0 {
+		lo = 0
+	}
+	if lo > n {
+		lo = n
+	}
+	if hi < lo {
+		hi = lo
+	}
+	if hi > n {
+		hi = n
+	}
+	out := make([]any, hi-lo)
+	copy(out, list[lo:hi])
+	return out
 }
 
 // applyRegex compiles pattern and applies it to in. capture selects the

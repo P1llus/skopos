@@ -249,6 +249,9 @@ func TestValueCodecs(t *testing.T) {
 		{"select", `{select: {branches: [{when: {literal_bool: true}, value: /gov}], default: /commercial}}`},
 		{"max", `{max: [{ref: state.a}, {ref: state.b}]}`},
 		{"regex", `{regex: {pattern: "v(\\d+)", from: {ref: state.tag}, capture: 1}}`},
+		{"slice_from", `{slice: {ref: state.queue, from: 1}}`},
+		{"slice_from_to", `{slice: {ref: state.queue, from: 1, to: 5}}`},
+		{"slice_over_list", `{slice: {list: [a, b, c, d], to: 2}}`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -342,6 +345,27 @@ func TestCodecRejections(t *testing.T) {
 		err := yaml.Unmarshal([]byte(`{eq: {path: state.x, value: 1}, present: state.x}`), &p)
 		if err == nil {
 			t.Fatalf("expected error for multi-key Predicate, got: %+v", p)
+		}
+	})
+
+	t.Run("slice_without_operand_rejected", func(t *testing.T) {
+		var v schema.Value
+		err := yaml.Unmarshal([]byte(`{slice: {from: 1}}`), &v)
+		if err == nil {
+			t.Fatalf("expected error for slice with no list operand, got: %+v", v)
+		}
+		if !strings.Contains(err.Error(), "operand") {
+			t.Errorf("error should mention the missing operand, got: %v", err)
+		}
+	})
+
+	t.Run("slice_unknown_operand_key_rejected", func(t *testing.T) {
+		var v schema.Value
+		// "form" is a typo for "from"; it survives the from/to filter and is
+		// rejected by the operand Value's own unknown-discriminator check.
+		err := yaml.Unmarshal([]byte(`{slice: {ref: state.q, form: 1}}`), &v)
+		if err == nil {
+			t.Fatalf("expected error for slice with stray key, got: %+v", v)
 		}
 	})
 
@@ -521,6 +545,8 @@ pagination:
 		{"ref_with_secret_default", schema.Value{Ref: &schema.RefValue{Path: schema.Path{Parts: []string{"state", "public"}}, Default: &secretRef}}, true},
 		{"add_with_secret_operand", schema.Value{Add: &schema.ArithExpr{Operands: []schema.Value{literal("a"), secretRef}}}, true},
 		{"max_with_secret_operand", schema.Value{Max: &secretRef}, true},
+		{"slice_with_secret_operand", schema.Value{Slice: &schema.SliceExpr{Operand: secretRef}}, true},
+		{"slice_with_public_operand", schema.Value{Slice: &schema.SliceExpr{Operand: publicRef}}, false},
 	}
 
 	for _, tc := range cases {

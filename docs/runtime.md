@@ -239,6 +239,28 @@ A cumulative high-water mark is written explicitly:
 events.*.timestamp}}]}`. The runner never guesses what "merging" means
 for a given field.
 
+### Worklist queues
+
+A *worklist* — a queue of pending items consumed one per page — is
+expressed from these primitives, with no dedicated runtime construct:
+
+- The queue is an ordinary persistent `state` field. A step gated `if:`
+  queue-empty refills it (`extract` of the listing's items) and captures
+  the listing's continuation cursor; a step gated `if:` queue-non-empty
+  fetches the head (`{first: {ref: state.queue}}`).
+- Because exactly one item's body is fetched and decoded per pagination
+  iteration, **memory stays bounded** regardless of queue length.
+- The consumed head is popped by a `progress` write that slices it off:
+  `from: {slice: {ref: state.queue, from: 1}}`. The pop is a `progress`
+  write (not a `pagination` advance) precisely so the queue stays
+  persistent — pagination `to:` targets are per-drain scratch.
+
+Persistence cadence makes the loop **at-least-once**: `state.queue` is
+written to the snapshot by the deferred `Save` at drain end. An
+un-graceful stop mid-drain reverts `state.queue` to the last persisted
+snapshot and reprocesses that batch on the next drain — duplicates, never
+loss.
+
 ---
 
 ## 6. Error semantics

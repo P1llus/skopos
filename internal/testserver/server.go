@@ -36,9 +36,8 @@ func (s *Server) Handler() http.Handler {
 }
 
 // AllScenarios returns every registered scenario in declaration order: the
-// six paginated/auth starter scenarios, the eight single-request
-// pagination.none variations, then the six multi-step / body-cursor
-// scenarios.
+// paginated/auth starter scenarios, the single-request pagination.none
+// variations, then the multi-step / body-cursor / decode-chain scenarios.
 func AllScenarios() []Scenario {
 	return []Scenario{
 		BearerSimple(),
@@ -72,6 +71,7 @@ func AllScenarios() []Scenario {
 		GzipJSON(),
 		CSVResponse(),
 		ZipCSV(),
+		Worklist(),
 	}
 }
 

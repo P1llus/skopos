@@ -1222,8 +1222,43 @@
       ],
       "type": "object"
     },
+    "SliceExpr": {
+      "additionalProperties": false,
+      "description": "List-slice operand: a list-shaped Value (ref, list, concat, select) given by its own discriminator key, plus optional zero-based integer from (inclusive start) and to (exclusive end). Out-of-range and inverted bounds clamp to a sub-list.",
+      "properties": {
+        "concat": {
+          "items": {
+            "$ref": "#/definitions/Value"
+          },
+          "minItems": 2,
+          "type": "array"
+        },
+        "default": {
+          "$ref": "#/definitions/Value"
+        },
+        "from": {
+          "type": "integer"
+        },
+        "list": {
+          "items": {
+            "$ref": "#/definitions/Value"
+          },
+          "type": "array"
+        },
+        "ref": {
+          "$ref": "#/definitions/Path"
+        },
+        "select": {
+          "$ref": "#/definitions/SelectValue"
+        },
+        "to": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "Value": {
-      "description": "Universal dynamic-value type (schema/value.go). A scalar string, integer, boolean, or null; or a single-discriminator expression object (ref, now, concat, select, format, base64, list, object, add, subtract, max, min, first, last, count, regex). A string scalar is scanned for ${path} interpolation.",
+      "description": "Universal dynamic-value type (schema/value.go). A scalar string, integer, boolean, or null; or a single-discriminator expression object (ref, now, concat, select, format, base64, list, object, add, subtract, max, min, first, last, count, slice, regex). A string scalar is scanned for ${path} interpolation.",
       "oneOf": [
         {
           "type": "string"
@@ -1453,6 +1488,18 @@
           },
           "required": [
             "count"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "slice": {
+              "$ref": "#/definitions/SliceExpr"
+            }
+          },
+          "required": [
+            "slice"
           ],
           "type": "object"
         },

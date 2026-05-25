@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -39,6 +40,7 @@ import (
 //	{first: <list-or-projection>}        → First (reducer)
 //	{last: <list-or-projection>}         → Last (reducer)
 //	{count: <list-or-projection>}        → Count (reducer)
+//	{slice: {<list-operand>, from?, to?}} → Slice (sub-list)
 //	{regex: {pattern, from, capture?, default?}} → Regex
 //
 // A map-shaped Value MUST carry exactly one discriminator key. There is no
@@ -116,6 +118,12 @@ type Value struct {
 	// Count is the {count: <list-or-projection>} reducer: cardinality.
 	Count *Value
 
+	// Slice is the {slice: {<list-operand>, from?, to?}} form: a contiguous
+	// sub-list of a list-shaped operand. Unlike the reducers it returns a
+	// list, so it composes as the operand of another list-consumer
+	// (reducer, fan_out.over, or a further slice).
+	Slice *SliceExpr
+
 	// Regex is the {regex: {pattern, from, capture?, default?}} form:
 	// apply a Go regular expression to the resolved string of From,
 	// returning the matched substring (or the chosen capture group when
@@ -142,6 +150,7 @@ var valueDiscriminatorKeys = []string{
 	"first",
 	"last",
 	"count",
+	"slice",
 	"regex",
 }
 
@@ -166,6 +175,7 @@ var valueVariantAllowedKeys = map[string]map[string]struct{}{
 	"first":          {"first": {}},
 	"last":           {"last": {}},
 	"count":          {"count": {}},
+	"slice":          {"slice": {}},
 	"regex":          {"regex": {}},
 }
 
@@ -249,6 +259,23 @@ type FormatValue struct {
 type ArithExpr struct {
 	// Operands holds the two positional operands.
 	Operands []Value
+}
+
+// SliceExpr is the {slice: {<list-operand>, from?, to?}} form. The list
+// operand is any list-shaped Value written by its own discriminator key
+// (ref, list, concat, select, …) alongside the optional From / To bounds, so
+// the canonical worklist pop reads {slice: {ref: state.queue, from: 1}}.
+//
+// From is the inclusive start index and To the exclusive end index; both are
+// zero-based. A nil From means 0, a nil To means len(list). Out-of-range and
+// inverted bounds clamp to a (possibly empty) sub-list rather than erroring.
+type SliceExpr struct {
+	// Operand is the list-shaped source Value.
+	Operand Value
+	// From is the inclusive start index. Nil means 0.
+	From *int
+	// To is the exclusive end index. Nil means len(list).
+	To *int
 }
 
 // RegexExpr is the {regex: {pattern, from, capture?, default?}} form.
@@ -457,6 +484,14 @@ func (v *Value) unmarshalYAMLMap(node *yaml.Node) error {
 		}
 		return nil
 
+	case "slice":
+		sl, err := decodeSliceYAML(node)
+		if err != nil {
+			return err
+		}
+		v.Slice = sl
+		return nil
+
 	case "regex":
 		var raw struct {
 			Regex RegexExpr `yaml:"regex"`
@@ -512,6 +547,63 @@ func decodeReducerOperandYAML(node *yaml.Node, disc string) (Value, error) {
 	return Value{}, fmt.Errorf("schema.Value %s at line %d: missing operand", disc, node.Line)
 }
 
+// decodeSliceYAML extracts a SliceExpr from the {slice: {...}} mapping at
+// node. The inner mapping carries the list operand under its own
+// discriminator key (ref / list / concat / select / …); from and to are
+// pulled out and the remaining keys are decoded as the operand Value. A
+// typo'd sibling therefore surfaces through the operand Value's own
+// unknown-key rejection rather than being silently dropped.
+func decodeSliceYAML(node *yaml.Node) (*SliceExpr, error) {
+	var inner *yaml.Node
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Kind == yaml.ScalarNode && node.Content[i].Value == "slice" {
+			inner = node.Content[i+1]
+			break
+		}
+	}
+	if inner == nil || inner.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("schema.Value slice at line %d: must be a mapping {<list-operand>, from?, to?}", node.Line)
+	}
+
+	var sl SliceExpr
+	operand := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	for i := 0; i+1 < len(inner.Content); i += 2 {
+		key, val := inner.Content[i], inner.Content[i+1]
+		switch key.Value {
+		case "from":
+			n, err := decodeSliceBound(val, "from")
+			if err != nil {
+				return nil, err
+			}
+			sl.From = n
+		case "to":
+			n, err := decodeSliceBound(val, "to")
+			if err != nil {
+				return nil, err
+			}
+			sl.To = n
+		default:
+			operand.Content = append(operand.Content, key, val)
+		}
+	}
+	if len(operand.Content) == 0 {
+		return nil, fmt.Errorf("schema.Value slice at line %d: requires a list operand, e.g. {ref: state.queue, from: 1}", inner.Line)
+	}
+	if err := operand.Decode(&sl.Operand); err != nil {
+		return nil, fmt.Errorf("schema.Value slice operand at line %d: %w", inner.Line, err)
+	}
+	return &sl, nil
+}
+
+// decodeSliceBound decodes a slice from/to bound node into an *int.
+func decodeSliceBound(node *yaml.Node, field string) (*int, error) {
+	var n int
+	if err := node.Decode(&n); err != nil {
+		return nil, fmt.Errorf("schema.Value slice.%s at line %d: %w", field, node.Line, err)
+	}
+	return &n, nil
+}
+
 // valueVariants returns the (name, payload) pairs for every Value variant
 // that is currently set, in the declaration order of valueDiscriminatorKeys
 // plus the bare-scalar variants. literal_int and literal_bool are listed
@@ -544,6 +636,7 @@ func valueVariants(v Value) (names []string, payloads []any) {
 	add("first", v.First, v.First != nil)
 	add("last", v.Last, v.Last != nil)
 	add("count", v.Count, v.Count != nil)
+	add("slice", v.Slice, v.Slice != nil)
 	add("regex", v.Regex, v.Regex != nil)
 	return names, payloads
 }
@@ -592,7 +685,7 @@ func pickValueDiscriminator(keys map[string]struct{}) (string, error) {
 		return "", fmt.Errorf("no recognised discriminator key " +
 			"(want one of literal_string|ref|now|concat|select|" +
 			"format|base64|list|object|add|subtract|max|min|first|" +
-			"last|count|regex); wrap a literal map in {object: {...}}")
+			"last|count|slice|regex); wrap a literal map in {object: {...}}")
 	case 1:
 		return matches[0], nil
 	default:
@@ -817,11 +910,42 @@ func (v Value) MarshalYAML() (any, error) {
 	case v.Count != nil:
 		return map[string]any{"count": *v.Count}, nil
 
+	case v.Slice != nil:
+		inner, err := v.Slice.marshalInner(v.Slice.Operand.MarshalYAML)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"slice": inner}, nil
+
 	case v.Regex != nil:
 		return map[string]any{"regex": v.Regex}, nil
 	}
 
 	return nil, fmt.Errorf("schema.Value: zero value cannot be marshalled; for an explicit absent value set IsZero, for an empty string use literal_string: \"\"")
+}
+
+// marshalInner renders the slice's inner mapping: the operand's own
+// single-key map representation (from marshalOperand) merged with the
+// from / to bounds. List-shaped operands always marshal to a mapping, and
+// none of them carry a top-level from / to key, so the merge is unambiguous.
+func (s *SliceExpr) marshalInner(marshalOperand func() (any, error)) (map[string]any, error) {
+	op, err := marshalOperand()
+	if err != nil {
+		return nil, fmt.Errorf("schema.Value slice operand: %w", err)
+	}
+	m, ok := op.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("schema.Value: slice operand must marshal to a mapping, got %T", op)
+	}
+	inner := make(map[string]any, len(m)+2)
+	maps.Copy(inner, m)
+	if s.From != nil {
+		inner["from"] = *s.From
+	}
+	if s.To != nil {
+		inner["to"] = *s.To
+	}
+	return inner, nil
 }
 
 // ---- JSON unmarshalling ----
@@ -1018,6 +1142,14 @@ func (v *Value) unmarshalJSONMap(data []byte) error {
 		}
 		return nil
 
+	case "slice":
+		sl, err := decodeSliceJSON(raw["slice"])
+		if err != nil {
+			return fmt.Errorf("schema.Value.slice: %w", err)
+		}
+		v.Slice = sl
+		return nil
+
 	case "regex":
 		var r RegexExpr
 		if err := json.Unmarshal(raw["regex"], &r); err != nil {
@@ -1050,6 +1182,49 @@ func decodeReducerOperandJSON(raw json.RawMessage) (Value, error) {
 		return Value{}, err
 	}
 	return inner, nil
+}
+
+// decodeSliceJSON parses a SliceExpr from the {slice: {...}} object body. It
+// mirrors decodeSliceYAML: from / to are pulled out and the remaining keys
+// re-marshal into the operand Value, so a stray key is rejected by the
+// operand's own decoder.
+func decodeSliceJSON(raw json.RawMessage) (*SliceExpr, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+
+	var sl SliceExpr
+	operand := make(map[string]json.RawMessage, len(fields))
+	for k, val := range fields {
+		switch k {
+		case "from":
+			var n int
+			if err := json.Unmarshal(val, &n); err != nil {
+				return nil, fmt.Errorf("from: %w", err)
+			}
+			sl.From = &n
+		case "to":
+			var n int
+			if err := json.Unmarshal(val, &n); err != nil {
+				return nil, fmt.Errorf("to: %w", err)
+			}
+			sl.To = &n
+		default:
+			operand[k] = val
+		}
+	}
+	if len(operand) == 0 {
+		return nil, fmt.Errorf("requires a list operand, e.g. {ref: state.queue, from: 1}")
+	}
+	operandJSON, err := json.Marshal(operand)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(operandJSON, &sl.Operand); err != nil {
+		return nil, err
+	}
+	return &sl, nil
 }
 
 // ---- JSON marshalling ----
@@ -1162,6 +1337,25 @@ func (v Value) MarshalJSON() ([]byte, error) {
 		}
 		return json.Marshal(countOut{Count: *v.Count})
 
+	case v.Slice != nil:
+		opJSON, err := json.Marshal(v.Slice.Operand)
+		if err != nil {
+			return nil, fmt.Errorf("schema.Value slice operand: %w", err)
+		}
+		inner := map[string]json.RawMessage{}
+		if err := json.Unmarshal(opJSON, &inner); err != nil {
+			return nil, fmt.Errorf("schema.Value: slice operand must marshal to an object: %w", err)
+		}
+		if v.Slice.From != nil {
+			b, _ := json.Marshal(*v.Slice.From)
+			inner["from"] = b
+		}
+		if v.Slice.To != nil {
+			b, _ := json.Marshal(*v.Slice.To)
+			inner["to"] = b
+		}
+		return json.Marshal(map[string]map[string]json.RawMessage{"slice": inner})
+
 	case v.Regex != nil:
 		type regexOut struct {
 			Regex *RegexExpr `json:"regex"`
@@ -1195,6 +1389,7 @@ func (v Value) MarshalJSON() ([]byte, error) {
 //   - Object map values
 //   - Add / Subtract operand pairs
 //   - Max / Min / First / Last / Count reducer operands
+//   - Slice operand
 //   - Regex.From and Regex.Default
 //
 // Predicate.Eq.Path is checked the same way as a state.<name> Ref. Literal
@@ -1273,6 +1468,10 @@ func IsSecret(d *Doc, v Value) bool {
 		}
 	case v.Count != nil:
 		if IsSecret(d, *v.Count) {
+			return true
+		}
+	case v.Slice != nil:
+		if IsSecret(d, v.Slice.Operand) {
 			return true
 		}
 	case v.Regex != nil:

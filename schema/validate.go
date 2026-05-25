@@ -885,6 +885,10 @@ func (v *validator) checkValue(path string, val Value, sc *scope) {
 	case val.Count != nil:
 		v.checkReducerOperand(path+".count", "count", *val.Count, sc)
 
+	case val.Slice != nil:
+		v.checkValue(path+".slice", val.Slice.Operand, sc)
+		v.checkListShapedValue(path+".slice", "slice operand", val.Slice.Operand)
+
 	case val.Regex != nil:
 		if val.Regex.Pattern == "" {
 			v.errorf(path+".regex.pattern", "pattern is required")

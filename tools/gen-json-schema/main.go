@@ -117,6 +117,7 @@ var handAuthored = map[string]bool{
 	"PredicateEq": true,
 	"SelectValue": true,
 	"Reducer":     true,
+	"SliceExpr":   true,
 	"RegexExpr":   true,
 	// Sub-structs reached only through the hand-authored fragments above;
 	// never emitted from the AST.
@@ -304,7 +305,7 @@ func oneLine(s string) string {
 // schema/predicate.go, so it cannot be derived from the Go struct fields.
 const handDefsJSON = `{
   "Value": {
-    "description": "Universal dynamic-value type (schema/value.go). A scalar string, integer, boolean, or null; or a single-discriminator expression object (ref, now, concat, select, format, base64, list, object, add, subtract, max, min, first, last, count, regex). A string scalar is scanned for ${path} interpolation.",
+    "description": "Universal dynamic-value type (schema/value.go). A scalar string, integer, boolean, or null; or a single-discriminator expression object (ref, now, concat, select, format, base64, list, object, add, subtract, max, min, first, last, count, slice, regex). A string scalar is scanned for ${path} interpolation.",
     "oneOf": [
       {"type": "string"},
       {"type": "integer"},
@@ -326,8 +327,23 @@ const handDefsJSON = `{
       {"type": "object", "required": ["first"], "additionalProperties": false, "properties": {"first": {"$ref": "#/definitions/Reducer"}}},
       {"type": "object", "required": ["last"], "additionalProperties": false, "properties": {"last": {"$ref": "#/definitions/Reducer"}}},
       {"type": "object", "required": ["count"], "additionalProperties": false, "properties": {"count": {"$ref": "#/definitions/Reducer"}}},
+      {"type": "object", "required": ["slice"], "additionalProperties": false, "properties": {"slice": {"$ref": "#/definitions/SliceExpr"}}},
       {"type": "object", "required": ["regex"], "additionalProperties": false, "properties": {"regex": {"$ref": "#/definitions/RegexExpr"}}}
     ]
+  },
+  "SliceExpr": {
+    "description": "List-slice operand: a list-shaped Value (ref, list, concat, select) given by its own discriminator key, plus optional zero-based integer from (inclusive start) and to (exclusive end). Out-of-range and inverted bounds clamp to a sub-list.",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "ref": {"$ref": "#/definitions/Path"},
+      "default": {"$ref": "#/definitions/Value"},
+      "list": {"type": "array", "items": {"$ref": "#/definitions/Value"}},
+      "concat": {"type": "array", "minItems": 2, "items": {"$ref": "#/definitions/Value"}},
+      "select": {"$ref": "#/definitions/SelectValue"},
+      "from": {"type": "integer"},
+      "to": {"type": "integer"}
+    }
   },
   "Reducer": {
     "description": "Reducer operand: a bare array of Values (sugar for {list: [...]}) or a single list-shaped Value projection.",

@@ -227,6 +227,107 @@ func TestEvalValueReducers(t *testing.T) {
 	}
 }
 
+// TestEvalValueSlice covers the {slice: {<operand>, from?, to?}} form: the
+// worklist pop (drop the head), bounded windows, the clamping contract for
+// out-of-range / inverted bounds, and the empty-operand case. It also pins
+// the reducers (first/count) reading a list straight out of state, the
+// emptiness-test the worklist relies on.
+func TestEvalValueSlice(t *testing.T) {
+	queue := func() []any { return []any{"a", "b", "c", "d"} }
+	s := newTestScope(t, map[string]any{"queue": queue()})
+
+	cases := []struct {
+		name string
+		v    schema.Value
+		want any
+	}{
+		{
+			name: "drop_head",
+			v:    schema.Value{Slice: &schema.SliceExpr{Operand: vRef("state.queue"), From: new(1)}},
+			want: []any{"b", "c", "d"},
+		},
+		{
+			name: "bounded_window",
+			v:    schema.Value{Slice: &schema.SliceExpr{Operand: vRef("state.queue"), From: new(1), To: new(3)}},
+			want: []any{"b", "c"},
+		},
+		{
+			name: "to_only",
+			v:    schema.Value{Slice: &schema.SliceExpr{Operand: vRef("state.queue"), To: new(2)}},
+			want: []any{"a", "b"},
+		},
+		{
+			name: "from_beyond_len_clamps_empty",
+			v:    schema.Value{Slice: &schema.SliceExpr{Operand: vRef("state.queue"), From: new(9)}},
+			want: []any{},
+		},
+		{
+			name: "to_beyond_len_clamps_to_len",
+			v:    schema.Value{Slice: &schema.SliceExpr{Operand: vRef("state.queue"), From: new(2), To: new(99)}},
+			want: []any{"c", "d"},
+		},
+		{
+			name: "inverted_bounds_clamp_empty",
+			v:    schema.Value{Slice: &schema.SliceExpr{Operand: vRef("state.queue"), From: new(3), To: new(1)}},
+			want: []any{},
+		},
+		{
+			name: "negative_from_clamps_to_zero",
+			v:    schema.Value{Slice: &schema.SliceExpr{Operand: vRef("state.queue"), From: new(-1), To: new(2)}},
+			want: []any{"a", "b"},
+		},
+		{
+			name: "absent_operand_yields_empty_list",
+			v:    schema.Value{Slice: &schema.SliceExpr{Operand: vRef("state.missing"), From: new(1)}},
+			want: []any{},
+		},
+		{
+			name: "slice_over_literal_list",
+			v:    schema.Value{Slice: &schema.SliceExpr{Operand: vList(vInt(1), vInt(2), vInt(3)), From: new(1)}},
+			want: []any{int64(2), int64(3)},
+		},
+		// Reducers reading a list straight out of state — the worklist's head
+		// read and emptiness test.
+		{
+			name: "first_over_state_list",
+			v:    schema.Value{First: new(vRef("state.queue"))},
+			want: "a",
+		},
+		{
+			name: "count_over_state_list",
+			v:    schema.Value{Count: new(vRef("state.queue"))},
+			want: int64(4),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := s.evalValue(tc.v)
+			if err != nil {
+				t.Fatalf("evalValue: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEvalValueSliceComposes pins that a slice result is itself a list, so it
+// can feed a reducer (count of a slice) — the property that lets slice nest
+// inside other list-consumers.
+func TestEvalValueSliceComposes(t *testing.T) {
+	s := newTestScope(t, map[string]any{"queue": []any{"a", "b", "c"}})
+	v := schema.Value{Count: new(schema.Value{Slice: &schema.SliceExpr{Operand: vRef("state.queue"), From: new(1)}})}
+	got, err := s.evalValue(v)
+	if err != nil {
+		t.Fatalf("evalValue: %v", err)
+	}
+	if got != int64(2) {
+		t.Errorf("count of slice = %#v, want 2", got)
+	}
+}
+
 // TestToString pins the stringification used by Concat and equality
 // helpers.
 func TestToString(t *testing.T) {

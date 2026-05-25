@@ -1,0 +1,95 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
+# worklist — a persisted queue of work items consumed one per page.
+#
+# Demonstrates: expressing a worklist from primitives. A listing endpoint
+# yields item ids; each item is fetched, decoded, and emitted on its own. The
+# queue lives in state.queue (an ordinary persistent field), so a long run
+# resumes where it left off, and only one item's body is resident at a time.
+#
+# How the pieces compose:
+#   - The manifest step is gated `if:` queue-empty (and the listing is not yet
+#     exhausted). It refills state.queue from the listing and extracts the
+#     listing's continuation cursor + has_more flag into persistent state — no
+#     separate durable-cursor mechanism is needed.
+#   - The consume step is gated `if:` queue-non-empty. It fetches the head
+#     ({first: {ref: state.queue}}), so exactly one item's decoded body is
+#     resident per page; memory stays bounded for free.
+#   - progress pops the consumed head with the slice primitive
+#     ({slice: {ref: state.queue, from: 1}}) — a list minus its head.
+#   - pagination loops until the queue is empty AND the listing is exhausted.
+#     The counter `to` is per-drain bookkeeping; the queue shrink stays in
+#     progress so state.queue is persistent (survives drains).
+#
+# The bodies are gzip-compressed JSON file payloads, so the decode chain
+# decompresses then decodes JSON before events_at locates the list.
+
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+  api_key:
+    type: secret
+    default: "test-bearer-token-12345"
+  queue:
+    type: string # holds the list of pending item ids at runtime
+  cursor:
+    type: string
+    default: ""
+  more:
+    type: bool
+    default: true
+  page_index:
+    type: int # per-drain pagination bookkeeping
+
+auth:
+  bearer:
+    token: {ref: state.api_key}
+
+requests:
+  # Refill: when the queue is drained and the listing still has pages, fetch
+  # the next manifest page and load its item ids into state.queue.
+  - id: manifest
+    method: GET
+    url: "${state.url}/worklist/manifest"
+    query:
+      cursor: {ref: state.cursor}
+    if:
+      and:
+        - {not: {present: state.queue}}
+        - {eq: {path: state.more, value: true}}
+    extract:
+      - {to: state.queue, from: response.body.items}
+      - {to: state.cursor, from: response.body.next_cursor}
+      - {to: state.more, from: response.body.has_more}
+
+  # Consume: fetch the queue head and emit its events.
+  - id: consume
+    method: GET
+    url: {concat: ["${state.url}/worklist/items/", {first: {ref: state.queue}}]}
+    if: {present: state.queue}
+    produces_events: true
+
+response:
+  decode:
+    - gzip: {}
+    - json: {}
+  # The consume body is a JSON array of events; events_at is the body root.
+  events_at: ""
+
+pagination:
+  counter:
+    to: state.page_index
+    terminate_when:
+      and:
+        - {not: {present: state.queue}}
+        - {eq: {path: state.more, value: false}}
+
+progress:
+  # Pop the consumed head off the queue.
+  - to: state.queue
+    from: {slice: {ref: state.queue, from: 1}}
+
+error:
+  mode: standard

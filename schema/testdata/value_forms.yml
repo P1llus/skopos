@@ -1,5 +1,6 @@
 # Exercises Value forms that no other fixture covers: base64, list,
-# {subtract: [{now: true}, ...]}, literal_int.
+# {subtract: [{now: true}, ...]}, literal_int, slice, and reducers
+# (first/count) over a state-list ref.
 
 ir_version: "1"
 
@@ -13,6 +14,8 @@ state:
   raw_marker:
     type: string
     default: "fingerprint:abc123"
+  queue:
+    type: string   # holds a list of pending item ids at runtime (worklist)
 
 auth:
   bearer:
@@ -27,6 +30,8 @@ requests:
       since:  {format: rfc3339, value: {subtract: [{now: true}, "24h"]}}
       scopes: {list: ["audit", "security", "ingest"]}
       limit:  100   # YAML scalar → Value.LiteralInt (no discriminator key form)
+      head:      {first: {ref: state.queue}}   # reducer over a state-list ref
+      remaining: {count: {ref: state.queue}}   # emptiness test over a state-list ref
 
 response:
   decode: json
@@ -35,7 +40,10 @@ response:
 pagination:
   none: {}
 
-progress: []
+progress:
+  # Pop the queue head: a slice that drops index 0 (the worklist primitive).
+  - to: state.queue
+    from: {slice: {ref: state.queue, from: 1}}
 
 error:
   mode: standard

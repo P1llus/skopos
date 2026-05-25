@@ -914,6 +914,7 @@ structured forms use a discriminator key.
 | `{first: <list-or-projection>}`                     | reducer — first element in declared order. |
 | `{last: <list-or-projection>}`                      | reducer — last element in declared order. |
 | `{count: <list-or-projection>}`                     | reducer — number of elements. |
+| `{slice: {<list-operand>, from?: <int>, to?: <int>}}` | contiguous sub-list of a list-shaped operand. |
 | `{regex: {pattern: <string>, from: <Value>, capture?: <int>, default?: <Value>}}` | extracted substring. |
 
 ### String interpolation
@@ -969,6 +970,47 @@ Reducer inputs may be empty; in that case the reducer's result is a
 zero Value (no exception). Predicates downstream of an empty reducer
 behave the same way as predicates over any other absent path
 (`{present: ...}` returns false; comparisons return false).
+
+### Slice
+
+`slice` returns a contiguous sub-list of a list-shaped operand. Unlike
+the reducers it returns a *list*, so it composes as the operand of
+another list-consumer (a reducer, `fan_out.over`, or a further slice).
+
+The operand is any list-shaped Value, written under its own
+discriminator key alongside the optional bounds:
+
+| Field   | Required | Meaning |
+|---------|----------|---------|
+| operand | yes      | A list-shaped Value (`ref`, `list`, `concat`, `select`) under its own key. |
+| `from`  | no       | Zero-based inclusive start index. Defaults to 0. |
+| `to`    | no       | Zero-based exclusive end index. Defaults to the operand length. |
+
+```yaml
+{slice: {ref: state.queue, from: 1}}        # drop the head
+{slice: {ref: state.queue, from: 1, to: 5}} # bounded window
+{slice: {list: [a, b, c, d], to: 2}}        # first two of a literal list
+```
+
+Out-of-range and inverted bounds **clamp** to a (possibly empty)
+sub-list rather than erroring: `from` past the end yields an empty
+list, `to` past the end clamps to the length, and `from >= to` yields
+an empty list. An absent operand resolves to an empty list.
+
+The canonical use is a *worklist*: a queue of pending work items held
+in a persistent `state` field, refilled by `extract` and consumed one
+item per page. `{first: {ref: state.queue}}` reads the head and
+`{count: {ref: state.queue}}` tests emptiness; popping the head is a
+`progress` write that slices it off:
+
+```yaml
+progress:
+  - to: state.queue
+    from: {slice: {ref: state.queue, from: 1}}
+```
+
+The bundled `worklist` template (`skopos template show worklist`) is a
+complete worked example.
 
 ### Arithmetic
 

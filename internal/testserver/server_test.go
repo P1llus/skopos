@@ -69,8 +69,8 @@ func TestHandler_UnknownPath(t *testing.T) {
 	}
 }
 
-// TestHandler_AllScenarios asserts that AllScenarios() registers all 20
-// scenarios and that each entry point returns its expected status (not 404)
+// TestHandler_AllScenarios asserts that AllScenarios() registers every
+// scenario and that each entry point returns its expected status (not 404)
 // with valid auth.
 func TestHandler_AllScenarios(t *testing.T) {
 	opts := testserver.Options{
@@ -131,6 +131,8 @@ func TestHandler_AllScenarios(t *testing.T) {
 		{http.MethodGet, "/scroll_id/scroll", bearer, 0},
 		{http.MethodPost, "/session_cookie/login", noAuth, 0},
 		{http.MethodGet, "/fanout/incidents", bearer, 0},
+		{http.MethodGet, "/worklist/manifest", bearer, 0},
+		{http.MethodGet, "/worklist/items/item-a", bearer, 0},
 	}
 
 	for _, c := range cases {
