@@ -22,15 +22,24 @@ description, every code comment, every doc, and every issue you create.
 docstrings, and normal GitHub issues describe what exists today. They
 do not contain:
 
-- "deferred", "out of scope", "future work", "TODO", "not yet
+- Roadmap framing of any kind, or the language that signals it:
+  "deferred", "out of scope", "future work", "TODO", "not yet
   implemented", "open question", "next phase", "next slice"
-- Pointers to features that are not in the code at HEAD
-- Roadmap framing of any kind
+- Prose describing features that are not in the code at HEAD
 
-Forward-looking material belongs in one of these places — *only* these:
+One narrow exception: you may state a current limitation and point to
+the GitHub issue that tracks it — e.g. "Only `json` and `ndjson` are
+decoded (see #123)". The pointer must be a bare link to the issue, and
+the banned framing words above are still banned even next to it. This
+is allowed because a GitHub issue is a stable reference that carries
+its own state — it closes when the work lands — whereas a paragraph of
+roadmap prose in a doc just rots in place. So the doc states the fact
+("only X is supported"); the issue, not the doc, holds the
+forward-looking detail.
 
-- A `PLAN.md` (or similar) created for that planning effort
-- A GitHub issue explicitly tagged as a feature/planning tracker
+Longer-form planning that does not fit in an issue belongs in a
+`PLAN.md` (or similar) created for that planning effort — never in the
+docs, comments, or `doc.go` narratives.
 
 Parts of the existing tree may still violate this rule. That is not
 permission to copy the pattern — fix it if you are already editing the
@@ -44,7 +53,10 @@ surfaces on pkg.go.dev must:
 - Describe what the code *is and does* — never what it used to do, why
   the slice exists, which plan it came from, or what is deferred.
 - Not link to `PLAN.md`, `docs/planning/IMPL-XX`, work-slice numbers,
-  or any document that will go stale within a week.
+  or any document that will go stale within a week. A stable GitHub
+  issue link is the one permitted exception: pointing at the issue that
+  tracks a known limitation is fine, because the issue keeps its own
+  state; pointing at prose that rots is not.
 - Follow the pkg.go.dev contract enforced by `.golangci.yml`
   (`staticcheck` ST1000/ST1020/ST1021, `revive` `exported`): every
   package has a `// Package <name>` comment in `doc.go`; every

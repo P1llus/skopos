@@ -475,21 +475,23 @@ The validator rejects the combination.
 
 ## 14. Non-goals
 
-- **Code generation.** The runner is in-process. A future
-  code-emitting backend would be a separate package, not a runner
-  concern.
+- **Code generation.** The runner is in-process: it interprets the IR
+  directly rather than emitting code.
 - **Retry / backoff / rate-limit policy.** Inherited from the IR's
-  non-goal; the runner runs whatever the injected transport does.
+  non-goal; the runner runs whatever the injected transport does
+  (see #56).
 - **mTLS, proxy, custom DNS, redirect policy.** Caller plugs an
   `*http.Client`.
-- **Multi-process / RPC dispatch.** Out of scope.
+- **Multi-process / RPC dispatch.** The runner executes in a single
+  process; it does not fan work out across processes or over RPC.
 - **OAuth2 interactive grants** (`authorization_code`, `device_code`,
   PKCE). The pull-loop has no browser-roundtrip surface.
-- **HMAC / OAuth1 signing.** Out of scope until a structured signing
-  `Value` lands. (AWS SigV4 is supported — see `auth.sigv4`.)
+- **HMAC / OAuth1 signing.** AWS SigV4 is the one signing scheme
+  implemented — see `auth.sigv4` (broader per-request signing: see #52,
+  built on the crypto `Value` foundation in #51).
 - **Scheduling.** `Runner.Drain` is one pull session. Sleeping,
   cron-like dispatch, and multi-template orchestration belong above
   the runner.
 - **MIME-chain decoding** (ZIP, gzip, CSV inside an HTTP body).
-  `response.decode` is a closed `json | ndjson` enum; MIME chaining
-  is expected to live in the ingest pipeline.
+  `response.decode` is a closed `json | ndjson` enum; body-level
+  de-framing is not decoded (see #55).
