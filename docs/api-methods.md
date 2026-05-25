@@ -975,7 +975,7 @@ set: `skip`, `fail`, `empty_events`, or `invalidate_cache`.
 | `invalidate_cache` | Drop the cached value backing the active auth's `cache.<name>` slot AND every `requests[].cache` slot, then treat the response as a non-event "retry next iteration" signal. |
 
 `on_status` is a map keyed by exact HTTP status code in `[100, 599]`.
-There is no `retry` verb until the retry/backoff contract lands.
+There is no `retry` verb (see #56).
 
 ```yaml
 requests:
