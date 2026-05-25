@@ -19,13 +19,11 @@ auth:
 requests:
   - method: GET
     url: "${state.url}/csv_response/gzip"
-
-response:
-  decode:
-    - gzip: {}
-    - csv:
-        header: present
-  events_at: ""
+    decode:
+      - gzip: {}
+      - csv:
+          header: present
+    events_at: ""
 
 pagination:
   none: {}

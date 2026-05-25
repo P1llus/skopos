@@ -37,10 +37,7 @@ requests:
     query:
       since: {ref: state.last_timestamp}
       limit: "${state.page_size}"
-
-response:
-  decode: json
-  events_at: response.body.alerts
+    events_at: response.body.alerts
 
 pagination:
   next_url:

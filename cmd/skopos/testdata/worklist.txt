@@ -4,7 +4,9 @@
 # head per page and the slice progress write pops it. Across the drain the
 # refill fires twice (once per manifest page) and three items are consumed,
 # each yielding two events — 5 HTTP exchanges, 6 events in queue order.
-# Bodies are gzip+json, so the decode chain decompresses before decoding.
+# The two steps use different wire encodings: the manifest is plain JSON, while
+# each item is a gzip-compressed CSV payload, so the consume step's decode chain
+# decompresses then parses CSV rows as events (string-valued fields).
 # The spec is loaded live from the embedded template.
 
 exec skopos template show -o spec.yml worklist
@@ -15,15 +17,15 @@ cmp trace.jsonl want_trace.jsonl
 cmp events.jsonl want_events.jsonl
 
 -- want_trace.jsonl --
-{"elapsed":"<scrubbed>","iteration":1,"method":"GET","query":{"cursor":"<ref state.cursor>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 82 bytes, non-json","started_at":"<scrubbed>","status":200,"step_id":"manifest","url":"$URL_HOST/worklist/manifest"}
-{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 110 bytes, non-json","started_at":"<scrubbed>","status":200,"step_id":"consume","url":"$URL_HOST/worklist/items/item-a"}
-{"elapsed":"<scrubbed>","iteration":2,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 110 bytes, non-json","started_at":"<scrubbed>","status":200,"step_id":"consume","url":"$URL_HOST/worklist/items/item-b"}
-{"elapsed":"<scrubbed>","iteration":3,"method":"GET","query":{"cursor":"<ref state.cursor>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 75 bytes, non-json","started_at":"<scrubbed>","status":200,"step_id":"manifest","url":"$URL_HOST/worklist/manifest"}
-{"elapsed":"<scrubbed>","iteration":3,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 110 bytes, non-json","started_at":"<scrubbed>","status":200,"step_id":"consume","url":"$URL_HOST/worklist/items/item-c"}
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","query":{"cursor":"<ref state.cursor>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 71 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"manifest","url":"$URL_HOST/worklist/manifest"}
+{"elapsed":"<scrubbed>","iteration":1,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 94 bytes, non-json","started_at":"<scrubbed>","status":200,"step_id":"consume","url":"$URL_HOST/worklist/items/item-a"}
+{"elapsed":"<scrubbed>","iteration":2,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 94 bytes, non-json","started_at":"<scrubbed>","status":200,"step_id":"consume","url":"$URL_HOST/worklist/items/item-b"}
+{"elapsed":"<scrubbed>","iteration":3,"method":"GET","query":{"cursor":"<ref state.cursor>"},"request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 55 bytes, object-like","started_at":"<scrubbed>","status":200,"step_id":"manifest","url":"$URL_HOST/worklist/manifest"}
+{"elapsed":"<scrubbed>","iteration":3,"method":"GET","request_headers":{"Accept":"application/json, application/x-ndjson;q=0.9, */*;q=0.1","Authorization":"<redacted>"},"response_body":"body 94 bytes, non-json","started_at":"<scrubbed>","status":200,"step_id":"consume","url":"$URL_HOST/worklist/items/item-c"}
 -- want_events.jsonl --
-{"id":"item-a-evt-1","item":"item-a","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
-{"id":"item-a-evt-2","item":"item-a","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}
-{"id":"item-b-evt-1","item":"item-b","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
-{"id":"item-b-evt-2","item":"item-b","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}
-{"id":"item-c-evt-1","item":"item-c","seq_num":1,"timestamp":"2026-01-01T00:00:00Z"}
-{"id":"item-c-evt-2","item":"item-c","seq_num":2,"timestamp":"2026-01-01T00:00:01Z"}
+{"id":"item-a-evt-1","item":"item-a","seq_num":"1","timestamp":"2026-01-01T00:00:00Z"}
+{"id":"item-a-evt-2","item":"item-a","seq_num":"2","timestamp":"2026-01-01T00:00:01Z"}
+{"id":"item-b-evt-1","item":"item-b","seq_num":"1","timestamp":"2026-01-01T00:00:00Z"}
+{"id":"item-b-evt-2","item":"item-b","seq_num":"2","timestamp":"2026-01-01T00:00:01Z"}
+{"id":"item-c-evt-1","item":"item-c","seq_num":"1","timestamp":"2026-01-01T00:00:00Z"}
+{"id":"item-c-evt-2","item":"item-c","seq_num":"2","timestamp":"2026-01-01T00:00:01Z"}

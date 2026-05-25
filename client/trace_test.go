@@ -85,13 +85,12 @@ func TestTracer_CacheHitTombstone(t *testing.T) {
 				},
 			},
 			{
-				ID:             "events",
-				Method:         "GET",
-				URL:            mustInterp("${state.url}/events"),
-				ProducesEvents: true,
+				ID:       "events",
+				Method:   "GET",
+				URL:      mustInterp("${state.url}/events"),
+				EventsAt: pathPtr("response.body.events"),
 			},
 		},
-		Response: schema.Response{Decode: decodeJSON(), EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{CursorToken: &schema.CursorTokenPagination{
 			From: mustPath("response.body.next_cursor"),
 			To:   mustPath("state.next_token"),

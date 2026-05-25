@@ -13,9 +13,6 @@ type Doc struct {
 	Auth Auth `yaml:"auth" json:"auth"`
 	// Requests is the ordered list of HTTP requests run on every iteration.
 	Requests []Request `yaml:"requests" json:"requests"`
-	// Response describes how to decode the producer step's body and where
-	// the events list lives.
-	Response Response `yaml:"response" json:"response"`
 	// Pagination is the discriminated-union pagination block. Exactly one
 	// variant.
 	Pagination Pagination `yaml:"pagination" json:"pagination"`
@@ -233,6 +230,12 @@ type Request struct {
 	Headers map[string]Value `yaml:"headers,omitempty" json:"headers,omitempty"`
 	// Body is the request body. Discriminated-union (json/form/raw).
 	Body *Body `yaml:"body,omitempty" json:"body,omitempty"`
+	// Decode is the per-step response body decode chain: a scalar
+	// "json"/"ndjson", or a list of byte-transform stages (gzip, zip)
+	// ending in one terminal decoder (csv, json, ndjson). See DecodeChain.
+	// Omitted (nil) decodes the body as json; an explicit empty list is
+	// rejected.
+	Decode DecodeChain `yaml:"decode,omitempty" json:"decode,omitempty"`
 	// Extract pulls named values out of the response body or headers.
 	Extract []ExtractVar `yaml:"extract,omitempty" json:"extract,omitempty"`
 	// FanOut lifts the step into a per-item iteration over a list Value.
@@ -250,9 +253,13 @@ type Request struct {
 	// OnStatus maps a specific HTTP status code to a per-step dispatcher
 	// verb (skip / fail / empty_events / invalidate_cache).
 	OnStatus map[int]string `yaml:"on_status,omitempty" json:"on_status,omitempty"`
-	// ProducesEvents marks this step as the events producer. At most
-	// one in the chain; defaults to the last request.
-	ProducesEvents bool `yaml:"produces_events,omitempty" json:"produces_events,omitempty"`
+	// EventsAt marks this step as the events producer and locates the
+	// events list within a decoded body. A nil pointer means the step is
+	// not the producer; a non-nil pointer (even an empty Path) marks it.
+	// The Path is rooted at response.body.<path> or steps.<id>.body.<path>;
+	// the empty Path means the decoded body root IS the events list.
+	// Exactly one request must set it.
+	EventsAt *Path `yaml:"events_at,omitempty" json:"events_at,omitempty"`
 	// Cache wraps the step in a generic step-level expiry cache.
 	// Mutually exclusive with FanOut.
 	Cache *Cache `yaml:"cache,omitempty" json:"cache,omitempty"`
@@ -301,21 +308,6 @@ type Body struct {
 	Form map[string]Value `yaml:"form,omitempty" json:"form,omitempty"`
 	// Raw selects the literal-body variant.
 	Raw *Value `yaml:"raw,omitempty" json:"raw,omitempty"`
-}
-
-// ---- Response ----
-
-// Response describes how to decode the producer step's body and locate the
-// events list.
-type Response struct {
-	// Decode is the body decode chain: a scalar "json"/"ndjson", or a list
-	// of byte-transform stages (gzip, zip) ending in one terminal decoder
-	// (csv, json, ndjson). See DecodeChain.
-	Decode DecodeChain `yaml:"decode" json:"decode"`
-	// EventsAt is the namespace-rooted Path locating the events list,
-	// rooted at response.body.<path> or steps.<id>.body.<path>. The zero
-	// (empty) Path means "the body root IS the events list".
-	EventsAt Path `yaml:"events_at" json:"events_at"`
 }
 
 // ---- Pagination ----

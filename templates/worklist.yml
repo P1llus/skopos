@@ -20,8 +20,9 @@
 #     The counter `to` is per-drain bookkeeping; the queue shrink stays in
 #     progress so state.queue is persistent (survives drains).
 #
-# The bodies are gzip-compressed JSON file payloads, so the decode chain
-# decompresses then decodes JSON before events_at locates the list.
+# The two steps use different wire encodings: the manifest is plain JSON (no
+# decode chain), while each item is a gzip-compressed CSV file payload, so the
+# consume step's decode chain decompresses then parses CSV rows as events.
 
 ir_version: "1"
 
@@ -69,14 +70,12 @@ requests:
     method: GET
     url: {concat: ["${state.url}/worklist/items/", {first: {ref: state.queue}}]}
     if: {present: state.queue}
-    produces_events: true
-
-response:
-  decode:
-    - gzip: {}
-    - json: {}
-  # The consume body is a JSON array of events; events_at is the body root.
-  events_at: ""
+    decode:
+      - gzip: {}
+      - csv:
+          header: present
+    # Each CSV row is one event; events_at is the empty path (body root).
+    events_at: ""
 
 pagination:
   counter:

@@ -28,10 +28,7 @@ requests:
     url: "${state.url}/api/v1/events"
     query:
       since: {ref: state.last_timestamp}
-
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 
 pagination:
   none: {}

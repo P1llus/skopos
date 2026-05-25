@@ -128,7 +128,6 @@ func (v *validator) run(d *Doc) {
 	v.checkLifetimes(d, sc)
 	v.checkAuth("auth", d.Auth, sc)
 	v.checkRequests(d, sc)
-	v.checkResponse("response", d.Response, sc)
 	v.checkPagination("pagination", d.Pagination, sc)
 	v.checkProgress("progress", d.Progress, sc)
 	if d.Error != nil {
@@ -476,26 +475,22 @@ func (v *validator) checkRequests(d *Doc, sc *scope) {
 				seenIDs[req.ID] = i
 			}
 		}
-		if req.ProducesEvents {
+		if req.EventsAt != nil {
 			producers++
 			if req.Method == "HEAD" {
-				v.errorf(p+".produces_events",
-					"HEAD has no response body; produces_events: true requires GET/POST/PUT/PATCH/DELETE")
+				v.errorf(p+".events_at",
+					"HEAD has no response body; the events producer requires GET/POST/PUT/PATCH/DELETE")
 			}
 		}
 		if req.Cache != nil && req.FanOut != nil {
 			v.errorf(p, "cache and fan_out are mutually exclusive: cache stores one token-shaped value, fan_out runs the step once per item")
 		}
 	}
-	if producers > 1 {
-		v.errorf("requests", "at most one request may set produces_events: true; got %d", producers)
-	}
-	if producers == 0 {
-		last := len(d.Requests) - 1
-		if d.Requests[last].Method == "HEAD" {
-			v.errorf(fmt.Sprintf("requests[%d].method", last),
-				"HEAD has no response body; the implicit producer step (the last request) requires GET/POST/PUT/PATCH/DELETE")
-		}
+	switch {
+	case producers == 0:
+		v.errorf("requests", "exactly one request must set events_at to mark the events producer; got 0")
+	case producers > 1:
+		v.errorf("requests", "at most one request may set events_at; got %d", producers)
 	}
 
 	for i, req := range d.Requests {
@@ -539,6 +534,22 @@ func (v *validator) checkRequest(path string, req Request, sc *scope) {
 	}
 	if req.Body != nil {
 		v.checkBody(path+".body", *req.Body, sc)
+	}
+
+	// A nil decode chain means "omitted ⇒ json" and needs no validation; a
+	// non-nil chain (including an explicit empty list) is checked in full.
+	if req.Decode != nil {
+		v.checkDecodeChain(path+".decode", req.Decode)
+	}
+	// A non-nil events_at marks this step as the events producer.
+	if req.EventsAt != nil {
+		v.checkEventsAtPath(path+".events_at", *req.EventsAt, sc)
+		// A csv terminal treats each row as an event, so events_at has
+		// nothing to walk. (ndjson still applies a non-empty events_at
+		// per line.) An omitted decode defaults to json, never csv.
+		if req.Decode.Terminal() == "csv" && !req.EventsAt.IsEmpty() {
+			v.errorf(path+".events_at", "events_at must be empty for csv decode; each row is an event")
+		}
 	}
 
 	for j, ex := range req.Extract {
@@ -654,19 +665,9 @@ func (v *validator) checkOnStatus(path string, m map[int]string, sc *scope) {
 	}
 }
 
-// ---- response ----
+// ---- decode ----
 
-func (v *validator) checkResponse(path string, r Response, sc *scope) {
-	v.checkDecodeChain(path+".decode", r.Decode)
-	v.checkEventsAtPath(path+".events_at", r.EventsAt, sc)
-	// A csv terminal treats each row as an event, so events_at has nothing
-	// to walk. (ndjson still applies a non-empty events_at per line.)
-	if r.Decode.Terminal() == "csv" && !r.EventsAt.IsEmpty() {
-		v.errorf(path+".events_at", "events_at must be empty for csv decode; each row is an event")
-	}
-}
-
-// checkDecodeChain validates the response decode chain: non-empty, exactly
+// checkDecodeChain validates a per-step decode chain: non-empty, exactly
 // one variant per stage, only byte-transforms (gzip/zip) before a single
 // terminal decoder (csv/json/ndjson) as the last stage, plus per-stage args.
 func (v *validator) checkDecodeChain(path string, c DecodeChain) {
@@ -1172,7 +1173,7 @@ func (v *validator) checkNoStarOutsideEvents(path string, p Path) {
 
 // ---- body-rooted path slot variants ----
 
-// checkEventsAtPath validates response.events_at. Accepted forms:
+// checkEventsAtPath validates a request's events_at. Accepted forms:
 //
 //   - empty Path (body root IS the events list);
 //   - response.body.<path>;

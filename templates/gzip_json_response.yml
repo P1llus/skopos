@@ -19,12 +19,10 @@ auth:
 requests:
   - method: GET
     url: "${state.url}/gzip_json/events"
-
-response:
-  decode:
-    - gzip: {}
-    - json: {}
-  events_at: response.body.events
+    decode:
+      - gzip: {}
+      - json: {}
+    events_at: response.body.events
 
 pagination:
   none: {}

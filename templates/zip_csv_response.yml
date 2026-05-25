@@ -20,14 +20,12 @@ auth:
 requests:
   - method: GET
     url: "${state.url}/zip_csv/archive"
-
-response:
-  decode:
-    - zip:
-        glob: "*.csv"
-    - csv:
-        header: present
-  events_at: ""
+    decode:
+      - zip:
+          glob: "*.csv"
+      - csv:
+          header: present
+    events_at: ""
 
 pagination:
   none: {}

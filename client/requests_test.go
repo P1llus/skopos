@@ -74,7 +74,7 @@ func TestRequest_IfPredicateGates(t *testing.T) {
 			If: &schema.Predicate{Eq: &schema.PredicateEq{
 				Path: mustPath("state.mode"), Value: vStr("b"),
 			}},
-			ProducesEvents: true,
+			EventsAt: pathPtr("response.body.events"),
 		},
 	}
 
@@ -147,10 +147,9 @@ func TestRequest_ExtractToExtractNamespace(t *testing.T) {
 				Headers: map[string]schema.Value{
 					"X-Scratch": vRef("extract.scratch_session"),
 				},
-				ProducesEvents: true,
+				EventsAt: pathPtr("response.body.events"),
 			},
 		},
-		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 

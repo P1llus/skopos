@@ -34,10 +34,7 @@ requests:
       offset: "${state.offset|0}"
       limit:  "${state.page_size}"
       end:    {add: [{ref: state.offset, default: 0}, {ref: state.page_size}]}
-
-response:
-  decode: json
-  events_at: response.body.items
+    events_at: response.body.items
 
 pagination:
   counter:

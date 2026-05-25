@@ -464,9 +464,12 @@ func (r *Runner) runIteration(
 	iter int,
 ) (iterationResult, error) {
 	out := iterationResult{kind: iterAccepted}
-	producerID := producerStepID(r.Doc)
-	implicitLast := producerID == ""
-	lastIdx := len(r.Doc.Requests) - 1
+	// The producer is the unique request carrying events_at; match it by
+	// index, since an unlabelled producer has id "" which an id-compare
+	// cannot distinguish. producerIdx is -1 only when validation was
+	// skipped (no events_at anywhere); then no request matches, producerRan
+	// stays false, and the iteration degrades to iterWarn below.
+	producerIdx := producerIndex(r.Doc)
 	// producerRan tracks whether the events-bearing step yielded a
 	// usable response in this iteration. When the producer was skipped
 	// (if: false, or never reached because a prior step on_status'd into
@@ -519,7 +522,7 @@ func (r *Runner) runIteration(
 					s.stepHeaders[req.ID] = fr.lastHeaders
 				}
 			}
-			if req.ID == producerID || (implicitLast && i == lastIdx) {
+			if i == producerIdx {
 				out.producerBody = fr.mergedBody
 				out.producerHeaders = fr.lastHeaders
 				producerRan = true
@@ -559,7 +562,7 @@ func (r *Runner) runIteration(
 			// iteration's verdict. The producer-detection block below
 			// records the per-step verb so the iteration's terminal
 			// kind reflects the producer step's outcome.
-			if req.ID == producerID || (implicitLast && i == lastIdx) {
+			if i == producerIdx {
 				out.producerBody = nil
 				out.producerHeaders = nil
 				producerRan = true
@@ -580,7 +583,7 @@ func (r *Runner) runIteration(
 			s.steps[req.ID] = res.body
 			s.stepHeaders[req.ID] = res.headers
 		}
-		if req.ID == producerID || (implicitLast && i == lastIdx) {
+		if i == producerIdx {
 			out.producerBody = res.body
 			out.producerHeaders = res.headers
 			producerRan = true
@@ -597,7 +600,9 @@ func (r *Runner) runIteration(
 	}
 
 	if out.kind == iterAccepted {
-		evs, err := r.locateProducerEvents(s, out.producerBody)
+		// producerIdx is in range here: iterAccepted requires producerRan,
+		// which only flips true when a request matched i == producerIdx.
+		evs, err := r.locateProducerEvents(s, r.Doc.Requests[producerIdx], out.producerBody)
 		if err != nil {
 			return iterationResult{}, err
 		}
@@ -733,26 +738,27 @@ func (r *Runner) runRequest(
 	}
 }
 
-// locateProducerEvents resolves the producer step's body through
-// response.events_at and returns the decoded events list. An empty
-// events_at means "the body root is the events list"; an explicit
-// steps.<id>.body.<path> resolves against the named step's captured
-// body. Row-oriented terminals (csv, ndjson) decode the body to a list of
-// rows, so locateEvents treats each row as an event.
-func (r *Runner) locateProducerEvents(s *scope, producerBody any) ([]any, error) {
-	parts, stepID, err := stripBodyRoot(r.Doc.Response.EventsAt)
+// locateProducerEvents resolves the producer step's body through its
+// events_at Path and returns the decoded events list. An empty events_at
+// means "the body root is the events list"; an explicit
+// steps.<id>.body.<path> resolves against the named step's captured body.
+// Row-oriented terminals (csv, ndjson) decode the body to a list of rows,
+// so locateEvents treats each row as an event. producerReq is the request
+// carrying events_at; the caller guarantees producerReq.EventsAt != nil.
+func (r *Runner) locateProducerEvents(s *scope, producerReq schema.Request, producerBody any) ([]any, error) {
+	parts, stepID, err := stripBodyRoot(*producerReq.EventsAt)
 	if err != nil {
-		return nil, fmt.Errorf("response.events_at: %w", err)
+		return nil, fmt.Errorf("events_at: %w", err)
 	}
 	body := producerBody
 	if stepID != "" {
 		b, ok := s.steps[stepID]
 		if !ok {
-			return nil, fmt.Errorf("response.events_at references step %q with no captured body", stepID)
+			return nil, fmt.Errorf("events_at references step %q with no captured body", stepID)
 		}
 		body = b
 	}
-	rowOriented := r.Doc.Response.Decode.IsRowOriented()
+	rowOriented := effectiveDecode(producerReq).IsRowOriented()
 	evs, err := locateEvents(body, parts, rowOriented)
 	if err != nil {
 		return nil, fmt.Errorf("locate events: %w", err)
@@ -772,23 +778,18 @@ func anyEvents(evs []any) any {
 	return evs
 }
 
-// producerStepID returns the request id whose body is the events
-// source. An explicit produces_events: true marker wins; otherwise the
-// runner falls through to the implicit-last rule — the last declared
-// request is the producer. Returns "" to signal the implicit-last
-// fallback; runIteration captures producer state when (implicitLast &&
-// i == lastIdx) is true. The producer-capture guard also re-fires for
-// unlabelled non-last steps via the req.ID == producerID arm (both ""),
-// but each match overwrites the previous one, so last-write-wins on the
-// final slice index — the validator already forbids more than one
-// produces_events marker.
-func producerStepID(doc *schema.Doc) string {
-	for _, req := range doc.Requests {
-		if req.ProducesEvents {
-			return req.ID
+// producerIndex returns the index of the unique request that marks itself
+// the events producer by setting events_at. Returns -1 when no request does
+// (only reachable when validation was skipped — the validator requires
+// exactly one). Matching by index, not id, lets an unlabelled producer
+// (id "") still be located.
+func producerIndex(doc *schema.Doc) int {
+	for i := range doc.Requests {
+		if doc.Requests[i].EventsAt != nil {
+			return i
 		}
 	}
-	return ""
+	return -1
 }
 
 // reqLabel returns a stable, log-safe label for req. The id wins when

@@ -18,12 +18,10 @@ auth:
 requests:
   - method: GET
     url: "${state.url}/csv_response/present"
-
-response:
-  decode:
-    - csv:
-        header: present
-  events_at: ""
+    decode:
+      - csv:
+          header: present
+    events_at: ""
 
 pagination:
   none: {}

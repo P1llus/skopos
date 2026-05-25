@@ -209,13 +209,17 @@ func (p *Path) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // MarshalYAML emits the canonical YAML representation.
-// Zero path (IsZero or nil Parts) → null.
+// Zero path (IsZero or nil Parts) → the empty string, its canonical dotted
+// form. Emitting "" rather than null keeps a present-empty *Path (an
+// events_at producer rooted at the body) round-tripping: yaml decodes an
+// explicit null into a nil pointer without calling the codec, but it decodes
+// "" through UnmarshalYAML back into a non-nil zero Path.
 // Paths whose segments contain '.' are emitted in the {parts: [...]} escape
 // form so they round-trip safely through the dotted parser. All other paths
 // → dotted string.
 func (p Path) MarshalYAML() (any, error) {
 	if p.IsEmpty() {
-		return nil, nil
+		return "", nil
 	}
 	if p.needsEscape() {
 		return map[string]any{"parts": p.Parts}, nil
@@ -282,11 +286,14 @@ func (p *Path) UnmarshalJSON(data []byte) error {
 	}
 }
 
-// MarshalJSON emits the dotted string form (or null for zero/empty), or the
-// {parts: [...]} escape form when any segment contains '.'.
+// MarshalJSON emits the dotted string form (the empty string for zero/empty),
+// or the {parts: [...]} escape form when any segment contains '.'. Emitting ""
+// rather than null keeps a present-empty *Path round-tripping: json decodes an
+// explicit null into a nil pointer without calling the codec, but it decodes
+// "" through UnmarshalJSON back into a non-nil zero Path.
 func (p Path) MarshalJSON() ([]byte, error) {
 	if p.IsEmpty() {
-		return []byte("null"), nil
+		return []byte(`""`), nil
 	}
 	if p.needsEscape() {
 		out := struct {

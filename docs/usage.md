@@ -219,10 +219,7 @@ auth:
 requests:
   - method: GET
     url: "${state.url}/v1/events"
-
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 
 pagination:
   none: {}
@@ -231,9 +228,12 @@ progress: []
 ```
 
 Every spec carries `ir_version`, `auth`, at least one entry in
-`requests:`, a `response:`, and a `pagination:` variant. `state:`
-holds operator config (a URL and an API key here). `progress: []`
-declares no checkpointing — every drain re-fetches the same window.
+`requests:`, and a `pagination:` variant. Exactly one request sets
+`events_at` to mark the events producer; here the lone request decodes
+its body as JSON (the default) and reads the events list at
+`response.body.events`. `state:` holds operator config (a URL and an API
+key here). `progress: []` declares no checkpointing — every drain
+re-fetches the same window.
 
 Run it once:
 
@@ -338,15 +338,17 @@ requests:
     url: "${state.url}/api/data"
     headers:
       Cookie: {ref: extract.session_cookie}
+    events_at: response.body.events
 ```
 
 `extract.session_cookie` is per-iteration scratch — it lives for one
 iteration of the pagination loop and resets at the top of the next.
 `steps.<id>.body.<path>` and `steps.<id>.header.<name>` are also
 available for cross-step references; see
-[`schema.md` §namespaces](schema.md#namespaces). The producer step
-defaults to the last entry in `requests:`; mark a different step
-`produces_events: true` to override.
+[`schema.md` §namespaces](schema.md#namespaces). The `login` step runs
+for its side effect (the cookie extract); `data` carries `events_at`, so
+it is the events producer. Exactly one request in the chain must set
+`events_at`.
 
 ### 3.5 Add caching
 
@@ -480,9 +482,9 @@ type Sink interface {
 ```
 
 The runner does not buffer or batch: `Emit` is called once per event,
-in declared order (the order the events appear at `response.events_at`
-on the producer step's body). `event` is the decoded value at
-`response.events_at` — typically `map[string]any` (or one value per row when
+in declared order (the order the events appear at the producer step's
+`events_at`). `event` is the decoded value at that `events_at` location —
+typically `map[string]any` (or one value per row when
 the terminal decoder is row-oriented: `map[string]any` per `ndjson` line or
 per `csv` row with `header: present`, `[]any` per `csv` row with
 `header: absent`).

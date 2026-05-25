@@ -185,12 +185,12 @@ func (s *scope) executeRequest(ctx context.Context, client *http.Client, req sch
 			return res, fmt.Errorf("read body: %w", rerr)
 		}
 		trace.respBodyMeta = bodyMeta(len(raw), raw)
-		decoded, err = decodeResponseBytes(raw, s.doc.Response.Decode)
+		decoded, err = decodeResponseBytes(raw, effectiveDecode(req))
 		if err != nil {
 			return res, fmt.Errorf("decode: %w", err)
 		}
 	} else {
-		decoded, err = decodeResponse(resp, s.doc.Response.Decode)
+		decoded, err = decodeResponse(resp, effectiveDecode(req))
 		if err != nil {
 			return res, fmt.Errorf("decode: %w", err)
 		}
@@ -297,6 +297,19 @@ func jsonifyValue(v any) any {
 		return out
 	}
 	return v
+}
+
+// effectiveDecode returns the decode chain applied to req's response body.
+// An omitted (or empty) req.Decode defaults to a single json terminal; an
+// explicit chain is used verbatim. Defaulting lives here, in the runtime,
+// rather than in the schema: the parsed IR keeps "omitted" distinguishable
+// from "explicit json" (the validator rejects an explicit empty chain), and
+// only the interpreter needs the concrete chain.
+func effectiveDecode(req schema.Request) schema.DecodeChain {
+	if len(req.Decode) == 0 {
+		return schema.DecodeChain{{JSON: &struct{}{}}}
+	}
+	return req.Decode
 }
 
 // decodeResponse reads resp.Body and runs the decode chain against it. See

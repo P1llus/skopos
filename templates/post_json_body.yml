@@ -42,10 +42,7 @@ requests:
         to_date:     {ref: state.window_end}
         search_from: {ref: state.search_from, default: 0}
         search_to:   {add: [{ref: state.search_from, default: 0}, {ref: state.page_size}]}
-
-response:
-  decode: json
-  events_at: response.body.data.alerts
+    events_at: response.body.data.alerts
 
 pagination:
   counter:

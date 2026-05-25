@@ -49,11 +49,7 @@ requests:
   - id: fetch
     method: GET
     url: {ref: state.result_url}
-    produces_events: true
-
-response:
-  decode: json
-  events_at: response.body.items
+    events_at: response.body.items
 
 pagination:
   none: {}

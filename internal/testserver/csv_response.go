@@ -53,11 +53,24 @@ func serveGzipCSV(w http.ResponseWriter, r *http.Request, store *EventStore, opt
 		return
 	}
 	store.Replenish(opts.Now(), opts.EventsPerDrain)
+	events := store.Slice(0, opts.EventsPerDrain)
+	rows := make([][]string, 0, len(events))
+	for _, e := range events {
+		rows = append(rows, []string{e.ID, e.Timestamp.Format("2006-01-02T15:04:05Z07:00"), strconv.Itoa(e.SeqNum)})
+	}
+	writeGzipCSV(w, []string{"id", "timestamp", "seq_num"}, rows)
+}
+
+// writeGzipCSV writes header + rows as a gzip-compressed CSV file payload:
+// Content-Type application/gzip with no Content-Encoding, so the HTTP
+// transport does not transparently decompress it and the spec's decode chain
+// owns both the decompression and the CSV parse.
+func writeGzipCSV(w http.ResponseWriter, header []string, rows [][]string) {
 	var csvBuf bytes.Buffer
 	cw := csv.NewWriter(&csvBuf)
-	_ = cw.Write([]string{"id", "timestamp", "seq_num"})
-	for _, e := range store.Slice(0, opts.EventsPerDrain) {
-		_ = cw.Write([]string{e.ID, e.Timestamp.Format("2006-01-02T15:04:05Z07:00"), strconv.Itoa(e.SeqNum)})
+	_ = cw.Write(header)
+	for _, row := range rows {
+		_ = cw.Write(row)
 	}
 	cw.Flush()
 	if err := cw.Error(); err != nil {

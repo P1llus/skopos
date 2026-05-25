@@ -30,10 +30,7 @@ requests:
     on_status:
       429: empty_events
       502: fail
-
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 
 pagination:
   none: {}

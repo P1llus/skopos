@@ -42,10 +42,7 @@ requests:
       # root makes the body locator unambiguous regardless of the field
       # name underneath.
       - {to: state.freeze_flag, from: response.body.state.frozen, coerce: bool}
-
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 
 pagination:
   none: {}

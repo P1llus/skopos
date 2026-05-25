@@ -151,6 +151,12 @@ func (c *DecodeChain) UnmarshalYAML(node *yaml.Node) error {
 		if err := node.Decode(&stages); err != nil {
 			return fmt.Errorf("schema.DecodeChain at line %d: %w", node.Line, err)
 		}
+		// An empty sequence (decode: []) decodes to a nil slice; force a
+		// non-nil empty chain so the validator distinguishes an explicit
+		// empty list (rejected) from an omitted decode (nil ⇒ json).
+		if stages == nil {
+			stages = []DecodeStage{}
+		}
 		*c = DecodeChain(stages)
 		return nil
 
@@ -174,6 +180,11 @@ func (c *DecodeChain) UnmarshalJSON(data []byte) error {
 	var stages []DecodeStage
 	if err := json.Unmarshal(data, &stages); err != nil {
 		return fmt.Errorf("schema.DecodeChain: decode must be a string or a list of stages: %w", err)
+	}
+	// Mirror the YAML codec: an explicit empty array is a non-nil empty
+	// chain (rejected by the validator), distinct from an omitted decode.
+	if stages == nil {
+		stages = []DecodeStage{}
 	}
 	*c = DecodeChain(stages)
 	return nil

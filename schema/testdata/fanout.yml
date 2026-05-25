@@ -36,10 +36,7 @@ requests:
       over:  {ref: steps.list.body.incidents}
       as:    incident
       merge: flatten
-
-response:
-  decode: json
-  events_at: ""
+    events_at: ""
 
 pagination:
   none: {}

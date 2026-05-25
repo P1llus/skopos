@@ -19,12 +19,10 @@ auth:
 requests:
   - method: GET
     url: {ref: state.url}
-
-response:
-  decode:
-    - csv:
-        header: present
-  events_at: response.body.rows
+    decode:
+      - csv:
+          header: present
+    events_at: response.body.rows
 
 pagination:
   none: {}
@@ -32,4 +30,4 @@ pagination:
 error:
   mode: standard
 -- want_stdout.txt --
-response.events_at: error: events_at must be empty for csv decode; each row is an event
+requests[0].events_at: error: events_at must be empty for csv decode; each row is an event

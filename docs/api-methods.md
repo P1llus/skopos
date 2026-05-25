@@ -867,9 +867,8 @@ auth pipeline; templates should not duplicate it under
 **What it does:** Multiple steps with `id:` per step. Later steps
 reference earlier bodies via `{ref: steps.<id>.body.<path>}` and
 earlier extracts via `{ref: extract.<name>}`. The producer step (the
-one whose decoded body `response.events_at` walks) is the last request
-by default; set `produces_events: true` on a different step to
-override.
+one whose decoded body `events_at` walks) is the request carrying
+`events_at`; exactly one request in the chain must set it.
 
 ```yaml
 requests:
@@ -888,6 +887,7 @@ requests:
     url: "${state.url}/api/data"
     headers:
       Cookie: {ref: extract.session_cookie}
+    events_at: response.body.events
 ```
 
 There is no separate `pre_fetch:` block — a single pre-flight step is
@@ -1023,12 +1023,12 @@ strings without a namespace prefix are rejected.
 
 ## 4. Response parsing
 
-### 4.1 Decoder selection (`response.decode`)
+### 4.1 Decoder selection (`decode`)
 
-**What it does:** Selects how the producer step's body is decoded.
-`decode` is a chain: zero or more byte-transform stages feeding one
-terminal decoder. The scalar forms `json` / `ndjson` are the single-terminal
-common case.
+**What it does:** Selects how a request's body is decoded. `decode` is
+per-request: a chain of zero or more byte-transform stages feeding one
+terminal decoder. The scalar forms `json` / `ndjson` are the
+single-terminal common case. Omitting `decode` defaults to `json`.
 
 | Stage    | Kind           | Semantic                                                  |
 |----------|----------------|----------------------------------------------------------|
@@ -1039,34 +1039,41 @@ common case.
 | `csv`    | terminal       | Decode delimited rows; `header: present` → map per row, `absent` → list per row. |
 
 ```yaml
-response:
-  decode: json
-  events_at: response.body.data.events
+requests:
+  - method: GET
+    url: "${state.url}/events"
+    decode: json                       # the default — may be omitted
+    events_at: response.body.data.events
 ```
 
 For a file payload the HTTP transport does not transparently undo, list the
 stages — e.g. a gzipped CSV export:
 
 ```yaml
-response:
-  decode:
-    - gzip: {}
-    - csv:
-        header: present
-  events_at: ""
+requests:
+  - method: GET
+    url: "${state.url}/export.csv.gz"
+    decode:
+      - gzip: {}
+      - csv:
+          header: present
+    events_at: ""
 ```
 
 Transparent `Content-Encoding: gzip` is undone by the transport and needs no
 `decode` stage; the chain is for file payloads (typically `Content-Type:
-application/gzip | application/zip | text/csv`). See
-[schema.md](schema.md#decode-chain) for the full chain rules.
+application/gzip | application/zip | text/csv`). Decoding never consults
+`Content-Type` — an omitted `decode` is always JSON and an explicit chain
+always wins. See [schema.md](schema.md#decode-chain) for the full chain rules.
 
-### 4.2 Locating events (`response.events_at`)
+### 4.2 Locating events (`events_at`)
 
 **What it does:** A namespace-rooted [Path](schema.md#paths) telling
-the runner where the events list lives. Accepted roots:
+the runner where the events list lives. Setting it on a request marks
+that request as the events producer; exactly one request must do so.
+Accepted roots:
 
-- `response.body.<path>` — the active (events-bearing) step's own body.
+- `response.body.<path>` — the producer's own body.
 - `steps.<id>.body.<path>` — a labelled prior step's body.
 
 The empty (zero) Path means "the body root IS the events list" — used
@@ -1074,9 +1081,10 @@ for top-level arrays and top-level single objects (the runner wraps a
 single object in a one-element list).
 
 ```yaml
-response:
-  decode: json
-  events_at: response.body.data.items
+requests:
+  - method: GET
+    url: "${state.url}/events"
+    events_at: response.body.data.items
 ```
 
 Bare dotted strings (`data.items` with no namespace prefix) are
@@ -1093,9 +1101,10 @@ decoded line and the flattened sequence is the events list.
 runner wraps it in a one-element list to produce one event.
 
 ```yaml
-response:
-  decode: json
-  events_at: ""
+requests:
+  - method: GET
+    url: "${state.url}/resource"
+    events_at: ""
 ```
 
 ### 4.4 JSON array at root
@@ -1103,17 +1112,19 @@ response:
 **What it does:** The response body IS the JSON array.
 
 ```yaml
-response:
-  decode: json
-  events_at: ""
+requests:
+  - method: GET
+    url: "${state.url}/events"
+    events_at: ""
 ```
 
 ### 4.5 JSON array at a nested path
 
 ```yaml
-response:
-  decode: json
-  events_at: response.body.data.items
+requests:
+  - method: GET
+    url: "${state.url}/events"
+    events_at: response.body.data.items
 ```
 
 Common nest patterns the field handles: `data`, `value`, `result`,
@@ -1146,11 +1157,7 @@ requests:
       over: {ref: steps.list.body}
       as:   incident
       merge: flatten
-    produces_events: true
-
-response:
-  decode: json
-  events_at: steps.detail.body
+    events_at: steps.detail.body
 ```
 
 ### 4.7 NDJSON
@@ -1161,9 +1168,11 @@ empty; otherwise the path is applied per line and the flattened
 sequence is the events list.
 
 ```yaml
-response:
-  decode: ndjson
-  events_at: ""
+requests:
+  - method: GET
+    url: "${state.url}/events.ndjson"
+    decode: ndjson
+    events_at: ""
 ```
 
 ### 4.8 The `events.*` namespace
@@ -1260,10 +1269,7 @@ requests:
     url: "${state.url}/v1/events"
     query:
       since: {ref: state.last_timestamp}
-
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 
 progress:
   - to: state.last_timestamp
@@ -1489,10 +1495,7 @@ requests:
     query:
       since: {ref: state.last_timestamp}
       limit: "${state.page_size}"
-
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 
 pagination:
   none: {}
@@ -1538,10 +1541,7 @@ requests:
     query:
       since: {ref: state.last_timestamp}
       limit: "${state.page_size}"
-
-response:
-  decode: json
-  events_at: response.body.alerts
+    events_at: response.body.alerts
 
 pagination:
   next_url:
@@ -1599,7 +1599,7 @@ requests:
   - id: fetch
     method: GET
     url: {ref: state.result_url}
-    produces_events: true
+    events_at: ""
 ```
 
 **How the loop works.** `terminate_when:` on the poll step is the
@@ -1613,15 +1613,15 @@ iteration; only the poll step loops.
 
 - *Asynchronous export with completion timestamp.* `progress:` writes
   a max-merge over `events.*.timestamp` after the fetch step's events
-  are emitted (§5.2). The fetch step is the producer because it is the
-  last request and carries `produces_events: true`.
+  are emitted (§5.2). The fetch step is the producer because it carries
+  `events_at`.
 - *Stateless export.* Omit `progress:` (or set `progress: []`) — every
   drain re-submits, re-polls, and re-fetches without persisting any
   high-water mark.
 - *Poll-without-fetch.* Some APIs return events directly inside the
-  poll response when the job completes — drop the fetch step and mark
-  the poll step `produces_events: true`. The poll loop's
-  `terminate_when:` doubles as the "events are ready" signal.
+  poll response when the job completes — drop the fetch step and put
+  `events_at` on the poll step. The poll loop's `terminate_when:`
+  doubles as the "events are ready" signal.
 
 **Phase information lives in plain state.** `state.export_id` and
 `state.result_url` are author-declared persistent state fields,

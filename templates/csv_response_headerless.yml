@@ -18,12 +18,10 @@ auth:
 requests:
   - method: GET
     url: "${state.url}/csv_response/absent"
-
-response:
-  decode:
-    - csv:
-        header: absent
-  events_at: ""
+    decode:
+      - csv:
+          header: absent
+    events_at: ""
 
 pagination:
   none: {}

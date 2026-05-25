@@ -5,8 +5,8 @@
 # steps.middle.body.<...>} resolves to a zero Value; the final step's
 # url uses {present: ...} guarding to handle that.
 #
-# The final step is marked produces_events: true; the middle step's body
-# is inspected only for the events path, never as the events source.
+# The final step sets events_at; the middle step's body is inspected only
+# for the events path, never as the events source.
 
 ir_version: "1"
 
@@ -47,11 +47,7 @@ requests:
                 - {ref: state.url}
                 - {ref: steps.middle.body.next_path}
         default: "${state.url}/api/v1/etag/fallback"
-    produces_events: true
-
-response:
-  decode: json
-  events_at: response.body.items
+    events_at: response.body.items
 
 pagination:
   none: {}

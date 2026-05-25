@@ -19,11 +19,9 @@ auth:
 requests:
   - method: GET
     url: {ref: state.url}
-
-response:
-  decode:
-    - xml: {}
-  events_at: response.body.events
+    decode:
+      - xml: {}
+    events_at: response.body.events
 
 pagination:
   none: {}
@@ -31,4 +29,4 @@ pagination:
 error:
   mode: standard
 -- want_stdout.txt --
-response.decode[0]: error: decode stage must have exactly one key (gzip|zip|csv|json|ndjson)
+requests[0].decode[0]: error: decode stage must have exactly one key (gzip|zip|csv|json|ndjson)

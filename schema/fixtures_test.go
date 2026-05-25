@@ -145,9 +145,7 @@ auth: {none: {}}
 requests:
   - method: GET
     url: "http://x/y"
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 pagination:
   none: {}
 `)
@@ -166,8 +164,7 @@ func TestParseJSON(t *testing.T) {
 	data := []byte(`{
   "ir_version": "1",
   "auth": {"none": {}},
-  "requests": [{"method": "GET", "url": "http://x/y"}],
-  "response": {"decode": "json", "events_at": "response.body.events"},
+  "requests": [{"method": "GET", "url": "http://x/y", "events_at": "response.body.events"}],
   "pagination": {"none": {}}
 }`)
 	doc, err := schema.Parse(data)
@@ -513,9 +510,7 @@ auth:
 requests:
   - method: GET
     url: "http://x/y"
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 pagination:
   none: {}
 `
@@ -574,9 +569,7 @@ auth:
 requests:
   - method: GET
     url: "http://x/y"
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 pagination:
   none: {}
 `
@@ -609,9 +602,7 @@ auth:
 requests:
   - method: GET
     path: /api/v1/events
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 pagination:
   none: {}
 `
@@ -668,9 +659,7 @@ auth:
 requests:
   - method: GET
     url: "http://x/y"
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 pagination:
   none: {}
 `
@@ -709,7 +698,7 @@ auth:
 requests:
   - method: GET
     url: "${state.url}/events"
-response: {decode: json, events_at: response.body.events}
+    events_at: response.body.events
 pagination: {none: {}}
 `
 	doc, err := schema.Parse([]byte(src))
@@ -747,7 +736,7 @@ auth:
 requests:
   - method: GET
     url: "${state.url}"
-response: {decode: json, events_at: response.body.events}
+    events_at: response.body.events
 pagination: {none: {}}
 `
 	doc, err := schema.Parse([]byte(src))

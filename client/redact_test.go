@@ -83,9 +83,7 @@ auth:
 requests:
   - method: GET
     url: "http://x/y"
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 pagination:
   none: {}
 `

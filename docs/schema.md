@@ -15,7 +15,6 @@ A spec is one YAML (or JSON) document with these top-level keys:
 | `state`        | no       | [#state](#state)                     |
 | `auth`         | yes      | [#auth](#auth)                       |
 | `requests`     | yes      | [#requests](#requests)               |
-| `response`     | yes      | [#response](#response)               |
 | `pagination`   | yes      | [#pagination](#pagination)           |
 | `progress`     | yes      | [#progress](#progress)               |
 | `error`        | no       | [#error](#error)                     |
@@ -349,9 +348,17 @@ auth:
 ## `requests`
 
 Ordered list of HTTP requests run on every iteration. At least one
-required. The producer step (the one whose body holds the events list)
-is the last request by default; set `produces_events: true` on a
-different step to override.
+required. Exactly one request marks itself as the events producer by
+setting [`events_at`](#the-events-producer-events_at) — the request
+whose decoded body holds the events list. Every other request runs for
+its side effects (auth, extracts, async polling) and emits no events.
+
+Each request decodes its own body with [`decode`](#decode-chain).
+Omitting `decode` defaults to JSON, so a chain only needs it when the
+payload is something the HTTP transport does not transparently undo (a
+gzipped file, a ZIP archive, a CSV export). Decoding never consults
+`Content-Type`: an omitted `decode` is always JSON and an explicit
+chain always wins.
 
 Every request declares an absolute `url:` Value. There is no
 spec-level URL prefix; templates compose their URLs either with
@@ -383,7 +390,8 @@ requests:
 | `if`               | no                             | [Predicate](#predicates) — skip the step when false. |
 | `terminate_when`   | no                             | [Predicate](#predicates) — when true, stop looping this step and proceed to the next request. See [Request-level loops](#request-level-loops). |
 | `on_status`        | no                             | Map of status code → verb (`skip`, `fail`, `empty_events`, `invalidate_cache`). Per-step override of `error.mode` for that status. |
-| `produces_events`  | no                             | Marks this step as the events producer. At most one in the chain; defaults to the last request. |
+| `decode`           | no                             | A scalar `json` / `ndjson`, or a list of decode stages (the [decode chain](#decode-chain)). Omitted ⇒ `json`. Explicit `decode: []` is rejected. |
+| `events_at`        | when this step is the producer  | [Path](#the-events-producer-events_at) rooted at `response.body.<path>` or `steps.<id>.body.<path>` locating the events list. Empty (`events_at: ""`) means "the body root IS the events list". Presence marks this step as the producer; exactly one request must set it. |
 | `cache`            | no                             | [Cache](#cache) — generic step-level cache for non-OAuth2 cached logins. Mutually exclusive with `fan_out`. |
 
 ### Request rules
@@ -417,9 +425,11 @@ requests:
   list-ness for composite forms (`{ref: ...}`, `{concat: ...}`,
   `{list: ...}`) is decided at lowering time when the runtime can see
   the resolved type.
-- At most one request may carry `produces_events: true`. When no step
-  is marked explicitly, the **last** request in `requests[]` is the
-  implicit producer.
+- Exactly one request must set `events_at` to mark the events producer.
+  Zero producers and more than one producer are both rejected. There is
+  no implicit-last fallback; the producer is always the explicit
+  `events_at` carrier. A `HEAD` request cannot be the producer (no body
+  to decode).
 
 ### Request-level loops
 
@@ -456,7 +466,7 @@ requests:
   - id: fetch
     method: GET
     url: {ref: state.result_url}
-    produces_events: true
+    events_at: response.body.data
 ```
 
 The phase information lives in `state.export_id` and `state.result_url`
@@ -501,38 +511,29 @@ item, `fail` aborts the drain, `invalidate_cache` clears the active
 auth + step caches and stops the fan-out early. `requests[].cache`
 cannot be combined with `fan_out`.
 
----
-
-## `response`
-
-How to decode the producer step's body and where to find the events
-list.
-
-| Field        | Required | Description |
-|--------------|----------|-------------|
-| `decode`     | yes      | A scalar `json` / `ndjson`, or a list of decode stages (the [decode chain](#decode-chain)). |
-| `events_at`  | yes      | [Path](#paths) rooted at `response.body.<path>` or `steps.<id>.body.<path>` locating the events list. The zero (empty) Path means "the body root IS the events list". |
-
-```yaml
-response:
-  decode: json
-  events_at: response.body.data.events
-```
-
 ### Decode chain
 
-`decode` is a pipeline. The scalar forms `json` and `ndjson` are the common
-case — a single terminal decoder. For payloads the HTTP transport does not
-transparently undo (a gzipped file, a ZIP archive, a CSV export), `decode`
-takes a list of stages instead:
+`decode` is a per-request pipeline. Omitting it defaults to `json`. The
+scalar forms `json` and `ndjson` are the common case — a single terminal
+decoder. For payloads the HTTP transport does not transparently undo (a
+gzipped file, a ZIP archive, a CSV export), `decode` takes a list of
+stages instead:
 
 ```yaml
-response:
-  decode:
-    - gzip: {}
-    - csv:
-        header: present
-  events_at: ""
+requests:
+  - id: manifest
+    method: GET
+    url: "${state.url}/manifest"          # plain JSON — decoded as json (default)
+    extract:
+      - {to: state.export_url, from: response.body.export_url}
+  - id: consume
+    method: GET
+    url: {ref: state.export_url}          # a gzipped CSV export
+    decode:
+      - gzip: {}
+      - csv:
+          header: present
+    events_at: ""
 ```
 
 A chain is zero or more **byte-transform** stages followed by exactly one
@@ -559,21 +560,28 @@ needs no `decode` stage — the chain is for file payloads the transport leaves
 alone (typically signalled by `Content-Type: application/gzip | application/zip
 | text/csv`).
 
-### Response rules
+### The events producer (`events_at`)
+
+Setting `events_at` on a request marks it as the events producer.
+Exactly one request must do so; that request's success/skip/empty
+verdict decides the iteration outcome.
 
 - `events_at` is namespace-rooted: `response.body.<path>` reads the
-  events-bearing step's own response; `steps.<id>.body.<path>` reads a
-  labelled prior step's response. The zero Path means "body root" — the
-  whole decoded body IS the events list (or a single event when the terminal
-  is row-oriented). Bare dotted strings (`data.events` with no namespace
+  producer's own decoded response; `steps.<id>.body.<path>` reads a
+  labelled prior step's response (the producer is still the request
+  carrying `events_at`, even when the body it walks belongs to another
+  step). The empty (zero) Path means "body root" — the whole decoded
+  body IS the events list (or a single event when the terminal is
+  row-oriented). Bare dotted strings (`data.events` with no namespace
   prefix) are rejected.
 - The row-oriented terminals (`csv`, `ndjson`) decode the body to a list of
   rows. When `events_at` is empty (zero Path), each row IS one event. `csv`
   requires `events_at` empty. `ndjson` also accepts a non-empty `events_at`:
   the trailing body segments below the namespace root are applied to EACH
   decoded line and the flattened sequence is the events list.
+- A `HEAD` producer is rejected — there is no body to decode.
 - The HTTP status-code success set is configured per-step via
-  `requests[].expect_status`. There is no `response.success_status`.
+  `requests[].expect_status`; there is no chain-wide success-status field.
 
 ### `events.*` namespace
 
@@ -1089,7 +1097,7 @@ engine; the same applies to `regex:` on extracts and progress writes.
 
 `Path` is the typed kind for namespace-rooted dotted-string identifiers
 used in `{ref: ...}`, `{present: ...}`, `{eq: {path: ...}}`,
-`response.events_at`, `requests[].extract[].from`,
+`requests[].events_at`, `requests[].extract[].from`,
 `pagination.cursor_token.from`, `pagination.next_url.from`, etc.
 
 Primary form: `response.body.data.issues.nodes` (dotted string with a
@@ -1123,15 +1131,15 @@ Every Path begins with one of the roots below.
 |----------------------------|-----------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `state.<name>`             | persisted (or per-drain)          | `state.<name>.default`, `requests[].extract` with `to: state.*`, `pagination.*.to`, `progress[].to`. Lifetime sub-flavour (operator-config / per-drain / persistent) is inferred from write sites; see [§state](#state). |
 | `cache.<name>`             | process memory only               | [Cache](#cache) blocks on auth grants or requests. Cleared on runner restart; never persisted.                                                                                                                          |
-| `events.<...>`             | per-iteration (current page)      | The runner, after `response.events_at` resolves. `events.*.field` projects across all events; `events.first.field` / `events.last.field` are declared-order shortcuts; `events.<int>.field` is positional; `events.count` is cardinality. |
+| `events.<...>`             | per-iteration (current page)      | The runner, after `requests[].events_at` resolves. `events.*.field` projects across all events; `events.first.field` / `events.last.field` are declared-order shortcuts; `events.<int>.field` is positional; `events.count` is cardinality. |
 | `extract.<name>`           | per-iteration                     | `requests[].extract` with `to: extract.*`. Reset at the top of every iteration.                                                                                                                                         |
 | `steps.<id>.body.<path>`   | per-iteration (after step runs)   | The decoded response body of a labelled prior step.                                                                                                                                                                     |
 | `steps.<id>.header.<name>` | per-iteration                     | The response headers of a labelled prior step.                                                                                                                                                                          |
-| `response.body.<path>`     | per-evaluation                    | The active step's decoded response body. Valid in `response.events_at`, `pagination.*.from`, `progress[].from`, `requests[].extract.from`, `requests[].terminate_when`, `requests[].cache.expires_at`, and inside predicates. |
+| `response.body.<path>`     | per-evaluation                    | The active step's decoded response body. Valid in `requests[].events_at`, `pagination.*.from`, `progress[].from`, `requests[].extract.from`, `requests[].terminate_when`, `requests[].cache.expires_at`, and inside predicates. |
 | `response.header.<name>`   | per-evaluation                    | The active step's response headers. Same sites as `response.body.*`.                                                                                                                                                    |
 | `<fan_out.as>.<path>`      | per-fan-out-iteration             | The author-chosen `fan_out.as` name; bound to the current item for the duration of one per-item iteration.                                                                                                              |
 
-Body-rooted IR slots — `response.events_at`, `pagination.*.from`,
+Body-rooted IR slots — `requests[].events_at`, `pagination.*.from`,
 `progress[].from`, `requests[].extract.from`,
 `requests[].terminate_when`, `requests[].cache.expires_at`,
 `auth.oauth2.<grant>.cache.expires_at` — accept the body-flavoured

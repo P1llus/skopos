@@ -63,7 +63,7 @@ The drain sequence:
    one step); the loop ends when the active pagination variant's
    `terminate_when:` predicate returns true.
 4. **Sink delivery.** For every accepted page-response, the runner runs
-   the `response.decode` chain and resolves `response.events_at` to the
+   the producer step's `decode` chain and resolves its `events_at` to the
    events list (one event per element, or one event per row when the
    terminal is row-oriented — `csv` / `ndjson`; see
    [§body decode](#body-decode)), and calls `Sink.Emit(event)` once per
@@ -103,9 +103,11 @@ blocks rather than growing memory without bound.
 
 ### Body decode
 
-`response.decode` is a chain (see [schema.md](schema.md#decode-chain)): zero or
-more byte-transform stages (`gzip`, `zip`) feeding one terminal decoder (`csv`,
-`json`, `ndjson`). The runner builds it into a reader pipeline:
+Each request's `decode` is a chain (see
+[schema.md](schema.md#decode-chain)): zero or more byte-transform stages
+(`gzip`, `zip`) feeding one terminal decoder (`csv`, `json`, `ndjson`). An
+omitted `decode` defaults to `json`. The runner builds it into a reader
+pipeline:
 
 - `gzip` wraps the upstream reader and streams.
 - `zip` requires random access for the central directory at the archive's end,
@@ -219,7 +221,7 @@ the next step starts.
   that status does not abort the drain. `skip` and `empty_events` count
   as accepted; `fail` does not.
 - A page-response with an empty events list (zero elements after
-  `response.events_at` resolves) is still accepted. Progress writes
+  the producer's `events_at` resolves) is still accepted. Progress writes
   fire on empty pages so that server-provided cursors, ingestion
   timestamps, and other response-body fields can persist independently
   of event production.

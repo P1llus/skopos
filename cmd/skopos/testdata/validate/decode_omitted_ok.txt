@@ -1,0 +1,28 @@
+# validate/decode_omitted_ok — a producer with no decode chain is valid; an
+# omitted decode defaults to json at runtime. No diagnostics, exit 0.
+
+exec skopos validate -i spec.yml
+! stderr .
+! stdout .
+
+-- spec.yml --
+ir_version: "1"
+
+state:
+  url:
+    type: url
+    default: "http://localhost:9999"
+
+auth:
+  none: {}
+
+requests:
+  - method: GET
+    url: {ref: state.url}
+    events_at: response.body.events
+
+pagination:
+  none: {}
+
+error:
+  mode: standard
