@@ -1,4 +1,5 @@
-# validate/decode_bad_csv_header — csv.header must be present or absent.
+# validate/events_at_missing — no request sets events_at, so there is no
+# events producer; exactly one is required.
 
 ! exec skopos validate -i spec.yml
 ! stderr .
@@ -18,10 +19,6 @@ auth:
 requests:
   - method: GET
     url: {ref: state.url}
-    decode:
-      - csv:
-          header: maybe
-    events_at: ""
 
 pagination:
   none: {}
@@ -29,4 +26,4 @@ pagination:
 error:
   mode: standard
 -- want_stdout.txt --
-requests[0].decode[0].header: error: csv.header must be present or absent, got "maybe"
+requests: error: exactly one request must set events_at to mark the events producer; got 0

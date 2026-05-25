@@ -32,10 +32,7 @@ requests:
       limit:  100   # YAML scalar → Value.LiteralInt (no discriminator key form)
       head:      {first: {ref: state.queue}}   # reducer over a state-list ref
       remaining: {count: {ref: state.queue}}   # emptiness test over a state-list ref
-
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 
 pagination:
   none: {}

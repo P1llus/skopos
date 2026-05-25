@@ -1,5 +1,5 @@
-# validate/decode_empty_chain — an empty decode chain is rejected; decode is
-# required.
+# validate/events_at_multiple — two requests set events_at, but at most one
+# request may mark the events producer.
 
 ! exec skopos validate -i spec.yml
 ! stderr .
@@ -17,9 +17,13 @@ auth:
   none: {}
 
 requests:
-  - method: GET
+  - id: first
+    method: GET
     url: {ref: state.url}
-    decode: []
+    events_at: response.body.events
+  - id: second
+    method: GET
+    url: {ref: state.url}
     events_at: response.body.events
 
 pagination:
@@ -28,4 +32,4 @@ pagination:
 error:
   mode: standard
 -- want_stdout.txt --
-requests[0].decode: error: decode is required (json|ndjson, or a list of stages ending in csv|json|ndjson)
+requests: error: at most one request may set events_at; got 2

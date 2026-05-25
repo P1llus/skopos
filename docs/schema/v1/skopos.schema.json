@@ -1039,6 +1039,29 @@
           "$ref": "#/definitions/Cache",
           "description": "Cache wraps the step in a generic step-level expiry cache. Mutually exclusive with FanOut."
         },
+        "decode": {
+          "description": "Decode is the per-step response body decode chain: a scalar \"json\"/\"ndjson\", or a list of byte-transform stages (gzip, zip) ending in one terminal decoder (csv, json, ndjson). See DecodeChain. Omitted (nil) decodes the body as json; an explicit empty list is rejected.",
+          "oneOf": [
+            {
+              "enum": [
+                "json",
+                "ndjson"
+              ],
+              "type": "string"
+            },
+            {
+              "items": {
+                "$ref": "#/definitions/DecodeStage"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ]
+        },
+        "events_at": {
+          "$ref": "#/definitions/Path",
+          "description": "EventsAt marks this step as the events producer and locates the events list within a decoded body. A nil pointer means the step is not the producer; a non-nil pointer (even an empty Path) marks it. The Path is rooted at response.body.\u003cpath\u003e or steps.\u003cid\u003e.body.\u003cpath\u003e; the empty Path means the decoded body root IS the events list. Exactly one request must set it."
+        },
         "expect_status": {
           "description": "ExpectStatus is the set of status codes the runner treats as successful. Defaults to {200} when empty.",
           "items": {
@@ -1100,10 +1123,6 @@
           },
           "type": "object"
         },
-        "produces_events": {
-          "description": "ProducesEvents marks this step as the events producer. At most one in the chain; defaults to the last request.",
-          "type": "boolean"
-        },
         "query": {
           "additionalProperties": {
             "$ref": "#/definitions/Value"
@@ -1123,39 +1142,6 @@
       "required": [
         "method",
         "url"
-      ],
-      "type": "object"
-    },
-    "Response": {
-      "additionalProperties": false,
-      "description": "Response describes how to decode the producer step's body and locate the events list.",
-      "properties": {
-        "decode": {
-          "description": "Decode is the body decode chain: a scalar \"json\"/\"ndjson\", or a list of byte-transform stages (gzip, zip) ending in one terminal decoder (csv, json, ndjson). See DecodeChain.",
-          "oneOf": [
-            {
-              "enum": [
-                "json",
-                "ndjson"
-              ],
-              "type": "string"
-            },
-            {
-              "items": {
-                "$ref": "#/definitions/DecodeStage"
-              },
-              "minItems": 1,
-              "type": "array"
-            }
-          ]
-        },
-        "events_at": {
-          "$ref": "#/definitions/Path",
-          "description": "EventsAt is the namespace-rooted Path locating the events list, rooted at response.body.\u003cpath\u003e or steps.\u003cid\u003e.body.\u003cpath\u003e. The zero (empty) Path means \"the body root IS the events list\"."
-        }
-      },
-      "required": [
-        "decode"
       ],
       "type": "object"
     },
@@ -1559,10 +1545,6 @@
       },
       "type": "array"
     },
-    "response": {
-      "$ref": "#/definitions/Response",
-      "description": "Response describes how to decode the producer step's body and where the events list lives."
-    },
     "state": {
       "additionalProperties": {
         "$ref": "#/definitions/FieldDecl"
@@ -1575,8 +1557,7 @@
     "auth",
     "ir_version",
     "pagination",
-    "requests",
-    "response"
+    "requests"
   ],
   "title": "Skopos spec (ir_version 1)",
   "type": "object"

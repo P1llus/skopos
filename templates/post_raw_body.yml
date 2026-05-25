@@ -32,10 +32,7 @@ requests:
       Content-Type: application/x-ndjson
     body:
       raw: '{"tenant":"${state.tenant_id}","event":"hello"}'
-
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 
 pagination:
   none: {}

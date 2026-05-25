@@ -36,10 +36,7 @@ requests:
       # Subsequent iterations send the captured cursor token.
       cursor: {ref: state.next_token, default: ""}
       limit: "${state.page_size}"
-
-response:
-  decode: json
-  events_at: response.body.findings
+    events_at: response.body.findings
 
 pagination:
   cursor_token:

@@ -34,10 +34,7 @@ requests:
       since:     {ref: state.last_timestamp}
       page:      "${state.page|1}"
       page_size: "${state.page_size}"
-
-response:
-  decode: json
-  events_at: response.body.data
+    events_at: response.body.data
 
 pagination:
   counter:

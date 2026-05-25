@@ -18,12 +18,9 @@ auth:
 requests:
   - method: GET
     url: "${state.url}/simple_get_object/status"
-
-# When the body is a single JSON object (not an array) the runner wraps it
-# in a one-element list, so one event is emitted per iteration.
-response:
-  decode: json
-  events_at: ""
+    # When the body is a single JSON object (not an array) the runner wraps it
+    # in a one-element list, so one event is emitted per iteration.
+    events_at: ""
 
 pagination:
   none: {}

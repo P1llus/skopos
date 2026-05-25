@@ -27,10 +27,7 @@ requests:
     url: "${state.url}/api_key_auth/detections"
     query:
       created_after: {ref: state.last_timestamp}
-
-response:
-  decode: json
-  events_at: response.body.resources
+    events_at: response.body.resources
 
 pagination:
   none: {}

@@ -20,10 +20,7 @@ auth:
 requests:
   - method: GET
     url: {ref: state.url}
-
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 
 pagination:
   none: {}

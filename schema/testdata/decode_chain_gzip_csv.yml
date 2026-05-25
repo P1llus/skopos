@@ -11,15 +11,13 @@ auth:
 requests:
   - method: GET
     url: "${state.url}/export.csv.gz"
-
-# A two-stage chain: decompress, then decode headerless CSV rows. Exercises a
-# byte-transform feeding a row-oriented terminal with events_at empty.
-response:
-  decode:
-    - gzip: {}
-    - csv:
-        header: absent
-  events_at: ""
+    decode:
+      - gzip: {}
+      - csv:
+          header: absent
+    # A two-stage chain: decompress, then decode headerless CSV rows. Exercises a
+    # byte-transform feeding a row-oriented terminal with events_at empty.
+    events_at: ""
 
 pagination:
   none: {}

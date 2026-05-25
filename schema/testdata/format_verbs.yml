@@ -44,10 +44,7 @@ requests:
       since_secs:  {format: unix_seconds,   value: {ref: state.last_timestamp}}
       since_ms:    {format: unix_millis,    value: {ref: state.last_timestamp}}
       window:      {format: duration,       value: {ref: state.lookback}}
-
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 
 pagination:
   none: {}

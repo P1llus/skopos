@@ -48,8 +48,12 @@ func mustPath(s string) schema.Path {
 	return p
 }
 
-// decodeJSON returns the single-terminal json decode chain.
-func decodeJSON() schema.DecodeChain { return schema.DecodeChain{{JSON: &struct{}{}}} }
+// pathPtr returns a *Path for an events_at producer marker. The empty
+// string marks the producer at the decoded body root.
+func pathPtr(s string) *schema.Path {
+	p := mustPath(s)
+	return &p
+}
 
 // decodeNDJSON returns the single-terminal ndjson decode chain.
 func decodeNDJSON() schema.DecodeChain { return schema.DecodeChain{{NDJSON: &struct{}{}}} }
@@ -87,10 +91,10 @@ func minimalDoc(baseURL string) *schema.Doc {
 		},
 		Auth: schema.Auth{None: &struct{}{}},
 		Requests: []schema.Request{{
-			Method: "GET",
-			URL:    mustInterp("${state.url}/events"),
+			Method:   "GET",
+			URL:      mustInterp("${state.url}/events"),
+			EventsAt: pathPtr("response.body.events"),
 		}},
-		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 }

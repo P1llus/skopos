@@ -26,9 +26,7 @@ auth:
 requests:
   - method: GET
     url: "${state.url}/events"
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 pagination:
   none: {}
 `, serverURL)

@@ -55,10 +55,7 @@ requests:
           object:
             after: {ref: state.after}
             first: {ref: state.page_size}
-
-response:
-  decode: json
-  events_at: response.body.data.issues.nodes
+    events_at: response.body.data.issues.nodes
 
 pagination:
   cursor_token:

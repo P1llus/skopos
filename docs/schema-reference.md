@@ -50,7 +50,6 @@ Regenerate with `go run ./tools/gen-schema-doc`; CI runs
 - [`RefValue`](#refvalue)
 - [`RegexExpr`](#regexexpr)
 - [`Request`](#request)
-- [`Response`](#response)
 - [`SelectBranch`](#selectbranch)
 - [`SelectValue`](#selectvalue)
 - [`SigV4Auth`](#sigv4auth)
@@ -211,7 +210,6 @@ Doc is the top-level IR document.
 | `State` | `state` | `map[string]FieldDecl` | yes | State is the flat map of typed field declarations. Optional — authors with no state at all may omit the block. |
 | `Auth` | `auth` | `Auth` | no | Auth is the discriminated-union auth block. Exactly one variant. |
 | `Requests` | `requests` | `[]Request` | no | Requests is the ordered list of HTTP requests run on every iteration. |
-| `Response` | `response` | `Response` | no | Response describes how to decode the producer step's body and where the events list lives. |
 | `Pagination` | `pagination` | `Pagination` | no | Pagination is the discriminated-union pagination block. Exactly one variant. |
 | `Progress` | `progress` | `Progress` | yes | Progress is the flat list of state writes evaluated after each accepted page-response. An empty list (or omitted block) means no progress tracking. |
 | `Error` | `error` | `*ErrorBlock` | yes | Error configures how non-success HTTP responses are surfaced. Optional. |
@@ -407,13 +405,14 @@ Request describes a single HTTP request in the chain.
 | `Query` | `query` | `map[string]Value` | yes | Query is the URL query map; each value resolves to a string. |
 | `Headers` | `headers` | `map[string]Value` | yes | Headers is the wire header map; each value resolves to a string. |
 | `Body` | `body` | `*Body` | yes | Body is the request body. Discriminated-union (json/form/raw). |
+| `Decode` | `decode` | `DecodeChain` | yes | Decode is the per-step response body decode chain: a scalar "json"/"ndjson", or a list of byte-transform stages (gzip, zip) ending in one terminal decoder (csv, json, ndjson). See DecodeChain. Omitted (nil) decodes the body as json; an explicit empty list is rejected. |
 | `Extract` | `extract` | `[]ExtractVar` | yes | Extract pulls named values out of the response body or headers. |
 | `FanOut` | `fan_out` | `*FanOut` | yes | FanOut lifts the step into a per-item iteration over a list Value. Mutually exclusive with Cache. |
 | `ExpectStatus` | `expect_status` | `[]int` | yes | ExpectStatus is the set of status codes the runner treats as successful. Defaults to {200} when empty. |
 | `If` | `if` | `*Predicate` | yes | If is the predicate that gates execution of the step. |
 | `TerminateWhen` | `terminate_when` | `*Predicate` | yes | TerminateWhen is the request-level loop primitive: while the predicate is false, the same request is re-fired; when true the runner advances to the next request. |
 | `OnStatus` | `on_status` | `map[int]string` | yes | OnStatus maps a specific HTTP status code to a per-step dispatcher verb (skip / fail / empty_events / invalidate_cache). |
-| `ProducesEvents` | `produces_events` | `bool` | yes | ProducesEvents marks this step as the events producer. At most one in the chain; defaults to the last request. |
+| `EventsAt` | `events_at` | `*Path` | yes | EventsAt marks this step as the events producer and locates the events list within a decoded body. A nil pointer means the step is not the producer; a non-nil pointer (even an empty Path) marks it. The Path is rooted at response.body.<path> or steps.<id>.body.<path>; the empty Path means the decoded body root IS the events list. Exactly one request must set it. |
 | `Cache` | `cache` | `*Cache` | yes | Cache wraps the step in a generic step-level expiry cache. Mutually exclusive with FanOut. |
 
 ## `ExtractVar`
@@ -454,18 +453,6 @@ must be present.
 | `JSON` | `json` | `map[string]Value` | yes | JSON selects the application/json variant. |
 | `Form` | `form` | `map[string]Value` | yes | Form selects the application/x-www-form-urlencoded variant. |
 | `Raw` | `raw` | `*Value` | yes | Raw selects the literal-body variant. |
-
-## `Response`
-
-_Defined in `schema/schema.go`._
-
-Response describes how to decode the producer step's body and locate the
-events list.
-
-| Field | YAML | Type | Optional | Description |
-| --- | --- | --- | --- | --- |
-| `Decode` | `decode` | `DecodeChain` | no | Decode is the body decode chain: a scalar "json"/"ndjson", or a list of byte-transform stages (gzip, zip) ending in one terminal decoder (csv, json, ndjson). See DecodeChain. |
-| `EventsAt` | `events_at` | `Path` | no | EventsAt is the namespace-rooted Path locating the events list, rooted at response.body.<path> or steps.<id>.body.<path>. The zero (empty) Path means "the body root IS the events list". |
 
 ## `Pagination`
 

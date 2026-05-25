@@ -22,9 +22,7 @@ auth:
 requests:
   - method: GET
     url: "${state.url}/events"
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 pagination:
   none: {}
 `
@@ -48,9 +46,6 @@ ir_version: "1"
 auth:
   none: {}
 requests: []
-response:
-  decode: json
-  events_at: response.body.events
 pagination:
   none: {}
 `

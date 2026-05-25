@@ -51,10 +51,7 @@ requests:
       - {to: state.etag, from: response.header.ETag}
     on_status:
       304: skip
-
-response:
-  decode: json
-  events_at: response.body.items
+    events_at: response.body.items
 
 pagination:
   counter:

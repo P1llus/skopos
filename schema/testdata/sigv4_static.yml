@@ -37,10 +37,7 @@ requests:
     url: "${state.url}/sigv4/events"
     query:
       since: {ref: state.last_timestamp}
-
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 
 pagination:
   none: {}

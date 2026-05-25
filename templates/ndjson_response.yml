@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/p1llus/skopos/main/docs/schema/v1/skopos.schema.json
 # ndjson_response — newline-delimited JSON response decode.
 #
-# Demonstrates: response.decode=ndjson. Each non-empty line is one event;
+# Demonstrates: a step-level decode: ndjson. Each non-empty line is one event;
 # events_at "" with ndjson decode means the body root IS the events list.
 
 ir_version: "1"
@@ -21,10 +21,8 @@ auth:
 requests:
   - method: GET
     url: "${state.url}/ndjson_response/logs"
-
-response:
-  decode: ndjson
-  events_at: ""
+    decode: ndjson
+    events_at: ""
 
 pagination:
   none: {}

@@ -33,10 +33,7 @@ requests:
         since:  {ref: state.last_timestamp}
         limit:  "${state.page_size}"
         format: json
-
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 
 pagination:
   none: {}

@@ -25,10 +25,7 @@ auth:
 requests:
   - method: GET
     url: "${state.url}/basic_auth/data"
-
-response:
-  decode: json
-  events_at: response.body.items
+    events_at: response.body.items
 
 pagination:
   none: {}

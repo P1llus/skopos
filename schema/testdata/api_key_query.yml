@@ -29,10 +29,7 @@ requests:
     url: "${state.url}/v3/detections"
     query:
       created_after: {ref: state.last_timestamp}
-
-response:
-  decode: json
-  events_at: response.body.resources
+    events_at: response.body.resources
 
 pagination:
   none: {}

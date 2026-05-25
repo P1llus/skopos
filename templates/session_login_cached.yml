@@ -50,11 +50,7 @@ requests:
   - id: events
     method: GET
     url: "${state.url}/session_login_cached/events"
-    produces_events: true
-
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 
 pagination:
   none: {}

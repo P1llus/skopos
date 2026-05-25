@@ -16,9 +16,9 @@
 //   - state       — flat map of typed field declarations.
 //   - auth        — discriminated union (none | bearer | basic | api_key |
 //     custom | oauth2 | sigv4 | multi_mode).
-//   - requests    — ordered list of HTTP requests run per iteration.
-//   - response    — how to decode the producer step and where the events
-//     list lives.
+//   - requests    — ordered list of HTTP requests run per iteration. Each
+//     request decodes its own body (decode, omitted ⇒ json); the request
+//     carrying events_at is the events producer.
 //   - pagination  — discriminated union (none | cursor_token | next_url |
 //     counter | custom).
 //   - progress    — flat list of state writes evaluated per accepted

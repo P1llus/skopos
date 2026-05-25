@@ -38,10 +38,7 @@ requests:
     query:
       updated_after: {ref: state.last_timestamp}
       per_page: "${state.page_size}"
-
-response:
-  decode: json
-  events_at: response.body.incidents
+    events_at: response.body.incidents
 
 pagination:
   next_url:

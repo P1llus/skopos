@@ -36,10 +36,7 @@ requests:
       # (no default) so the server opens a fresh scroll session. Subsequent
       # iterations send the captured scroll id.
       scroll: {ref: state.scroll_id}
-
-response:
-  decode: json
-  events_at: response.body.events
+    events_at: response.body.events
 
 pagination:
   cursor_token:

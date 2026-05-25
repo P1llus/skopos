@@ -28,10 +28,7 @@ requests:
     url: "${state.url}/session_cookie/data"
     headers:
       Cookie: {ref: extract.session_cookie}
-
-response:
-  decode: json
-  events_at: response.body.items
+    events_at: response.body.items
 
 pagination:
   none: {}

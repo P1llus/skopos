@@ -12,9 +12,8 @@
 #   - {ref: incident.id} resolves against the per-item binding while the
 #     fan_out step iterates. The binding name comes from fan_out.as, so
 #     authors pick what reads well (incident, blob, asset, …).
-#   - The fan-out step is the implicit producer (last request). The
-#     merged body is the events stream; response.events_at is the body
-#     root.
+#   - The fan-out step is the producer: it sets events_at to the empty
+#     path, so the merged body root is the events stream.
 #   - fan_out and requests[].cache are mutually exclusive (the validator
 #     enforces this); per-item errors run through the same on_status /
 #     error.mode dispatcher as a single-request step.
@@ -48,12 +47,9 @@ requests:
       over:  {ref: steps.list.body.incidents}
       as:    incident
       merge: flatten
-
-response:
-  decode: json
-  # merge: flatten produces a JSON list as the producer body; events_at
-  # is the empty path (body root) so each list element is one event.
-  events_at: ""
+    # merge: flatten produces a JSON list as the producer body; events_at
+    # is the empty path (body root) so each list element is one event.
+    events_at: ""
 
 pagination:
   none: {}

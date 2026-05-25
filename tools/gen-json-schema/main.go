@@ -138,8 +138,8 @@ var fieldOverrides = map[string]map[string]string{
 	"Request": {
 		"Method":   `{"type":"string","enum":["GET","POST","PUT","PATCH","DELETE","HEAD"]}`,
 		"OnStatus": `{"type":"object","propertyNames":{"pattern":"^[1-5][0-9][0-9]$"},"additionalProperties":{"type":"string","enum":["skip","fail","empty_events","invalidate_cache"]}}`,
+		"Decode":   `{"oneOf":[{"type":"string","enum":["json","ndjson"]},{"type":"array","minItems":1,"items":{"$ref":"#/definitions/DecodeStage"}}]}`,
 	},
-	"Response":   {"Decode": `{"oneOf":[{"type":"string","enum":["json","ndjson"]},{"type":"array","minItems":1,"items":{"$ref":"#/definitions/DecodeStage"}}]}`},
 	"ErrorBlock": {"Mode": `{"type":"string","enum":["standard","warn","fail"]}`},
 	"FanOut":     {"Merge": `{"type":"string","enum":["flatten","wrap"]}`},
 	"CSVDecode":  {"Header": `{"type":"string","enum":["present","absent"]}`},
@@ -149,9 +149,7 @@ var fieldOverrides = map[string]map[string]string{
 // time even though the struct tag carries no omitempty and the field is not a
 // pointer. The custom Path codec treats the zero value as a meaningful
 // "absent" form.
-var forceOptional = map[string]map[string]bool{
-	"Response": {"EventsAt": true},
-}
+var forceOptional = map[string]map[string]bool{}
 
 func buildSchema(types []structDoc) (map[string]any, error) {
 	defs := map[string]any{}

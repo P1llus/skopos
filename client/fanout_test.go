@@ -51,10 +51,9 @@ func TestFanOut_WrapMerge(t *testing.T) {
 					As:    "id",
 					Merge: "wrap",
 				},
-				ProducesEvents: true,
+				EventsAt: pathPtr(""),
 			},
 		},
-		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 
@@ -98,10 +97,9 @@ func TestFanOut_EmptyOverIsNoop(t *testing.T) {
 					Over: vRef("steps.list.body.ids"),
 					As:   "id",
 				},
-				ProducesEvents: true,
+				EventsAt: pathPtr(""),
 			},
 		},
-		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 
@@ -166,10 +164,9 @@ func TestFanOut_PerItemSkipDoesNotStopChain(t *testing.T) {
 					Over: vRef("steps.list.body.ids"),
 					As:   "id",
 				},
-				ProducesEvents: true,
+				EventsAt: pathPtr(""),
 			},
 		},
-		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 
@@ -220,10 +217,9 @@ func TestFanOut_FlattenRejectsNonListBody(t *testing.T) {
 					Over: vRef("steps.list.body.ids"),
 					As:   "id",
 				},
-				ProducesEvents: true,
+				EventsAt: pathPtr(""),
 			},
 		},
-		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 
@@ -274,10 +270,9 @@ func TestFanOut_PerItemFailFatal(t *testing.T) {
 					Over: vRef("steps.list.body.ids"),
 					As:   "id",
 				},
-				ProducesEvents: true,
+				EventsAt: pathPtr(""),
 			},
 		},
-		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 
@@ -357,10 +352,9 @@ func TestFanOut_PerItemInvalidateCacheSkipsPaginationAdvance(t *testing.T) {
 					Over: vRef("steps.list.body.ids"),
 					As:   "id",
 				},
-				ProducesEvents: true,
+				EventsAt: pathPtr(""),
 			},
 		},
-		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 
