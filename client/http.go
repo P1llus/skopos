@@ -3,15 +3,20 @@
 package client
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,7 +28,7 @@ import (
 // {ref: steps.<id>.body.<path>}.
 type stepResult struct {
 	headers http.Header
-	body    any // map[string]any | []any | nil (ndjson → []any of lines)
+	body    any // map[string]any | []any | nil (row-oriented terminals → []any of rows)
 }
 
 // executeRequest builds, sends, and decodes one Request. Returns the
@@ -294,62 +299,203 @@ func jsonifyValue(v any) any {
 	return v
 }
 
-// decodeResponse reads resp.Body and decodes it according to decode.
+// decodeResponse reads resp.Body and runs the decode chain against it. See
+// decodeChain for the chain contract.
+func decodeResponse(resp *http.Response, chain schema.DecodeChain) (any, error) {
+	return decodeChain(resp.Body, chain)
+}
+
+// decodeResponseBytes runs the decode chain against pre-read body bytes. Split
+// out so the trace path can read the wire body once (for metadata) and decode
+// from the buffer, keeping the decode contract identical to the stream-read
+// path.
+func decodeResponseBytes(raw []byte, chain schema.DecodeChain) (any, error) {
+	return decodeChain(bytes.NewReader(raw), chain)
+}
+
+// decodeChain runs the response decode pipeline against r and returns the
+// decoded body. Byte-transform stages wrap or expand the upstream reader
+// before the terminal decoder runs:
 //
-//   - "json":   one JSON value, returned as map[string]any | []any | scalar | nil.
-//   - "ndjson": one decoded object per line, returned as []any.
+//   - gzip:   wraps r in a gzip reader; streams.
+//   - zip:    buffers the archive (random access is required), then decodes
+//             each member with the remaining chain and concatenates the rows.
 //
-// The spec keeps decode a closed enum; anything else is a hard error.
-func decodeResponse(resp *http.Response, decode string) (any, error) {
-	raw, err := io.ReadAll(resp.Body)
+// The terminal decoder yields the body:
+//
+//   - json:   one JSON value (map | []any | scalar | nil).
+//   - ndjson: []any, one decoded value per non-empty line.
+//   - csv:    []any of rows — map per row (header present) or list per row
+//             (header absent).
+func decodeChain(r io.Reader, chain schema.DecodeChain) (any, error) {
+	if len(chain) == 0 {
+		return nil, fmt.Errorf("response.decode: empty chain")
+	}
+	name, payload := chain[0].Variant()
+	switch name {
+	case "gzip":
+		zr, err := gzip.NewReader(r)
+		if err != nil {
+			return nil, fmt.Errorf("gzip: %w", err)
+		}
+		defer func() { _ = zr.Close() }()
+		return decodeChain(zr, chain[1:])
+	case "zip":
+		return decodeZip(r, payload.(*schema.ZipDecode), chain[1:])
+	case "json":
+		return decodeJSONStream(r)
+	case "ndjson":
+		return decodeNDJSONStream(r)
+	case "csv":
+		return decodeCSVStream(r, payload.(*schema.CSVDecode))
+	default:
+		return nil, fmt.Errorf("response.decode: unsupported stage %q", name)
+	}
+}
+
+// decodeJSONStream decodes the whole stream as one JSON value. An empty (or
+// whitespace-only) stream decodes to nil.
+func decodeJSONStream(r io.Reader) (any, error) {
+	raw, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
-	return decodeResponseBytes(raw, decode)
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
+	}
+	var out any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("json.Unmarshal: %w (%s)", err, bodyMetadata(raw))
+	}
+	return out, nil
 }
 
-// decodeResponseBytes decodes pre-read body bytes. Split out so the trace
-// path can read the body once (for metadata) and decode from the buffer,
-// keeping the wire-read and the decode contract identical to the
-// stream-read path.
-func decodeResponseBytes(raw []byte, decode string) (any, error) {
-	switch decode {
-	case "json":
-		if len(bytes.TrimSpace(raw)) == 0 {
-			return nil, nil
+// decodeNDJSONStream decodes one JSON value per non-empty line.
+func decodeNDJSONStream(r io.Reader) (any, error) {
+	var lines []any
+	sc := bufio.NewScanner(r)
+	// Default Scanner buffer is 64KB; some NDJSON lines exceed that.
+	buf := make([]byte, 1<<20)
+	sc.Buffer(buf, 16*1<<20)
+	lineNum := 0
+	for sc.Scan() {
+		lineNum++
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 {
+			continue
 		}
-		var out any
-		if err := json.Unmarshal(raw, &out); err != nil {
-			return nil, fmt.Errorf("json.Unmarshal: %w (%s)", err, bodyMetadata(raw))
+		var v any
+		if err := json.Unmarshal(line, &v); err != nil {
+			return nil, fmt.Errorf("ndjson decode at line %d: %w (%s)", lineNum, err, bodyMetadata(line))
 		}
-		return out, nil
+		lines = append(lines, v)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("ndjson scan: %w", err)
+	}
+	return lines, nil
+}
 
-	case "ndjson":
-		var lines []any
-		sc := bufio.NewScanner(bytes.NewReader(raw))
-		// Default Scanner buffer is 64KB; some NDJSON lines exceed that.
-		buf := make([]byte, 1<<20)
-		sc.Buffer(buf, 16*1<<20)
-		lineNum := 0
-		for sc.Scan() {
-			lineNum++
-			line := bytes.TrimSpace(sc.Bytes())
-			if len(line) == 0 {
+// decodeCSVStream decodes delimited rows into a []any. With header "present"
+// the first record names the fields and each later row decodes to a
+// map[string]any; with "absent" each row decodes to a []any of strings.
+func decodeCSVStream(r io.Reader, cfg *schema.CSVDecode) (any, error) {
+	cr := csv.NewReader(r)
+	headerMode := cfg.Header == "present"
+	var header []string
+	var rows []any
+	for {
+		rec, err := cr.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("csv: %w", err)
+		}
+		if headerMode && header == nil {
+			header = append(header, rec...)
+			continue
+		}
+		if headerMode {
+			m := make(map[string]any, len(header))
+			for i, field := range header {
+				if i < len(rec) {
+					m[field] = rec[i]
+				} else {
+					m[field] = nil
+				}
+			}
+			rows = append(rows, m)
+			continue
+		}
+		row := make([]any, len(rec))
+		for i, field := range rec {
+			row[i] = field
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+// decodeZip buffers the ZIP archive (archive/zip needs random access for the
+// central directory at the file's end), then decodes each non-directory
+// member with rest in name-sorted order, concatenating the results. An empty
+// glob selects every member; a non-empty glob matches against each member's
+// base name.
+func decodeZip(r io.Reader, cfg *schema.ZipDecode, rest schema.DecodeChain) (any, error) {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("zip: read archive: %w", err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		return nil, fmt.Errorf("zip: %w", err)
+	}
+	files := make([]*zip.File, 0, len(zr.File))
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		if cfg.Glob != "" {
+			ok, err := path.Match(cfg.Glob, path.Base(f.Name))
+			if err != nil {
+				return nil, fmt.Errorf("zip: glob %q: %w", cfg.Glob, err)
+			}
+			if !ok {
 				continue
 			}
-			var v any
-			if err := json.Unmarshal(line, &v); err != nil {
-				return nil, fmt.Errorf("ndjson decode at line %d: %w (%s)", lineNum, err, bodyMetadata(line))
-			}
-			lines = append(lines, v)
 		}
-		if err := sc.Err(); err != nil {
-			return nil, fmt.Errorf("ndjson scan: %w", err)
-		}
-		return lines, nil
+		files = append(files, f)
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
 
+	var out []any
+	for _, f := range files {
+		rc, err := f.Open()
+		if err != nil {
+			return nil, fmt.Errorf("zip: open %s: %w", f.Name, err)
+		}
+		val, err := decodeChain(rc, rest)
+		_ = rc.Close()
+		if err != nil {
+			return nil, fmt.Errorf("zip member %s: %w", f.Name, err)
+		}
+		out = appendDecoded(out, val)
+	}
+	return out, nil
+}
+
+// appendDecoded concatenates a member's decoded value into out: a []any is
+// spread element-wise, nil is dropped, and any other value is appended as a
+// single element.
+func appendDecoded(out []any, v any) []any {
+	switch x := v.(type) {
+	case []any:
+		return append(out, x...)
+	case nil:
+		return out
 	default:
-		return nil, fmt.Errorf("response.decode %q is not json|ndjson", decode)
+		return append(out, x)
 	}
 }
 

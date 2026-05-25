@@ -62,10 +62,12 @@ The drain sequence:
    per iteration (or one `requests:` chain when the spec has more than
    one step); the loop ends when the active pagination variant's
    `terminate_when:` predicate returns true.
-4. **Sink delivery.** For every accepted page-response, the runner
-   resolves `response.events_at`, decodes the events list (one event
-   per element, or one event per NDJSON line under `decode: ndjson`),
-   and calls `Sink.Emit(event)` once per event in declared order. By
+4. **Sink delivery.** For every accepted page-response, the runner runs
+   the `response.decode` chain and resolves `response.events_at` to the
+   events list (one event per element, or one event per row when the
+   terminal is row-oriented — `csv` / `ndjson`; see
+   [§body decode](#body-decode)), and calls `Sink.Emit(event)` once per
+   event in declared order. By
    default `Emit` runs inline on the drain goroutine; with
    `Runner.SinkBuffer > 0` events are handed to a single consumer
    goroutine over a bounded channel so a slow sink does not stall the
@@ -98,6 +100,39 @@ making the `Emit` call differs — so a `Sink` backing a single `Runner`
 still needs no internal synchronisation. The bound is the backpressure
 point: once a persistently slower sink fills the channel, the loop
 blocks rather than growing memory without bound.
+
+### Body decode
+
+`response.decode` is a chain (see [schema.md](schema.md#decode-chain)): zero or
+more byte-transform stages (`gzip`, `zip`) feeding one terminal decoder (`csv`,
+`json`, `ndjson`). The runner builds it into a reader pipeline:
+
+- `gzip` wraps the upstream reader and streams.
+- `zip` requires random access for the central directory at the archive's end,
+  so the compressed archive is buffered in memory (`bytes.Reader`); members are
+  then decoded one at a time in name-sorted order and their events
+  concatenated. Memory is therefore O(compressed-archive) for a `zip` chain.
+- The terminal materializes the **entire decoded body of one response** in
+  memory — a single value for `json`, a `[]any` of rows for `csv` / `ndjson` —
+  so the rest of the runtime (`events.*` reducers, `response.body.*` references
+  in pagination, cache, and `Value`s) can read it by path. The body is rebound
+  per page, so only one page's body is resident at a time.
+
+Memory therefore scales with the largest single response, not the sum of all
+pages: a response that is itself a large file is held in full this way (and a
+`zip` additionally holds the compressed archive). Bounded-memory ingestion of
+large multi-file sources — one unit at a time, resumable across drains — is a
+worklist-shaped concern (see
+[#60](https://github.com/P1llus/skopos/issues/60)).
+
+Transparent `Content-Encoding: gzip` is undone by the HTTP transport before the
+chain runs, because the runner sets `Accept` but never `Accept-Encoding`. The
+`decode` chain is for file payloads the transport leaves alone.
+
+When a trace is attached, the runner reads the raw wire bytes once — feeding
+both the trace record's body classification and the decode chain — so the trace
+shows what actually arrived (e.g. `body 133 bytes, non-json` for a gzipped
+payload), not the decoded form.
 
 ---
 
@@ -492,6 +527,3 @@ The validator rejects the combination.
 - **Scheduling.** `Runner.Drain` is one pull session. Sleeping,
   cron-like dispatch, and multi-template orchestration belong above
   the runner.
-- **MIME-chain decoding** (ZIP, gzip, CSV inside an HTTP body).
-  `response.decode` is a closed `json | ndjson` enum; body-level
-  de-framing is not decoded (see #55).

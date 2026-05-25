@@ -510,7 +510,7 @@ list.
 
 | Field        | Required | Description |
 |--------------|----------|-------------|
-| `decode`     | yes      | `json` or `ndjson`. |
+| `decode`     | yes      | A scalar `json` / `ndjson`, or a list of decode stages (the [decode chain](#decode-chain)). |
 | `events_at`  | yes      | [Path](#paths) rooted at `response.body.<path>` or `steps.<id>.body.<path>` locating the events list. The zero (empty) Path means "the body root IS the events list". |
 
 ```yaml
@@ -519,19 +519,59 @@ response:
   events_at: response.body.data.events
 ```
 
+### Decode chain
+
+`decode` is a pipeline. The scalar forms `json` and `ndjson` are the common
+case — a single terminal decoder. For payloads the HTTP transport does not
+transparently undo (a gzipped file, a ZIP archive, a CSV export), `decode`
+takes a list of stages instead:
+
+```yaml
+response:
+  decode:
+    - gzip: {}
+    - csv:
+        header: present
+  events_at: ""
+```
+
+A chain is zero or more **byte-transform** stages followed by exactly one
+**terminal decoder** as the last element:
+
+| Stage     | Kind           | Argument | Effect |
+|-----------|----------------|----------|--------|
+| `gzip`    | byte-transform | none (`{}`) | Decompresses the upstream stream (RFC 1952). |
+| `zip`     | byte-transform | optional `glob` | Expands a ZIP archive into its members. |
+| `csv`     | terminal       | required `header` | Decodes delimited rows into events. |
+| `json`    | terminal       | none (`{}`) | Decodes the stream as one JSON value. |
+| `ndjson`  | terminal       | none (`{}`) | Decodes one JSON value per line. |
+
+- `csv.header` is `present` (the first row names the fields; each later row
+  decodes to a map) or `absent` (each row decodes to a positional list).
+- `zip.glob` (optional) selects members by their base name, e.g. `"*.csv"`;
+  empty selects every member. Members are decoded in name-sorted order and
+  their events concatenated. A `glob` that selects nothing yields no events.
+- The scalar form accepts only `json` / `ndjson` (the argument-less
+  terminals); `gzip`, `zip`, and `csv` must use the list form.
+
+Transparent `Content-Encoding: gzip` is handled by the HTTP transport and
+needs no `decode` stage — the chain is for file payloads the transport leaves
+alone (typically signalled by `Content-Type: application/gzip | application/zip
+| text/csv`).
+
 ### Response rules
 
 - `events_at` is namespace-rooted: `response.body.<path>` reads the
   events-bearing step's own response; `steps.<id>.body.<path>` reads a
   labelled prior step's response. The zero Path means "body root" — the
-  whole decoded body IS the events list (or a single event when
-  `ndjson`). Bare dotted strings (`data.events` with no namespace
+  whole decoded body IS the events list (or a single event when the terminal
+  is row-oriented). Bare dotted strings (`data.events` with no namespace
   prefix) are rejected.
-- When `decode: ndjson` and `events_at` is empty (zero Path), each
-  decoded line IS one event. When `decode: ndjson` and `events_at` is
-  non-empty, the trailing body segments below the namespace root are
-  applied to EACH decoded line and the flattened sequence is the events
-  list.
+- The row-oriented terminals (`csv`, `ndjson`) decode the body to a list of
+  rows. When `events_at` is empty (zero Path), each row IS one event. `csv`
+  requires `events_at` empty. `ndjson` also accepts a non-empty `events_at`:
+  the trailing body segments below the namespace root are applied to EACH
+  decoded line and the flattened sequence is the events list.
 - The HTTP status-code success set is configured per-step via
   `requests[].expect_status`. There is no `response.success_status`.
 

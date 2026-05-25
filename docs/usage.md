@@ -482,8 +482,10 @@ type Sink interface {
 The runner does not buffer or batch: `Emit` is called once per event,
 in declared order (the order the events appear at `response.events_at`
 on the producer step's body). `event` is the decoded value at
-`response.events_at` — typically `map[string]any` (or one `map[string]any`
-per line under `decode: ndjson`).
+`response.events_at` — typically `map[string]any` (or one value per row when
+the terminal decoder is row-oriented: `map[string]any` per `ndjson` line or
+per `csv` row with `header: present`, `[]any` per `csv` row with
+`header: absent`).
 
 `Flush` is called once at the end of `Drain` so file-backed sinks can
 sync to disk.

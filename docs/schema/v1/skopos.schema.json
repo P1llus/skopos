@@ -229,6 +229,24 @@
       },
       "type": "object"
     },
+    "CSVDecode": {
+      "additionalProperties": false,
+      "description": "CSVDecode configures the csv terminal decoder.",
+      "properties": {
+        "header": {
+          "description": "Header selects \"present\" (the first row is field names; each later row decodes to a map) or \"absent\" (each row decodes to a list).",
+          "enum": [
+            "present",
+            "absent"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "header"
+      ],
+      "type": "object"
+    },
     "Cache": {
       "additionalProperties": false,
       "description": "Cache is the unified cache block shared by OAuth2 grants (auth.oauth2.\u003cgrant\u003e.cache) and step-level caches (requests[].cache). The captured value lives in cache.\u003cname\u003e; the slot is process memory only and is never persisted.",
@@ -380,6 +398,60 @@
         "advance",
         "terminate_when"
       ],
+      "type": "object"
+    },
+    "DecodeStage": {
+      "additionalProperties": false,
+      "description": "DecodeStage is one stage of the response decode chain. Exactly one variant key must be present.",
+      "oneOf": [
+        {
+          "required": [
+            "csv"
+          ]
+        },
+        {
+          "required": [
+            "gzip"
+          ]
+        },
+        {
+          "required": [
+            "json"
+          ]
+        },
+        {
+          "required": [
+            "ndjson"
+          ]
+        },
+        {
+          "required": [
+            "zip"
+          ]
+        }
+      ],
+      "properties": {
+        "csv": {
+          "$ref": "#/definitions/CSVDecode",
+          "description": "CSV decodes delimited rows into events. Terminal."
+        },
+        "gzip": {
+          "description": "Gzip decompresses the upstream stream (RFC 1952). Byte-transform.",
+          "type": "object"
+        },
+        "json": {
+          "description": "JSON decodes the stream as one JSON value. Terminal.",
+          "type": "object"
+        },
+        "ndjson": {
+          "description": "NDJSON decodes one JSON value per line. Terminal.",
+          "type": "object"
+        },
+        "zip": {
+          "$ref": "#/definitions/ZipDecode",
+          "description": "Zip expands a ZIP archive into its members. Byte-transform."
+        }
+      },
       "type": "object"
     },
     "Diagnostic": {
@@ -1059,12 +1131,23 @@
       "description": "Response describes how to decode the producer step's body and locate the events list.",
       "properties": {
         "decode": {
-          "description": "Decode is the body decoder verb: \"json\" or \"ndjson\".",
-          "enum": [
-            "json",
-            "ndjson"
-          ],
-          "type": "string"
+          "description": "Decode is the body decode chain: a scalar \"json\"/\"ndjson\", or a list of byte-transform stages (gzip, zip) ending in one terminal decoder (csv, json, ndjson). See DecodeChain.",
+          "oneOf": [
+            {
+              "enum": [
+                "json",
+                "ndjson"
+              ],
+              "type": "string"
+            },
+            {
+              "items": {
+                "$ref": "#/definitions/DecodeStage"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ]
         },
         "events_at": {
           "$ref": "#/definitions/Path",
@@ -1386,6 +1469,17 @@
           "type": "object"
         }
       ]
+    },
+    "ZipDecode": {
+      "additionalProperties": false,
+      "description": "ZipDecode configures the zip byte-transform stage.",
+      "properties": {
+        "glob": {
+          "description": "Glob optionally selects which archive members to decode by their base name (e.g. \"*.csv\"). Empty selects every member. Members are decoded in name-sorted order and their events concatenated.",
+          "type": "string"
+        }
+      },
+      "type": "object"
     }
   },
   "description": "Doc is the top-level IR document.",

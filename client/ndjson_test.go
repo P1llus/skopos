@@ -36,7 +36,7 @@ func TestEndToEnd_NDJSON_DecodeErrorContext(t *testing.T) {
 			Method: "GET",
 			URL:    mustInterp("${state.url}/events"),
 		}},
-		Response:   schema.Response{Decode: "ndjson", EventsAt: mustPath("")},
+		Response:   schema.Response{Decode: decodeNDJSON(), EventsAt: mustPath("")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 		Error:      &schema.ErrorBlock{Mode: "fail"},
 	}

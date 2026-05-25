@@ -100,10 +100,11 @@ func fail(format string, args ...any) {
 // mutually-exclusive variant key. They get a `oneOf` of single-required
 // branches so exactly one variant must be present.
 var unionTypes = map[string]bool{
-	"Auth":       true,
-	"OAuth2Auth": true,
-	"Body":       true,
-	"Pagination": true,
+	"Auth":        true,
+	"OAuth2Auth":  true,
+	"Body":        true,
+	"Pagination":  true,
+	"DecodeStage": true,
 }
 
 // handAuthored names the types whose schema is supplied verbatim by
@@ -137,9 +138,10 @@ var fieldOverrides = map[string]map[string]string{
 		"Method":   `{"type":"string","enum":["GET","POST","PUT","PATCH","DELETE","HEAD"]}`,
 		"OnStatus": `{"type":"object","propertyNames":{"pattern":"^[1-5][0-9][0-9]$"},"additionalProperties":{"type":"string","enum":["skip","fail","empty_events","invalidate_cache"]}}`,
 	},
-	"Response":   {"Decode": `{"type":"string","enum":["json","ndjson"]}`},
+	"Response":   {"Decode": `{"oneOf":[{"type":"string","enum":["json","ndjson"]},{"type":"array","minItems":1,"items":{"$ref":"#/definitions/DecodeStage"}}]}`},
 	"ErrorBlock": {"Mode": `{"type":"string","enum":["standard","warn","fail"]}`},
 	"FanOut":     {"Merge": `{"type":"string","enum":["flatten","wrap"]}`},
+	"CSVDecode":  {"Header": `{"type":"string","enum":["present","absent"]}`},
 }
 
 // forceOptional lists (struct, Go field) pairs that are optional at validation

@@ -1026,12 +1026,17 @@ strings without a namespace prefix are rejected.
 ### 4.1 Decoder selection (`response.decode`)
 
 **What it does:** Selects how the producer step's body is decoded.
-Closed enum:
+`decode` is a chain: zero or more byte-transform stages feeding one
+terminal decoder. The scalar forms `json` / `ndjson` are the single-terminal
+common case.
 
-| Verb     | Semantic                                                                       |
-|----------|--------------------------------------------------------------------------------|
-| `json`   | Decode the full body as a single JSON document.                                |
-| `ndjson` | Decode each non-empty line as one JSON value.                                  |
+| Stage    | Kind           | Semantic                                                  |
+|----------|----------------|----------------------------------------------------------|
+| `gzip`   | byte-transform | Decompress the upstream stream (RFC 1952).               |
+| `zip`    | byte-transform | Expand a ZIP archive; optional `glob` selects members.   |
+| `json`   | terminal       | Decode the full body as a single JSON document.          |
+| `ndjson` | terminal       | Decode each non-empty line as one JSON value.            |
+| `csv`    | terminal       | Decode delimited rows; `header: present` → map per row, `absent` → list per row. |
 
 ```yaml
 response:
@@ -1039,9 +1044,22 @@ response:
   events_at: response.body.data.events
 ```
 
-`response.decode` is a closed `json | ndjson` enum. Compressed
-payloads and MIME-chain decoding (ZIP, gzip, CSV) are handled by the
-ingest pipeline that consumes the emitted events.
+For a file payload the HTTP transport does not transparently undo, list the
+stages — e.g. a gzipped CSV export:
+
+```yaml
+response:
+  decode:
+    - gzip: {}
+    - csv:
+        header: present
+  events_at: ""
+```
+
+Transparent `Content-Encoding: gzip` is undone by the transport and needs no
+`decode` stage; the chain is for file payloads (typically `Content-Type:
+application/gzip | application/zip | text/csv`). See
+[schema.md](schema.md#decode-chain) for the full chain rules.
 
 ### 4.2 Locating events (`response.events_at`)
 

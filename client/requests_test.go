@@ -150,7 +150,7 @@ func TestRequest_ExtractToExtractNamespace(t *testing.T) {
 				ProducesEvents: true,
 			},
 		},
-		Response:   schema.Response{Decode: "json", EventsAt: mustPath("response.body.events")},
+		Response:   schema.Response{Decode: decodeJSON(), EventsAt: mustPath("response.body.events")},
 		Pagination: schema.Pagination{None: &struct{}{}},
 	}
 
